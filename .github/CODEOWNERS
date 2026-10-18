@@ -1,6 +1,6 @@
-infra/        @<GITHUB_ORG>/devops
-deploy/       @<GITHUB_ORG>/devops
-database/     @<GITHUB_ORG>/leads
-apps/core/    @<GITHUB_ORG>/backend
-apps/website/ @<GITHUB_ORG>/frontend
-packages/     @<GITHUB_ORG>/backend @<GITHUB_ORG>/frontend
+infra/        @davidnjau/devops
+deploy/       @davidnjau/devops
+database/     @davidnjau/leads
+apps/core/    @davidnjau/backend
+apps/website/ @davidnjau/frontend
+packages/     @davidnjau/backend @davidnjau/frontend

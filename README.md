@@ -1,4 +1,4 @@
-# legacy-platform
+# Legacy-Real-Estate
 
 Monorepo for the Legacy Real Estate Agency platform: property management,
 rent collection through M-Pesa, and land sales for a Kenyan agency with
