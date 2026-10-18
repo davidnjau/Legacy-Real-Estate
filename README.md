@@ -66,6 +66,11 @@ The website selects its API source via `NEXT_PUBLIC_API_MODE`:
 | staging     | Managed Kubernetes (`infra/terraform/`)  | Small sizing                            |
 | production  | Managed Kubernetes (`infra/terraform/`)  | Full HA sizing per SRS 17.6             |
 
+## Dashboards
+
+Role-specific prototype dashboards (Lovable-hosted) — see
+[`docs/dashboards.md`](docs/dashboards.md) for the full list and context.
+
 ## CI
 
 Workflows are path-filtered per module (`core.yml`, `website.yml`,
