@@ -1,0 +1,33 @@
+openapi: 3.1.0
+info:
+  title: Legacy Real Estate Agency API
+  version: 0.1.0
+  description: >
+    Interim contract stub covering only the health check. Phase 3 replaces
+    this with the full contract (tenancy statements, public unit listings,
+    the M-Pesa C2B callback, and the shared error schema).
+
+servers:
+  - url: /api/v1
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+              examples:
+                ok:
+                  value:
+                    status: ok
