@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+.next/
+dist/
+build/
+.turbo/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Laravel
+apps/core/storage/*.key
+apps/core/bootstrap/cache/*
+apps/core/.phpunit.cache/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Helm
+deploy/charts/**/charts/*.tgz
+
+# Misc
+*.local
+coverage/

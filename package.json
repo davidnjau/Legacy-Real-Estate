@@ -1,0 +1,20 @@
+{
+  "name": "legacy-platform",
+  "private": true,
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "gen": "turbo run gen",
+    "gen:watch": "turbo run gen:watch --parallel"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  }
+}
