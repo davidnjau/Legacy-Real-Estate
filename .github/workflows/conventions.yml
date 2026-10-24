@@ -1,0 +1,29 @@
+name: Conventions
+
+# Checks branch names, PR titles and commit messages against the standard in
+# .github/scripts/conventions.js. Make "conventions" a required status check
+# on develop and main so non-conforming PRs can't be merged.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [develop, main]
+  push:
+    branches-ignore: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  conventions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = require('./.github/scripts/check-conventions.js');
+            await run({ github, context, core });
