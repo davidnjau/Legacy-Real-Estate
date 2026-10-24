@@ -1,6 +1,8 @@
 # Issue workflow
 
-Issue status labels move automatically (`.github/workflows/issue-status.yml`).
+## Status labels (automatic)
+
+`.github/workflows/issue-status.yml` moves issues through these labels:
 
 | Event | Label |
 | --- | --- |
@@ -11,23 +13,55 @@ Issue status labels move automatically (`.github/workflows/issue-status.yml`).
 
 Labels never move backwards; a late commit on a released issue is ignored.
 
-## Tagging an issue
+## Referencing an issue
 
-Any of these link work to issue #12:
+Use the wave ID from the issue title (`W2-01`) or the issue number (`#25`).
+Both work in branch names, commit messages and PR titles/bodies.
 
-- Branch name: `feature/12-tenant-login`, `fix/12-mpesa-timeout`, `12-tenant-login`
-- Commit message: `feat(core): tenant login #12` or `refs GH-12`
-- PR title/body: `Closes #12`
+## Branch names
 
-One commit can reference several issues (`#12 #15`).
+```
+<type>/<issue>-<short-description>
+feature/W2-01-invoice-numbering
+fix/25-rounding-error
+chore/bump-turbo
+```
+
+| Type | Issue ID required |
+| --- | --- |
+| `feature`, `fix`, `hotfix`, `refactor`, `test` | yes |
+| `chore`, `ci`, `docs`, `release` | no |
+
+Lowercase, hyphens only. `main`, `develop` and `dependabot/*` are exempt.
+
+## Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <subject>
+feat(core): add branch invoice numbering W2-01
+fix(website): correct listing price rounding #25
+```
+
+Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `ci`, `build`, `perf`, `style`, `revert`.
+Merge commits are exempt. The PR title follows the same format.
+
+## Enforcement
+
+- **Locally:** run `make hooks` once per clone. Bad commit messages are
+  rejected at `git commit`, bad branch names and commits at `git push`.
+- **On GitHub:** the `conventions` check fails on non-conforming PRs and is
+  required on `develop` and `main`, so they can't be merged.
+
+To fix a rejected branch: `git branch -m feature/W2-01-new-name`.
+To fix commit messages: `git rebase -i develop`, mark commits `reword`, then
+`git push --force-with-lease`.
 
 ## Flow
 
 ```
-feature/12-x  ──commit #12──▶  in-progress
-     │ PR → develop (merged)  ▶  in-review
-develop ─ PR → main (merged)  ▶  done (closed)
+feature/W2-01-x ──commit──▶ in-progress
+     │ PR → develop (merged) ▶ in-review
+develop ─ PR → main (merged) ▶ done (closed)
 ```
-
-The `develop → main` release PR picks up every issue referenced by the commits,
-branches and PRs it contains, so it doesn't need to list them by hand.
