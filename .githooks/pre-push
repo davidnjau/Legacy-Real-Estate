@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+// Rejects pushes from branches whose name doesn't follow the standard,
+// or that contain non-conforming commits. Enable with: make hooks
+const { execSync } = require('child_process');
+const path = require('path');
+const { checkBranch, checkCommit } = require(path.join(__dirname, '..', '.github', 'scripts', 'conventions.js'));
+
+const ZERO = /^0+$/;
+const input = require('fs').readFileSync(0, 'utf8').trim();
+const problems = [];
+
+for (const line of input.split('\n').filter(Boolean)) {
+  const [localRef, localSha, , remoteSha] = line.split(' ');
+  if (ZERO.test(localSha) || !localRef.startsWith('refs/heads/')) continue; // deletes / tags
+  const branch = localRef.replace('refs/heads/', '');
+  const b = checkBranch(branch);
+  if (b) problems.push(b);
+  const range = ZERO.test(remoteSha) ? `${localSha} --not --remotes` : `${remoteSha}..${localSha}`;
+  const out = execSync(`git log --format=%B%x00 ${range}`, { encoding: 'utf8' });
+  for (const m of out.split('\0').map((s) => s.trim()).filter(Boolean)) {
+    const p = checkCommit(m);
+    if (p) problems.push(p);
+  }
+}
+
+if (problems.length) {
+  console.error(`\n✖ Push rejected:\n  - ${problems.join('\n  - ')}\n\nSee docs/runbooks/issue-workflow.md\n`);
+  process.exit(1);
+}

@@ -1,4 +1,4 @@
-.PHONY: up down logs gen test lint
+.PHONY: up down logs gen test lint hooks
 
 up: ## Start the local stack (core, website, postgres, redis, mailpit, minio)
 	docker compose -f tools/local/docker-compose.yml up -d
@@ -17,3 +17,6 @@ test: ## Run tests across all workspaces
 
 lint: ## Lint across all workspaces
 	pnpm lint
+
+hooks: ## Enable the repo git hooks (branch and commit message checks)
+	git config core.hooksPath .githooks

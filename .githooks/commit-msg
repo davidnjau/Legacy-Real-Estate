@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+// Rejects commits whose message doesn't follow the standard.
+// Enable once per clone with: make hooks
+const fs = require('fs');
+const path = require('path');
+const { checkCommit } = require(path.join(__dirname, '..', '.github', 'scripts', 'conventions.js'));
+
+const msg = fs.readFileSync(process.argv[2], 'utf8')
+  .split('\n').filter((l) => !l.startsWith('#')).join('\n').trim();
+const problem = checkCommit(msg);
+if (problem) {
+  console.error(`\n✖ ${problem}\n`);
+  process.exit(1);
+}
