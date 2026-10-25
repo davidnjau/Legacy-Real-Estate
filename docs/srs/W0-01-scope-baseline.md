@@ -1,6 +1,6 @@
 # W0-01 — SRS scope and delivery baseline
 
-**Status:** Initial baseline approved for planning by project owner on 24 October 2026; this revision is submitted for project-manager review.
+**Status:** Initial baseline approved for planning by project owner on 24 October 2026; this revision incorporates project-manager decisions and is submitted for approval.
 **Backlog item:** [W0-01 — Baseline SRS scope and decisions](https://github.com/davidnjau/Legacy-Real-Estate/issues/6)
 **Source:** [Legacy Real Estate Agency — System Requirements Specification](https://docs.google.com/document/d/1AbwUbZ9NO1AL77SWdsERqQkgy_xw2Z57k8unsJp--bI/edit), dated 17 October 2026
 
@@ -19,8 +19,8 @@ identify groups of related requirements, not new SRS requirement IDs.
 
 This is a planning interpretation of the SRS, not a replacement specification
 or a comparison with the legacy application. It distinguishes SRS scope from
-delivery timing and records proposals and unresolved decisions without
-treating them as approved requirements.
+delivery timing and records confirmed project decisions separately from
+remaining open decisions.
 
 ## Delivery classification
 
@@ -44,9 +44,9 @@ provide enough detail to assert a phase.
 | Section 7 | Later — Phase 2 | Land projects/plots, sales pipeline, buyers, payment plans, due diligence, transfer tracking, and land-sales commissions. Interactive site map is a later enhancement. |
 | Section 8 | Mixed: V1 minimum operational support; full maintenance scope needs phase decision | Manual water-meter readings and move-in/move-out checklists are V1 prerequisites for Phase 1 water billing and tenancy. Full maintenance-ticket lifecycle, quotations/work approvals, vendor register, caretaker mobile view, meter photos, and inspection workflows still need a phase decision. |
 | Section 9 | Mixed: V1 transactional SMS receipts; WhatsApp later — Phase 2; other messaging needs decision | SMS receipts are supported by Phase 1 acceptance examples. WhatsApp is Phase 2. Decide timing for reminders, email, templates, delivery reports/credits, bulk messages, marketing opt-out, automatic triggers and tenant notice board. |
-| Section 10 | Mixed: V1 remittance capability; advanced accounting later — Phase 2; full GL replacement out of V1 | Section 10.2 includes landlord remittances in Phase 1. Whether V1 initiates bank/M-Pesa disbursements or only calculates, approves, records, and reports them remains an open decision. Section 10.1 double-entry journal, chart of accounts, reconciliation and external-accountant exports need a V1/Phase 2 decision. MRI/VAT reports and tax-agent behavior need a boundary decision; eTIMS is Phase 2; full KRA integration is Phase 4. |
+| Section 10 | Mixed: V1 remittance capability; automatic payouts later — W6-05; advanced accounting later — Phase 2; full GL replacement out of V1 | In V1, the system calculates, approves, records, and reports landlord remittances. Staff manually send the approved amount by bank or M-Pesa and record the payment in the system. Automatic payouts are deferred to W6-05. Section 10.1 double-entry journal, chart of accounts, reconciliation and external-accountant exports need a V1/Phase 2 decision. MRI/VAT reports and tax-agent behavior need a boundary decision; eTIMS is Phase 2; full KRA integration is Phase 4. |
 | Section 11 | Later — Phase 3 | Public website pages/listings, filters/SEO, automatic listing availability, lead sources/status, agent/caretaker viewings, matching and conversion report. V1 stores the publication flag and listing data on properties/units but does not publish them publicly. |
-| Section 12 | Mixed: basic reports V1; advanced dashboards and compliance reports later — Phase 3 | Proposed V1 basic reports, based on the project manager's review: rent roll, collections, arrears, vacancies, deposits, and landlord statements. This proposed list awaits project-manager confirmation. The wider SRS report inventory also includes tenancy expiry/rent review, remittances, water use, plots, land collections/transfers, leads, and audit log. Land reports follow Phase 2; advanced dashboard/compliance reports are Phase 3. |
+| Section 12 | Mixed: basic reports V1; advanced dashboards and compliance reports later — Phase 3 | Confirmed V1 basic reports: rent roll, collections, arrears, vacancies, deposits, and landlord statements. The wider SRS report inventory also includes tenancy expiry/rent review, remittances, water use, plots, land collections/transfers, leads, and audit log. Land reports follow Phase 2; advanced dashboard/compliance reports are Phase 3. |
 | Section 13 | V1 legal/security controls; land-specific controls with Phase 2 land sales; compliance reporting Phase 3 | V1 rental/data-protection/agency registration/tax-notice/record retention controls apply before go-live. AML/KYC and land due-diligence controls apply to the land-sales phase; confirm exact agency legal obligations. Compliance reports are Phase 3, not the underlying legal safeguards. |
 | Section 14 | Cross-cutting, required at the applicable release gate | Security requirements (HTTPS, password protection, finance 2FA, server-side access control, encryption/masking, callback protection, session controls, immutable audit and security review); scale/page/invoice/payment targets; availability/backups/restore; mobile-first KES/Nairobi locale, phone validation and migration reconciliation. Production hardening is Phase 4, but go-live criteria must be met before the relevant release. |
 | Section 15 | Phased by delivered capability | The data model is guidance for the corresponding phased modules, not a requirement to implement every entity in V1. Preserve money, branch, tenancy, and audit relationships needed by V1. |
@@ -97,30 +97,24 @@ commitment:
    in Phase 2 and full KRA integration in Phase 4. Confirm the required V1
    ledgers, bank/M-Pesa reconciliation, landlord statements, MRI calculations
    or exports, VAT handling, and agency expense tracking.
-4. **Landlord payouts — sections 2.6 and 10.2:** remittances are included in
-   Phase 1, but the SRS does not clearly settle whether V1 initiates actual
-   M-Pesa/bank disbursements or calculates, approves, records, and reports
-   them. Confirm the required execution level with the project manager and
-   finance owner.
-5. **Public listings — sections 1.2, 2.6, 3.2 and 11:** public listings are
+4. **Public listings — sections 1.2, 2.6, 3.2 and 11:** public listings are
    broadly included in the overall scope, but the website is assigned to
    Phase 3. Confirm that automatic publishing is deferred while the V1
    listing flag and property/unit data remain supported.
-6. **Compliance reporting — sections 2.6 and 13:** confirm which legal
+5. **Compliance reporting — sections 2.6 and 13:** confirm which legal
    controls and data-handling requirements are release blockers for V1 and
    which reports are Phase 3. Legal compliance itself should not be treated
    as optional merely because compliance reporting is later.
-7. **Roles and permissions — section 2:** confirm which of the nine roles
+6. **Roles and permissions — section 2:** confirm which of the nine roles
    are needed in Phase 1. Server-side role/branch isolation, own-record
    access for landlord/tenant portals, and restricted caretaker access are
    foundational security requirements.
-8. **Phase 1 bank channels — section 6.2:** the SRS lists bank deposit,
-   bank Paybill, cheque, and cash in addition to M-Pesa, but Phase 1 names
-   M-Pesa C2B. Confirm which non-M-Pesa channels are required in V1.
-9. **Basic V1 reports — sections 2.6 and 12:** the project manager proposed
-   rent roll, collections, arrears, vacancies, deposits, and landlord
-   statements. Confirm this as the Phase 1 report set, including the
-   definitions and required fields for each report.
+7. **Phase 1 tenant payment channels — section 6.2:** the SRS lists bank
+   deposit, bank Paybill, cheque, and cash in addition to M-Pesa, but Phase
+   1 names M-Pesa C2B. Confirm which non-M-Pesa tenant collection channels
+   are required in V1. This is separate from landlord remittances: staff
+   manually disburse those by bank/M-Pesa and record the payments in the
+   system.
 
 ## Business and accounting decisions to record
 
@@ -133,8 +127,7 @@ substitute developer assumptions.
 |---|---|---|
 | Operational accounting boundary | Sections 1.2, 10.1–10.4 | Define V1 books and reports versus the external accountant's full GL. Confirm whether V1 needs the three separate pots (agency income, landlord trust, deposits trust), a double-entry journal, or an interim operational ledger. |
 | Deposits | Sections 4.2, 5.4, 6.5, 10.1 | Decide who holds tenant deposits, the required segregation/reconciliation, and approval/evidence for deductions and refunds. The formula is deposit held minus arrears, damages, and unpaid utilities; confirm its application and dispute process. |
-| Landlord commission, expenses, tax and payouts | Sections 4.2, 8.4, 10.2–10.4 | Approve agreement terms, expense approval thresholds, payout schedule, deduction order, payout approval, and which deductions/tax apply. Decide whether V1 initiates bank/M-Pesa disbursements or only calculates, approves, records, and reports remittances. |
-| Basic Phase 1 reports | Sections 2.6, 12 | Confirm the proposed rent roll, collections, arrears, vacancies, deposits, and landlord statements list, along with the definitions, filters, and fields needed for each report. |
+| Landlord commission, expenses, tax and remittances | Sections 4.2, 8.4, 10.2–10.4 | Approve agreement terms, expense approval thresholds, payout schedule, deduction order, payout approval, and which deductions/tax apply. V1 calculates, approves, records, and reports remittances; staff manually send payments by bank/M-Pesa and record them. Automatic payouts are deferred to W6-05. |
 | Tax rules and agency appointment | Sections 4.2, 10.3, 13 | Have the agency accountant/lawyer validate MRI rates/thresholds, VAT applicability, tax-agent status, filing responsibility, and required V1 exports. Keep rates configurable as specified. |
 | Charges, rent changes and arrears | Sections 3.3, 5.3, 6.1, 6.4 | Set invoice day/due day, proration, grace periods, penalty rules, allocation order, rent review notice periods, waiver permissions, and payment-plan approvals. |
 | Payment channels and reconciliation | Sections 6.2–6.3, 17.4 | Confirm V1 channels, Paybill configuration, cash permissions, statement/reconciliation process, unmatched payment authority, and treatment of fees, duplicates, reversals, and overpayments. |
@@ -183,9 +176,11 @@ may be phased, but they must be planned and explicitly gated:
    Confirm whether the journal is a later-phase advanced accounting feature
    or a V1 implementation detail for operational financial screens.
 3. Section 1.2 lists bank integrations and WhatsApp in the overall scope,
-   while section 2.6 assigns WhatsApp to Phase 2 and does not assign the bank
-   channels in section 6.2 to a phase. Phase 1 explicitly names M-Pesa C2B.
-   Confirm whether bank collection/payout channels are V1.
+   while section 2.6 assigns WhatsApp to Phase 2 and does not assign the
+   non-M-Pesa tenant collection channels in section 6.2 to a phase. Phase 1
+   explicitly names M-Pesa C2B. Landlord remittances are a separate V1
+   workflow: the system records approvals and manually sent payments;
+   automated payouts are deferred to W6-05.
 4. The system architecture/stack in sections 16–17 allows alternatives.
    The intended implementation stack is Django, PostgreSQL, and Next.js.
    The GitHub `develop` branch currently contains the Laravel scaffold
@@ -204,15 +199,17 @@ may be phased, but they must be planned and explicitly gated:
 - [x] Record unresolved business/accounting boundaries.
 - [x] Obtain project-owner approval for the initial planning baseline and
   its recorded unresolved items.
-- [ ] Obtain project-manager confirmation of the proposed V1 report list
-  and the execution scope for landlord payouts.
+- [x] Incorporate project-manager decisions on the intended stack, minimum
+  V1 caretaker support, basic V1 reports, and landlord remittance execution.
+- [ ] Obtain project-manager approval of this revised baseline.
 
 The initial baseline was approved by the project owner on 24 October 2026.
-This revision incorporates the project manager's review by moving manual
-meter readings and move-in/move-out checklists into V1, recording the
-proposed V1 report list, clarifying the intended stack versus the current
-GitHub branch contents, and keeping payout execution open. The report list
-and payout execution level remain pending project-manager confirmation.
-Unresolved policy decisions remain implementation gates for the features
-they govern; approval of the planning baseline does not replace legal,
-accounting, or operational approval of those detailed rules.
+This revision incorporates the project manager's decisions: Django,
+PostgreSQL, and Next.js are the intended stack; manual meter readings and
+move-in/move-out checklists are V1; the six listed basic reports are V1; and
+V1 landlord remittances are calculated, approved, recorded, and reported,
+with staff sending payments manually and recording them. Automatic payouts
+are deferred to W6-05. This revised baseline is submitted for project-manager
+approval. Remaining policy decisions stay as implementation gates for the
+features they govern; approval of this planning baseline does not replace
+legal, accounting, or operational approval of those detailed rules.
