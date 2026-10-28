@@ -1,5 +1,6 @@
 # Dependencies
-node_modules/
+node_modules
+.pnpm-store/
 vendor/
 
 # Build outputs
@@ -7,6 +8,15 @@ vendor/
 dist/
 build/
 .turbo/
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+.venv/
+venv/
+staticfiles/
+htmlcov/
+.coverage
+db.sqlite3
 
 # Env files
 .env

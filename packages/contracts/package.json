@@ -1,0 +1,11 @@
+{
+  "name": "@legacy/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "spectral lint --ruleset ../../.spectral.yaml openapi.yaml"
+  },
+  "devDependencies": {
+    "@stoplight/spectral-cli": "^6.15.0"
+  }
+}
