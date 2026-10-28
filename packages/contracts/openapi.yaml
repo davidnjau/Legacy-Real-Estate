@@ -2,32 +2,394 @@ openapi: 3.1.0
 info:
   title: Legacy Real Estate Agency API
   version: 0.1.0
+  contact:
+    name: Legacy Real Estate API maintainers
   description: >
-    Interim contract stub covering only the health check. Phase 3 replaces
-    this with the full contract (tenancy statements, public unit listings,
-    the M-Pesa C2B callback, and the shared error schema).
+    Versioned API contract. The initial contract exposes the public service
+    health endpoint; business endpoints are added with their authorization,
+    validation, audit, and pagination requirements.
 
 servers:
   - url: /api/v1
+    description: Current API version
+
+tags:
+  - name: System
+    description: Service health and operational endpoints.
+  - name: Authentication
+    description: Session sign-in and current-account endpoints.
+security:
+  - SessionCookieAuth: []
 
 paths:
   /health:
     get:
       operationId: getHealth
       summary: Health check
+      description: Public liveness response. It contains no dependency or account data.
+      tags:
+        - System
+      security: []
       responses:
         "200":
-          description: Service is healthy
+          description: Service is responding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                healthy:
+                  value:
+                    status: ok
+  /auth/csrf:
+    get:
+      operationId: getAuthCsrfToken
+      summary: Obtain a CSRF token
+      description: Sets the CSRF cookie and returns its request-header token.
+      tags:
+        - Authentication
+      security: []
+      responses:
+        "200":
+          description: CSRF token issued
           content:
             application/json:
               schema:
                 type: object
-                required: [status]
+                required:
+                  - csrfToken
+                properties:
+                  csrfToken:
+                    type: string
+  /auth/login:
+    post:
+      operationId: login
+      summary: Start a session
+      description: >
+        Requires the CSRF cookie and X-CSRFToken header. Finance-role users
+        must complete SMS verification before a session is established.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - identifier
+                - password
+              properties:
+                identifier:
+                  type: string
+                  description: Email address or international-format mobile number.
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Signed in without an additional challenge
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - user
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+        "202":
+          description: SMS verification is required
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - mfa_required
+                  - challenge_id
+                properties:
+                  mfa_required:
+                    type: boolean
+                    const: true
+                  challenge_id:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /auth/mfa/verify:
+    post:
+      operationId: verifyAuthSmsChallenge
+      summary: Verify a sign-in code
+      description: Requires the CSRF cookie and X-CSRFToken header.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - challenge_id
+                - code
+              properties:
+                challenge_id:
+                  type: integer
+                code:
+                  type: string
+                  pattern: "^[0-9]{6}$"
+      responses:
+        "200":
+          description: Challenge verified and session established
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - user
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: Get the authenticated user
+      description: Returns the account, role names, and branches available to the current session.
+      tags:
+        - Authentication
+      responses:
+        "200":
+          description: Current account information
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - user
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+        "401":
+          $ref: "#/components/responses/Problem"
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: End the current session
+      description: Requires the session cookie and X-CSRFToken header.
+      tags:
+        - Authentication
+      responses:
+        "200":
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
                 properties:
                   status:
                     type: string
-                    example: ok
-              examples:
-                ok:
-                  value:
-                    status: ok
+                    const: ok
+        "401":
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    SessionCookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
+      description: >
+        Django session cookie established by the login endpoints. Unsafe
+        requests must also send the CSRF token in the X-CSRFToken header.
+    CsrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRFToken
+      description: >
+        Django CSRF token returned by GET /auth/csrf. Send it on state-changing
+        requests together with the CSRF cookie and session cookie.
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of returned items. Defaults to 50.
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 100
+    Offset:
+      name: offset
+      in: query
+      description: Zero-based position of the first returned item.
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+  schemas:
+    Branch:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - town
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        town:
+          type: string
+    AuthUser:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - email
+        - phone
+        - roles
+        - branches
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type:
+            - string
+            - "null"
+          format: email
+        phone:
+          type:
+            - string
+            - "null"
+        roles:
+          type: array
+          items:
+            type: string
+        branches:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - town
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              town:
+                type: string
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          const: ok
+          description: Indicates that the API process is responding.
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required:
+        - type
+        - title
+        - status
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: Identifier for the problem type.
+        title:
+          type: string
+          description: Short, stable summary of the problem.
+        status:
+          type: integer
+          description: HTTP status code for this occurrence.
+        detail:
+          type: string
+          description: Safe, human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri-reference
+          description: Identifier for this occurrence, if available.
+        request_id:
+          type: string
+          description: Request correlation identifier, if available.
+    ValidationProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required:
+                  - detail
+                properties:
+                  pointer:
+                    type: string
+                    description: JSON Pointer to the invalid request value.
+                  detail:
+                    type: string
+                    description: Safe explanation of the validation failure.
+    Pagination:
+      type: object
+      description: Offset pagination metadata for collection responses.
+      additionalProperties: false
+      required:
+        - limit
+        - offset
+        - count
+        - total
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Maximum number of returned items.
+        offset:
+          type: integer
+          minimum: 0
+          description: Zero-based position of the first returned item.
+        count:
+          type: integer
+          minimum: 0
+          description: Number of items in this response page.
+        total:
+          type: integer
+          minimum: 0
+          description: Total matching items before pagination.
+  responses:
+    Problem:
+      description: Request failed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ValidationProblem:
+      description: Request values are syntactically valid but fail validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ValidationProblem"

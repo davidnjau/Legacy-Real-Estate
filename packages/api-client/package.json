@@ -1,0 +1,22 @@
+{
+  "name": "@legacy/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "gen": "openapi-typescript ../contracts/openapi.yaml -o src/generated/schema.d.ts",
+    "gen:check": "node scripts/check-generated.mjs",
+    "lint": "tsc --noEmit",
+    "test": "node scripts/check-generated.mjs && tsc --noEmit"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.14.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.6.1",
+    "typescript": "^5.5.4"
+  }
+}

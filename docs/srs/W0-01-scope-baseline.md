@@ -39,7 +39,7 @@ provide enough detail to assert a phase.
 | Section 7 | Later — Phase 2 | Land projects/plots, sales pipeline, buyers, payment plans, due diligence, transfer tracking, and land-sales commissions. Interactive site map is a later enhancement. |
 | Section 8 | Needs phase decision | Ticket creation/status, approvals, vendors, caretaker mobile view, meter photos, move-in/out checklists, inspections and recurring expenses are described, but not phased. Decide minimum caretaker/readings/checklist support needed for Phase 1 invoices and tenancy. |
 | Section 9 | Mixed: V1 transactional SMS receipts; WhatsApp later — Phase 2; other messaging needs decision | SMS receipts are supported by Phase 1 acceptance examples. WhatsApp is Phase 2. Decide timing for reminders, email, templates, delivery reports/credits, bulk messages, marketing opt-out, automatic triggers and tenant notice board. |
-| Section 10 | Mixed: V1 remittance capability; advanced accounting later — Phase 2; full GL replacement out of V1 | Section 10.2 remittance run (calculation, manager approval, bank/M-Pesa payout, statements) is V1 by section 2.6, but execution level needs confirmation. Section 10.1 double-entry journal, chart of accounts, reconciliation and external-accountant exports need a V1/Phase 2 decision. MRI/VAT reports and tax-agent behavior need a boundary decision; eTIMS is Phase 2; full KRA integration is Phase 4. |
+| Section 10 | Mixed: V1 remittance capability; advanced accounting later — Phase 2; full GL replacement out of V1 | The V1 system calculates, supports manager approval, records, and reports landlord remittances. Staff send payments manually outside the system and record them; automated payouts are deferred to W6-05. Section 10.1 double-entry journal, chart of accounts, reconciliation and external-accountant exports need a V1/Phase 2 decision. MRI/VAT reports and tax-agent behavior need a boundary decision; eTIMS is Phase 2; full KRA integration is Phase 4. |
 | Section 11 | Later — Phase 3 | Public website pages/listings, filters/SEO, automatic listing availability, lead sources/status, agent/caretaker viewings, matching and conversion report. V1 stores the publication flag and listing data on properties/units but does not publish them publicly. |
 | Section 12 | Mixed: basic reports V1; advanced dashboards and compliance reports later — Phase 3 | Phase 1 basic report set to be confirmed. Section 12 report inventory includes rent roll, collections, arrears, vacancies, tenancy expiry/rent review, deposits, landlord statements/remittances, water use, plots, land collections/transfers, leads and audit log. Land reports follow Phase 2; advanced dashboard/compliance reports are Phase 3. |
 | Section 13 | V1 legal/security controls; land-specific controls with Phase 2 land sales; compliance reporting Phase 3 | V1 rental/data-protection/agency registration/tax-notice/record retention controls apply before go-live. AML/KYC and land due-diligence controls apply to the land-sales phase; confirm exact agency legal obligations. Compliance reports are Phase 3, not the underlying legal safeguards. |
@@ -92,9 +92,11 @@ commitment:
    in Phase 2 and full KRA integration in Phase 4. Confirm the required V1
    ledgers, bank/M-Pesa reconciliation, landlord statements, MRI calculations
    or exports, VAT handling, and agency expense tracking.
-4. **Landlord payouts — sections 2.6 and 10.2:** payouts are explicitly V1,
-   but confirm whether V1 requires actual M-Pesa B2C/bank disbursement or
-   only approved remittance calculations, statements, and recorded payments.
+4. **Landlord payouts — sections 2.6 and 10.2:** the V1 boundary is agreed.
+   The system calculates, supports approval, records, and reports
+   remittances; staff send payments manually outside the system and record
+   them. Automated payouts are deferred to W6-05. Agreement terms,
+   deduction order, and applicable taxes still need approval.
 5. **Public listings — sections 1.2, 2.6, 3.2 and 11:** public listings are
    broadly included in the overall scope, but the website is assigned to
    Phase 3. Confirm that automatic publishing is deferred while the V1
@@ -122,7 +124,7 @@ substitute developer assumptions.
 |---|---|---|
 | Operational accounting boundary | Sections 1.2, 10.1–10.4 | Define V1 books and reports versus the external accountant's full GL. Confirm whether V1 needs the three separate pots (agency income, landlord trust, deposits trust), a double-entry journal, or an interim operational ledger. |
 | Deposits | Sections 4.2, 5.4, 6.5, 10.1 | Decide who holds tenant deposits, the required segregation/reconciliation, and approval/evidence for deductions and refunds. The formula is deposit held minus arrears, damages, and unpaid utilities; confirm its application and dispute process. |
-| Landlord commission, expenses, tax and payouts | Sections 4.2, 8.4, 10.2–10.4 | Approve agreement terms, expense approval thresholds, payout schedule, deduction order, payout approval, and which deductions/tax apply. Confirm whether V1 performs payouts or records them. |
+| Landlord commission, expenses, tax and payouts | Sections 4.2, 8.4, 10.2–10.4 | The V1 execution boundary is agreed: staff send payments manually and record them; automated payouts are deferred to W6-05. Approve agreement terms, expense approval thresholds, payout schedule, deduction order, payout approval, and which deductions/tax apply. |
 | Tax rules and agency appointment | Sections 4.2, 10.3, 13 | Have the agency accountant/lawyer validate MRI rates/thresholds, VAT applicability, tax-agent status, filing responsibility, and required V1 exports. Keep rates configurable as specified. |
 | Charges, rent changes and arrears | Sections 3.3, 5.3, 6.1, 6.4 | Set invoice day/due day, proration, grace periods, penalty rules, allocation order, rent review notice periods, waiver permissions, and payment-plan approvals. |
 | Payment channels and reconciliation | Sections 6.2–6.3, 17.4 | Confirm V1 channels, Paybill configuration, cash permissions, statement/reconciliation process, unmatched payment authority, and treatment of fees, duplicates, reversals, and overpayments. |
