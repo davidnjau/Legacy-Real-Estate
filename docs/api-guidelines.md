@@ -29,6 +29,8 @@ generated-file check in the same change.
 - Return `401` for missing or invalid credentials and `403` for an
   authenticated caller who lacks permission. Avoid leaking whether
   out-of-scope records exist.
+- Branch APIs return only assigned branches; an unavailable or out-of-scope
+  branch returns `404` to avoid exposing its existence.
 - The health endpoint is public and reveals only whether the API process is
   responding. Do not expose secrets, personal data, or dependency status
   from it.

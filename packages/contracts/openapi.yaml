@@ -18,6 +18,16 @@ tags:
     description: Service health and operational endpoints.
   - name: Authentication
     description: Session sign-in and current-account endpoints.
+  - name: Landlords
+    description: Branch-scoped landlord records and management agreements.
+  - name: Branches
+    description: Branches accessible to the authenticated user.
+  - name: Properties
+    description: Branch-scoped properties and units.
+  - name: Tenancies
+    description: Branch-scoped tenancy records and terms.
+  - name: Billing
+    description: Immutable invoices and financial records.
 security:
   - SessionCookieAuth: []
 
@@ -204,6 +214,1612 @@ paths:
                     const: ok
         "401":
           $ref: "#/components/responses/Problem"
+  /branches:
+    get:
+      operationId: listAccessibleBranches
+      summary: List accessible branches
+      description: Returns only branches assigned to the authenticated user.
+      tags:
+        - Branches
+      responses:
+        "200":
+          description: Accessible branches
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - branches
+                properties:
+                  branches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Branch"
+        "401":
+          $ref: "#/components/responses/Problem"
+  /branches/{branch_id}:
+    get:
+      operationId: getAccessibleBranch
+      summary: Get an accessible branch
+      description: Returns a branch only when it is in the caller's access scope.
+      tags:
+        - Branches
+      parameters:
+        - name: branch_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Accessible branch
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - branch
+                properties:
+                  branch:
+                    $ref: "#/components/schemas/Branch"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /landlords:
+    get:
+      operationId: listLandlords
+      summary: List accessible landlords
+      description: Returns landlord records in the authenticated user's branch scope.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Accessible landlord records
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - landlords
+                properties:
+                  landlords:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Landlord"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlords/create:
+    post:
+      operationId: createLandlord
+      summary: Create a landlord record
+      description: Creates a landlord within a branch available to the authenticated user.
+      tags:
+        - Landlords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LandlordInput"
+      responses:
+        "201":
+          description: Landlord created
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - landlord
+                properties:
+                  landlord:
+                    $ref: "#/components/schemas/Landlord"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlords/{landlord_id}:
+    get:
+      operationId: getLandlord
+      summary: Get an accessible landlord
+      description: Returns a landlord only when it belongs to the authenticated user's branch scope.
+      tags:
+        - Landlords
+      parameters:
+        - name: landlord_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Accessible landlord
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - landlord
+                properties:
+                  landlord:
+                    $ref: "#/components/schemas/Landlord"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /landlords/{landlord_id}/agreements:
+    post:
+      operationId: createManagementAgreement
+      summary: Add a management agreement
+      description: Adds dated management terms to an accessible landlord record.
+      tags:
+        - Landlords
+      parameters:
+        - name: landlord_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagementAgreementInput"
+      responses:
+        "201":
+          description: Management agreement created
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - agreement
+                properties:
+                  agreement:
+                    $ref: "#/components/schemas/ManagementAgreement"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /properties:
+    get:
+      operationId: listProperties
+      summary: List accessible properties
+      description: Returns branch-scoped properties visible to the authenticated user.
+      tags:
+        - Properties
+      responses:
+        "200":
+          description: Properties visible to the authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [properties]
+                properties:
+                  properties:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Property"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /properties/create:
+    post:
+      operationId: createProperty
+      summary: Create a property
+      description: Creates a property within a branch accessible to the authenticated user.
+      tags:
+        - Properties
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PropertyInput"
+      responses:
+        "201":
+          description: Property created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  property:
+                    $ref: "#/components/schemas/Property"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /properties/{property_id}:
+    get:
+      operationId: getProperty
+      summary: Get a property
+      description: Returns one property when it is within the authenticated user's branch scope.
+      tags:
+        - Properties
+      parameters:
+        - name: property_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Property details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  property:
+                    $ref: "#/components/schemas/Property"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /properties/{property_id}/blocks:
+    post:
+      operationId: createBlock
+      summary: Add a block to a property
+      description: Adds a uniquely named block to an accessible property.
+      tags:
+        - Properties
+      parameters:
+        - name: property_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Block created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units:
+    get:
+      operationId: listUnits
+      summary: List accessible units
+      description: Returns units belonging to properties in the authenticated user's branch scope.
+      tags:
+        - Properties
+      responses:
+        "200":
+          description: Units visible to the authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [units]
+                properties:
+                  units:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Unit"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /vacancy-board:
+    get:
+      operationId: getVacancyBoard
+      summary: Get the vacancy board
+      description: Returns accessible units with current rent and optional branch, area, unit type, status, listing, and rent filters.
+      tags:
+        - Properties
+      parameters:
+        - name: branch_id
+          in: query
+          schema:
+            type: integer
+        - name: area
+          in: query
+          schema:
+            type: string
+        - name: unit_type
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: listing_enabled
+          in: query
+          schema:
+            type: boolean
+        - name: rent_min
+          in: query
+          schema:
+            type: number
+        - name: rent_max
+          in: query
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Vacancy board
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vacancies]
+                properties:
+                  vacancies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VacancyBoardUnit"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/create:
+    post:
+      operationId: createUnit
+      summary: Create a unit
+      description: Creates a unit and validates its property, floor, status, and listing state.
+      tags:
+        - Properties
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitInput"
+      responses:
+        "201":
+          description: Unit created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}:
+    get:
+      operationId: getUnit
+      summary: Get a unit
+      description: Returns one unit when it is within the authenticated user's branch scope.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Unit details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unit:
+                    $ref: "#/components/schemas/Unit"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/history:
+    get:
+      operationId: getUnitHistory
+      summary: Get unit and tenancy history
+      description: Returns preserved tenancies, effective-dated charges, unit status changes, charge audit events, and the currently available maintenance history.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Unit history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnitHistory"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /unit-reservations:
+    get:
+      operationId: listUnitReservations
+      summary: List accessible unit reservations
+      description: Returns reservations for units in the authenticated user's branch scope and reconciles elapsed reservations.
+      tags:
+        - Properties
+      responses:
+        "200":
+          description: Unit reservations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reservations]
+                properties:
+                  reservations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UnitReservation"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/reservations/create:
+    post:
+      operationId: createUnitReservation
+      summary: Reserve a unit
+      description: Reserves a vacant unit for an accessible tenant until the requested expiry time.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitReservationInput"
+      responses:
+        "201":
+          description: Reservation created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /unit-reservations/{reservation_id}/release:
+    post:
+      operationId: releaseUnitReservation
+      summary: Release a unit reservation
+      description: Releases an active reservation and restores the unit's prior listing state.
+      tags:
+        - Properties
+      parameters:
+        - name: reservation_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reservation released or already expired
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/status:
+    post:
+      operationId: transitionUnitStatus
+      summary: Transition a unit status
+      description: Applies one of the supported unit lifecycle transitions and records an audit event.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [Draft, Vacant, Occupied, Notice Given, Maintenance, Archived]
+      responses:
+        "200":
+          description: Unit status changed
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/charges:
+    get:
+      operationId: listUnitCharges
+      summary: List effective-dated unit charges
+      description: Returns all rent, deposit, and recurring charge records for an accessible unit.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Charge history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [charges]
+                properties:
+                  charges:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UnitCharge"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/charges/create:
+    post:
+      operationId: createUnitCharge
+      summary: Add an effective-dated unit charge
+      description: Adds a future or current charge without overwriting prior charge history.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitChargeInput"
+      responses:
+        "201":
+          description: Charge created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/utilities:
+    get:
+      operationId: listUnitUtilities
+      summary: List utility configurations
+      description: Returns fixed and metered utility configurations for an accessible unit.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Utility configurations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [utilities]
+                properties:
+                  utilities:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UtilityConfiguration"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/utilities/create:
+    post:
+      operationId: createUnitUtility
+      summary: Configure a utility
+      description: Creates an effective-dated fixed or metered utility configuration.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UtilityConfigurationInput"
+      responses:
+        "201":
+          description: Utility configuration created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/meter-readings:
+    get:
+      operationId: listMeterReadings
+      summary: List meter readings
+      description: Returns meter readings and optional image evidence for an accessible unit.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Meter readings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [readings]
+                properties:
+                  readings:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MeterReading"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/meter-readings/create:
+    post:
+      operationId: createMeterReading
+      summary: Record a meter reading
+      description: Records a monotonic meter reading with optional validated image evidence.
+      tags:
+        - Properties
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeterReadingInput"
+      responses:
+        "201":
+          description: Meter reading recorded
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/{unit_id}/water-bill/calculate:
+    post:
+      operationId: calculateWaterBill
+      summary: Calculate a water bill
+      description: Calculates water usage at the effective metered rate, applying the configured minimum charge.
+      tags:
+        - Billing
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter, period]
+              properties:
+                meter:
+                  type: string
+                period:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: Calculated water bill
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [water_bill]
+                properties:
+                  water_bill:
+                    $ref: "#/components/schemas/WaterBillCalculation"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /arrears:
+    get:
+      operationId: listArrears
+      summary: List arrears ageing
+      tags:
+        - Billing
+      parameters:
+        - name: as_of
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Arrears report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArrearsReport"
+  /invoices/{invoice_id}/waiver:
+    post:
+      operationId: createArrearsWaiver
+      summary: Approve an arrears waiver
+      tags:
+        - Billing
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, reason]
+              properties:
+                amount:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        "201":
+          description: Waiver approved
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /invoices/{invoice_id}/demand-letter:
+    post:
+      operationId: createDemandLetter
+      summary: Issue a demand letter
+      tags:
+        - Billing
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Demand letter issued
+        "403":
+          $ref: "#/components/responses/Problem"
+  /payment-plans:
+    get:
+      operationId: listPaymentPlans
+      summary: List arrears payment plans
+      tags:
+        - Billing
+      responses:
+        "200":
+          description: Payment plans
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment_plans]
+                properties:
+                  payment_plans:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ArrearsPaymentPlan"
+  /tenancies/{tenancy_id}/payment-plans/create:
+    post:
+      operationId: createPaymentPlan
+      summary: Create an arrears payment plan
+      tags:
+        - Billing
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [total_amount, instalment_amount, start_date, reason]
+              properties:
+                total_amount: {type: string}
+                instalment_amount: {type: string}
+                start_date: {type: string, format: date}
+                reason: {type: string}
+      responses:
+        "201":
+          description: Payment plan created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /payment-plan-instalments/{instalment_id}/pay:
+    post:
+      operationId: payPaymentPlanInstalment
+      summary: Record an instalment payment
+      tags:
+        - Billing
+      parameters:
+        - name: instalment_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: {type: string}
+      responses:
+        "200":
+          description: Updated payment plan
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /payments/mpesa/callback:
+    post:
+      operationId: receiveMpesaCallback
+      summary: Receive an M-Pesa C2B callback
+      description: Persists and idempotently processes an M-Pesa callback by transaction code.
+      tags:
+        - Billing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "202":
+          description: Callback accepted and processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MpesaCallbackResult"
+        "400":
+          $ref: "#/components/responses/Problem"
+  /payments/create:
+    post:
+      operationId: createPayment
+      summary: Record and allocate a tenant payment
+      description: Allocates a payment to the tenant's oldest outstanding issued invoices and records any overpayment as tenant credit.
+      tags:
+        - Billing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, amount, reference]
+              properties:
+                tenant_id: {type: integer}
+                amount: {type: string}
+                reference: {type: string}
+                source: {type: string, enum: [manual, mpesa, bank]}
+      responses:
+        "201":
+          description: Payment recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment]
+                properties:
+                  payment: {$ref: "#/components/schemas/Payment"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /payments/unmatched:
+    get:
+      operationId: listUnmatchedPayments
+      summary: List unmatched payments for review
+      description: Returns unmatched payments with non-binding tenant suggestions based on payment references.
+      tags:
+        - Billing
+      responses:
+        "200":
+          description: Unmatched payments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payments]
+                properties:
+                  payments:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Payment"
+                        - type: object
+                          required: [suggestions]
+                          properties:
+                            suggestions:
+                              type: array
+                              items:
+                                type: object
+                                required: [tenant_id, tenant, reason]
+                                properties:
+                                  tenant_id: {type: integer}
+                                  tenant: {type: string}
+                                  reason: {type: string}
+        "403":
+          $ref: "#/components/responses/Problem"
+  /payments/{payment_id}/allocate:
+    post:
+      operationId: allocatePayment
+      summary: Manually allocate an unmatched payment
+      description: Permissioned staff allocation to an invoice; suggestions are advisory and never allocate automatically.
+      tags:
+        - Billing
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoice_id]
+              properties:
+                invoice_id: {type: integer}
+                amount: {type: string}
+      responses:
+        "200":
+          description: Updated payment
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment]
+                properties:
+                  payment: {$ref: "#/components/schemas/Payment"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /payments/{payment_id}/receipt:
+    get:
+      operationId: getPaymentReceipt
+      summary: Download a payment receipt
+      description: Returns immutable receipt data for a matched payment as a downloadable JSON document.
+      tags:
+        - Billing
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Downloadable receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt]
+                properties:
+                  receipt:
+                    $ref: "#/components/schemas/Receipt"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /bank-statements/import:
+    post:
+      operationId: importBankStatement
+      summary: Import a bank statement
+      description: Validates CSV or XLSX rows, creates unmatched bank payments, and returns import counts.
+      tags:
+        - Billing
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Statement imported
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [statement]
+                properties:
+                  statement: {$ref: "#/components/schemas/BankStatementImport"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /bank-statements/{statement_id}:
+    get:
+      operationId: getBankStatementImport
+      summary: Review bank statement rows
+      tags:
+        - Billing
+      parameters:
+        - name: statement_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Statement and rows
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /bank-statement-rows/{row_id}/match:
+    post:
+      operationId: matchBankStatementRow
+      summary: Manually match a bank statement row
+      tags:
+        - Billing
+      parameters:
+        - name: row_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoice_id]
+              properties:
+                invoice_id: {type: integer}
+                amount: {type: string}
+      responses:
+        "200":
+          description: Matched payment
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /bank-statements/{statement_id}/reconciliation:
+    get:
+      operationId: getBankStatementReconciliation
+      summary: Report bank statement reconciliation
+      tags:
+        - Billing
+      parameters:
+        - name: statement_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Reconciliation totals and row counts
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /payments/offline/create:
+    post:
+      operationId: createOfflinePayment
+      summary: Record a cash or cheque payment
+      description: Finance-authorized recording of cash collections or cheques, with allocation and immutable receipt creation.
+      tags:
+        - Billing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, amount, reference, source]
+              properties:
+                tenant_id: {type: integer}
+                amount: {type: string}
+                reference: {type: string}
+                source: {type: string, enum: [cash, cheque]}
+                collected_by: {type: integer}
+                cheque_number: {type: string}
+                cheque_bank: {type: string}
+                notes: {type: string}
+      responses:
+        "201":
+          description: Offline payment recorded
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /payments/{payment_id}/cheque-status:
+    post:
+      operationId: updateChequeStatus
+      summary: Update cheque clearing status
+      tags:
+        - Billing
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [cleared, bounced]}
+      responses:
+        "200":
+          description: Updated cheque payment
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /payments/cash-report:
+    get:
+      operationId: getCashCollectionReport
+      summary: Report cash collections
+      tags:
+        - Billing
+      parameters:
+        - name: from
+          in: query
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          schema: {type: string, format: date}
+      responses:
+        "200":
+          description: Cash collection totals and payments
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /payments/daily-reconciliation:
+    get:
+      operationId: getDailyReconciliation
+      summary: Compare daily payment reconciliation totals
+      description: Returns received, matched, unmatched, reversed, and allocated totals overall and by payment channel for an inclusive date range.
+      tags:
+        - Billing
+      parameters:
+        - name: from
+          in: query
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          schema: {type: string, format: date}
+      responses:
+        "200":
+          description: Daily reconciliation totals by channel
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/deposit:
+    get:
+      operationId: getDepositAccount
+      summary: Get the refundable deposit ledger
+      tags:
+        - Billing
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Deposit balance, target, and immutable entries
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/deposit/entries:
+    post:
+      operationId: createDepositEntry
+      summary: Record a refundable deposit movement
+      description: Records a receipt, top-up, refund, or adjustment and calculates the remaining top-up against the configured target.
+      tags:
+        - Billing
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, reference]
+              properties:
+                entry_type: {type: string, enum: [receipt, top_up, refund, adjustment]}
+                amount: {type: number}
+                target_amount: {type: number}
+                reference: {type: string}
+                description: {type: string}
+      responses:
+        "201":
+          description: Updated deposit ledger
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /tenants:
+    get:
+      operationId: listTenants
+      summary: List accessible tenants
+      description: Returns tenant records in branches available to the authenticated user.
+      tags:
+        - Properties
+      responses:
+        "200":
+          description: Tenant records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenants]
+                properties:
+                  tenants:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tenant"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /tenancies:
+    get:
+      operationId: listTenancies
+      summary: List accessible tenancies
+      description: Returns tenancy records for units in the authenticated user's branch scope.
+      tags:
+        - Tenancies
+      responses:
+        "200":
+          description: Tenancy records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenancies]
+                properties:
+                  tenancies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tenancy"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /tenancies/create:
+    post:
+      operationId: createTenancy
+      summary: Create a tenancy
+      description: Creates a branch-scoped tenancy, validates its terms and occupancy, and releases a matching active reservation.
+      tags:
+        - Tenancies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenancyInput"
+      responses:
+        "201":
+          description: Tenancy created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}:
+    get:
+      operationId: getTenancy
+      summary: Get a tenancy
+      description: Returns a tenancy when its unit is within the authenticated user's branch scope.
+      tags:
+        - Tenancies
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Tenancy details
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenancy]
+                properties:
+                  tenancy:
+                    $ref: "#/components/schemas/Tenancy"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/invoices/create:
+    post:
+      operationId: createTenancyInvoice
+      summary: Issue a tenancy invoice
+      description: Issues an immutable invoice from effective rent and recurring charges, using a sequential number scoped to the tenancy branch. Repeating the same period is idempotent.
+      tags:
+        - Billing
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [period_start, period_end]
+              properties:
+                period_start:
+                  type: string
+                  format: date
+                period_end:
+                  type: string
+                  format: date
+      responses:
+        "201":
+          description: Invoice issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoice]
+                properties:
+                  invoice:
+                    $ref: "#/components/schemas/Invoice"
+        "200":
+          description: Existing invoice returned for the same tenancy period
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/move-in-package:
+    post:
+      operationId: createMoveInPackage
+      summary: Generate a move-in package
+      description: Creates idempotent move-in charges and an inspection checklist from the tenancy terms and effective unit charges.
+      tags:
+        - Tenancies
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Move-in package created
+        "200":
+          description: Existing move-in package returned
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/move-in-agreement.pdf:
+    get:
+      operationId: getMoveInAgreementPdf
+      summary: Download a move-in agreement PDF
+      description: Returns a generated PDF for an existing move-in package.
+      tags:
+        - Tenancies
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Move-in agreement PDF
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/tenant-activation:
+    post:
+      operationId: issueTenantActivation
+      summary: Issue a tenant activation link
+      description: Creates a single-use, expiring activation token for an active tenancy.
+      tags:
+        - Tenancies
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Activation token issued
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenant-activation/complete:
+    post:
+      operationId: activateTenant
+      summary: Complete tenant activation
+      description: Consumes an activation token and sets the tenant portal password.
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 12
+      responses:
+        "200":
+          description: Tenant activated
+        "400":
+          $ref: "#/components/responses/Problem"
+  /tenants/create:
+    post:
+      operationId: createTenant
+      summary: Create a tenant record
+      description: Creates an individual or company tenant within an accessible branch.
+      tags:
+        - Properties
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantInput"
+      responses:
+        "201":
+          description: Tenant created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenants/{tenant_id}:
+    get:
+      operationId: getTenant
+      summary: Get a tenant
+      description: Returns a tenant when it is within the authenticated user's branch scope.
+      tags:
+        - Properties
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Tenant details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant:
+                    $ref: "#/components/schemas/Tenant"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenants/{tenant_id}/documents:
+    post:
+      operationId: createTenantDocument
+      summary: Add tenant KYC document metadata
+      description: Records tenant document metadata and an object-storage key.
+      tags:
+        - Properties
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantDocumentInput"
+      responses:
+        "201":
+          description: Document metadata created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
 components:
   securitySchemes:
     SessionCookieAuth:
@@ -239,6 +1855,632 @@ components:
         default: 0
         minimum: 0
   schemas:
+    PropertyInput:
+      type: object
+      required: [branch_id, name, property_type, location]
+      properties:
+        branch_id:
+          type: integer
+        landlord_id:
+          type: integer
+          nullable: true
+        name:
+          type: string
+        property_type:
+          type: string
+        location:
+          type: string
+        gps_coordinates:
+          type: object
+        amenities:
+          type: array
+          items: {}
+        house_rules:
+          type: object
+        photos:
+          type: array
+          items:
+            type: string
+        caretaker_ids:
+          type: array
+          items:
+            type: integer
+    Property:
+      allOf:
+        - $ref: "#/components/schemas/PropertyInput"
+        - type: object
+          required: [id, branch_id]
+          properties:
+            id:
+              type: integer
+            blocks:
+              type: array
+              items:
+                type: object
+            documents:
+              type: array
+              items:
+                type: object
+    UnitInput:
+      type: object
+      required: [property_id, code, unit_type]
+      properties:
+        property_id:
+          type: integer
+        floor_id:
+          type: integer
+          nullable: true
+        code:
+          type: string
+        unit_type:
+          type: string
+        bedrooms:
+          type: integer
+          minimum: 0
+        characteristics:
+          type: object
+        meters:
+          type: object
+        listing_enabled:
+          type: boolean
+        status:
+          type: string
+          enum: [Draft, Vacant, Occupied, Notice Given, Maintenance, Archived]
+    Unit:
+      allOf:
+        - $ref: "#/components/schemas/UnitInput"
+        - type: object
+          required: [id, status]
+          properties:
+            id:
+              type: integer
+    VacancyBoardUnit:
+      allOf:
+        - $ref: "#/components/schemas/Unit"
+        - type: object
+          required: [branch_id, property_name, location, rent, rent_charge_id]
+          properties:
+            branch_id:
+              type: integer
+            property_name:
+              type: string
+            location:
+              type: string
+            rent:
+              type: string
+              nullable: true
+            rent_charge_id:
+              type: integer
+              nullable: true
+    AuditHistoryEvent:
+      type: object
+      required: [id, action, entity, old_values, new_values, user_id, timestamp]
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+        entity:
+          type: string
+        old_values:
+          type: object
+          nullable: true
+        new_values:
+          type: object
+          nullable: true
+        user_id:
+          type: integer
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+    UnitHistory:
+      type: object
+      required: [unit, tenancies, charges, status_changes, charge_history, maintenance]
+      properties:
+        unit:
+          $ref: "#/components/schemas/Unit"
+        tenancies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tenancy"
+        charges:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitCharge"
+        status_changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditHistoryEvent"
+        charge_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditHistoryEvent"
+        maintenance:
+          type: array
+          items:
+            type: object
+    UnitChargeInput:
+      type: object
+      required: [charge_type, name, amount, effective_from]
+      properties:
+        charge_type:
+          type: string
+          enum: [rent, deposit, recurring]
+        name:
+          type: string
+        amount:
+          type: string
+        effective_from:
+          type: string
+          format: date
+        effective_to:
+          type: string
+          format: date
+          nullable: true
+        metadata:
+          type: object
+        charge_code:
+          type: string
+          default: default
+    UnitCharge:
+      allOf:
+        - $ref: "#/components/schemas/UnitChargeInput"
+        - type: object
+          required: [id, unit_id]
+          properties:
+            id:
+              type: integer
+            unit_id:
+              type: integer
+    UtilityConfigurationInput:
+      type: object
+      required: [utility_type, name, billing_method, effective_from]
+      properties:
+        utility_type:
+          type: string
+          enum: [water, electricity, other]
+        name:
+          type: string
+        billing_method:
+          type: string
+          enum: [fixed, metered]
+        fixed_amount:
+          type: string
+          nullable: true
+        rate_per_unit:
+          type: string
+          nullable: true
+        minimum_charge:
+          type: string
+          default: "0"
+        effective_from:
+          type: string
+          format: date
+        effective_to:
+          type: string
+          format: date
+          nullable: true
+        metadata:
+          type: object
+    UtilityConfiguration:
+      allOf:
+        - $ref: "#/components/schemas/UtilityConfigurationInput"
+        - type: object
+          required: [id, unit_id]
+          properties:
+            id:
+              type: integer
+            unit_id:
+              type: integer
+    MeterReadingInput:
+      type: object
+      required: [meter, period, previous_value, current_value]
+      properties:
+        meter:
+          type: string
+        period:
+          type: string
+          format: date
+        previous_value:
+          type: string
+        current_value:
+          type: string
+        photo_key:
+          type: string
+          nullable: true
+        photo_metadata:
+          type: object
+    MeterReading:
+      allOf:
+        - $ref: "#/components/schemas/MeterReadingInput"
+        - type: object
+          required: [id, unit_id, submitted_by, submitted_at]
+          properties:
+            id:
+              type: integer
+            unit_id:
+              type: integer
+            submitted_by:
+              type: integer
+            submitted_at:
+              type: string
+              format: date-time
+    WaterBillCalculation:
+      type: object
+      required:
+        - unit_id
+        - meter
+        - period
+        - reading_id
+        - utility_id
+        - previous_value
+        - current_value
+        - usage
+        - rate_per_unit
+        - minimum_charge
+        - calculated_charge
+      properties:
+        unit_id:
+          type: integer
+        meter:
+          type: string
+        period:
+          type: string
+          format: date
+        reading_id:
+          type: integer
+        utility_id:
+          type: integer
+        previous_value:
+          type: string
+        current_value:
+          type: string
+        usage:
+          type: string
+        rate_per_unit:
+          type: string
+        minimum_charge:
+          type: string
+        calculated_charge:
+          type: string
+    ArrearsItem:
+      type: object
+      required: [invoice_id, invoice_number, tenancy_id, tenant, due_date, days_overdue, bucket, outstanding, penalty, total_due, reminder_due]
+      properties:
+        invoice_id: {type: integer}
+        invoice_number: {type: string}
+        tenancy_id: {type: integer}
+        tenant: {type: string}
+        due_date: {type: string, format: date}
+        days_overdue: {type: integer}
+        bucket: {type: string}
+        outstanding: {type: string}
+        penalty: {type: string}
+        total_due: {type: string}
+        reminder_due: {type: boolean}
+    ArrearsReport:
+      type: object
+      required: [as_of, arrears, buckets]
+      properties:
+        as_of: {type: string, format: date}
+        arrears:
+          type: array
+          items: {$ref: "#/components/schemas/ArrearsItem"}
+        buckets:
+          type: object
+          additionalProperties: {type: string}
+    ArrearsPaymentPlanInstalment:
+      type: object
+      required: [id, sequence, due_date, amount_due, amount_paid, status]
+      properties:
+        id: {type: integer}
+        sequence: {type: integer}
+        due_date: {type: string, format: date}
+        amount_due: {type: string}
+        amount_paid: {type: string}
+        status: {type: string}
+        paid_at: {type: string, format: date-time, nullable: true}
+        missed_at: {type: string, format: date-time, nullable: true}
+    ArrearsPaymentPlan:
+      type: object
+      required: [id, tenancy_id, total_amount, instalment_amount, start_date, status, reason, balance, instalments]
+      properties:
+        id: {type: integer}
+        tenancy_id: {type: integer}
+        total_amount: {type: string}
+        instalment_amount: {type: string}
+        start_date: {type: string, format: date}
+        status: {type: string}
+        reason: {type: string}
+        balance: {type: string}
+        instalments:
+          type: array
+          items: {$ref: "#/components/schemas/ArrearsPaymentPlanInstalment"}
+    MpesaCallbackResult:
+      type: object
+      required: [callback]
+      properties:
+        callback:
+          type: object
+          required: [id, transaction_code, status]
+          properties:
+            id: {type: integer}
+            transaction_code: {type: string, nullable: true}
+            status: {type: string}
+    Payment:
+      type: object
+      required: [id, tenant_id, amount, reference, source, account_reference, payer_phone, received_at, status, allocated_amount, credit_amount, allocations]
+      properties:
+        id: {type: integer}
+        tenant_id: {type: integer}
+        amount: {type: string}
+        reference: {type: string}
+        source: {type: string}
+        account_reference: {type: string}
+        payer_phone: {type: string}
+        received_at: {type: string, format: date-time}
+        status: {type: string}
+        allocated_amount: {type: string}
+        credit_amount: {type: string}
+        allocations:
+          type: array
+          items:
+            type: object
+            required: [invoice_id, amount]
+            properties:
+              invoice_id: {type: integer}
+              amount: {type: string}
+        receipt:
+          allOf:
+            - $ref: "#/components/schemas/Receipt"
+          nullable: true
+    Receipt:
+      type: object
+      required: [id, number, payment_id, tenant_id, amount, balance_after, issued_at]
+      properties:
+        id: {type: integer}
+        number: {type: string}
+        payment_id: {type: integer}
+        tenant_id: {type: integer}
+        amount: {type: string}
+        balance_after: {type: string}
+        issued_at: {type: string, format: date-time}
+    BankStatementImport:
+      type: object
+      required: [id, filename, total_rows, valid_rows, invalid_rows]
+      properties:
+        id: {type: integer}
+        filename: {type: string}
+        total_rows: {type: integer}
+        valid_rows: {type: integer}
+        invalid_rows: {type: integer}
+    UnitReservationInput:
+      type: object
+      required: [applicant_id, expires_at]
+      properties:
+        applicant_id:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+    UnitReservation:
+      allOf:
+        - $ref: "#/components/schemas/UnitReservationInput"
+        - type: object
+          required: [id, unit_id, status, reserved_at, released_at]
+          properties:
+            id:
+              type: integer
+            unit_id:
+              type: integer
+            status:
+              type: string
+              enum: [active, released, expired]
+            reserved_at:
+              type: string
+              format: date-time
+            released_at:
+              type: string
+              format: date-time
+              nullable: true
+    TenantInput:
+      type: object
+      required: [branch_id, tenant_type, name, phone]
+      properties:
+        branch_id:
+          type: integer
+        tenant_type:
+          type: string
+          enum: [individual, company]
+        name:
+          type: string
+        company_registration_number:
+          type: string
+        contact_person:
+          type: string
+        national_id_or_passport:
+          type: string
+        kra_pin:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          format: email
+        is_blacklisted:
+          type: boolean
+        blacklist_reason:
+          type: string
+    Tenant:
+      allOf:
+        - $ref: "#/components/schemas/TenantInput"
+        - type: object
+          required: [id, documents]
+          properties:
+            id:
+              type: integer
+            documents:
+              type: array
+              items:
+                type: object
+    TenantDocumentInput:
+      type: object
+      required: [document_type, name, storage_key]
+      properties:
+        document_type:
+          type: string
+        name:
+          type: string
+        storage_key:
+          type: string
+        metadata:
+          type: object
+    TenancyInput:
+      type: object
+      required: [unit_id, tenant_id, tenancy_type, start_date, due_day]
+      properties:
+        unit_id:
+          type: integer
+        tenant_id:
+          type: integer
+        tenancy_type:
+          type: string
+          enum: [fixed_term, month_to_month]
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+          nullable: true
+        due_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+        grace_period_days:
+          type: integer
+          minimum: 0
+        notice_period_days:
+          type: integer
+          minimum: 0
+        rent_escalation_terms:
+          type: object
+    Tenancy:
+      allOf:
+        - $ref: "#/components/schemas/TenancyInput"
+        - type: object
+          required: [id, status]
+          properties:
+            id:
+              type: integer
+            status:
+              type: string
+              enum: [active, ended, cancelled]
+    InvoiceLine:
+      type: object
+      required: [id, invoice_id, charge_type, description, amount, metadata]
+      properties:
+        id:
+          type: integer
+        invoice_id:
+          type: integer
+        charge_type:
+          type: string
+        description:
+          type: string
+        amount:
+          type: string
+        metadata:
+          type: object
+    Invoice:
+      type: object
+      required: [id, branch_id, tenancy_id, number, period_start, period_end, due_date, status, total, issued_at, lines]
+      properties:
+        id:
+          type: integer
+        branch_id:
+          type: integer
+        tenancy_id:
+          type: integer
+        number:
+          type: string
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [issued, void]
+        total:
+          type: string
+        issued_at:
+          type: string
+          format: date-time
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceLine"
+    MoveInCharge:
+      type: object
+      required: [id, charge_type, description, amount, calculation]
+      properties:
+        id:
+          type: integer
+        charge_type:
+          type: string
+          enum: [rent, deposit, recurring, fee]
+        description:
+          type: string
+        amount:
+          type: string
+        calculation:
+          type: object
+    MoveInChecklistItem:
+      type: object
+      required: [id, title, status, notes, completed_at]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, waived]
+        notes:
+          type: string
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+    MoveInPackage:
+      type: object
+      required: [id, tenancy_id, agreement_reference, generated_at, charges, total, checklist]
+      properties:
+        id:
+          type: integer
+        tenancy_id:
+          type: integer
+        agreement_reference:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+        charges:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoveInCharge"
+        total:
+          type: string
+        checklist:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoveInChecklistItem"
     Branch:
       type: object
       additionalProperties: false
@@ -253,6 +2495,153 @@ components:
           type: string
         town:
           type: string
+    ManagementAgreement:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - effective_from
+        - effective_to
+        - commission_model
+        - commission_rate
+        - fixed_fee
+        - payout_day
+        - mri_enabled
+        - terms
+      properties:
+        id:
+          type: integer
+        effective_from:
+          type: string
+          format: date
+        effective_to:
+          type:
+            - string
+            - "null"
+          format: date
+        commission_model:
+          type: string
+        commission_rate:
+          type:
+            - string
+            - "null"
+        fixed_fee:
+          type:
+            - string
+            - "null"
+        payout_day:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          maximum: 31
+        mri_enabled:
+          type: boolean
+        terms:
+          type: object
+          additionalProperties: true
+    ManagementAgreementInput:
+      type: object
+      additionalProperties: false
+      required:
+        - effective_from
+        - commission_model
+      properties:
+        effective_from:
+          type: string
+          format: date
+        effective_to:
+          type: string
+          format: date
+        commission_model:
+          type: string
+        commission_rate:
+          type:
+            - string
+            - number
+            - "null"
+        fixed_fee:
+          type:
+            - string
+            - number
+            - "null"
+        payout_day:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          maximum: 31
+        mri_enabled:
+          type: boolean
+          default: false
+        terms:
+          type: object
+          additionalProperties: true
+    Landlord:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - branch_id
+        - name
+        - id_or_registration_number
+        - kra_pin
+        - phone
+        - email
+        - payout_details
+        - management_agreements
+      properties:
+        id:
+          type: integer
+        branch_id:
+          type: integer
+        name:
+          type: string
+        id_or_registration_number:
+          type: string
+        kra_pin:
+          type:
+            - string
+            - "null"
+        phone:
+          type: string
+        email:
+          type:
+            - string
+            - "null"
+          format: email
+        payout_details:
+          type: object
+          additionalProperties: true
+        management_agreements:
+          type: array
+          items:
+            $ref: "#/components/schemas/ManagementAgreement"
+    LandlordInput:
+      type: object
+      additionalProperties: false
+      required:
+        - branch_id
+        - name
+        - id_or_registration_number
+        - phone
+      properties:
+        branch_id:
+          type: integer
+        name:
+          type: string
+        id_or_registration_number:
+          type: string
+        kra_pin:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          format: email
+        payout_details:
+          type: object
+          additionalProperties: true
     AuthUser:
       type: object
       additionalProperties: false

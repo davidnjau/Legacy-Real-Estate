@@ -1,0 +1,30 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/website/package.json apps/website/package.json
+COPY packages/api-client/package.json packages/api-client/package.json
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+
+ARG NEXT_PUBLIC_API_BASE_URL
+ARG NEXT_PUBLIC_API_MODE=local
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG SUPABASE_SERVICE_ROLE_KEY=build-time-placeholder
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
+    NEXT_PUBLIC_API_MODE=$NEXT_PUBLIC_API_MODE \
+    NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+    SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY \
+    NEXT_TELEMETRY_DISABLED=1
+
+RUN pnpm --filter @legacy/website build
+
+EXPOSE 3000
+
+CMD ["pnpm", "--filter", "@legacy/website", "exec", "next", "start", "--hostname", "0.0.0.0"]

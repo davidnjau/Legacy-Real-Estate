@@ -123,10 +123,21 @@ are recorded in the [domain model and data dictionary](docs/data-dictionary.md).
 
 ## Git workflow
 
-Create short-lived `feature/<name>` branches from `develop`, open pull
-requests targeting `develop`, and merge only after required checks and
-review pass. Keep `main` protected for approved releases. Never commit
-credentials, production records, or local environment files.
+For the current staging-led delivery flow, work may be committed locally and
+pushed directly to the `staging` branch:
+
+```bash
+git add .
+git commit -m "feat: complete wave 2 platform foundation"
+git push origin staging
+```
+
+The push triggers the staging deployment workflow. Validate the deployed
+health endpoint and presentation site before promoting the validated staging
+commit to `main`. Feature branches remain optional for isolated experiments,
+parallel work, or changes that should not enter staging yet. Keep `main`
+protected for approved releases. Never commit credentials, production
+records, or local environment files.
 
 ## Prototype dashboards
 

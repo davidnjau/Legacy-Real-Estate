@@ -92,3 +92,10 @@ Finance-role SMS verification applies to Super Admin (Director), Branch
 Manager, and Accountant, as selected for W0-05. Django superusers also
 require SMS verification because their privileges exceed those role groups.
 SMS-provider integration remains deferred to W0-09.
+
+## Branch API access
+
+`GET /api/v1/branches` and `GET /api/v1/branches/{branch_id}` derive access
+from the signed-in user's server-side branch assignments. Requests without a
+session return `401`; an unavailable or out-of-scope branch returns `404`.
+Super Admin (Director) can access all seeded branches.

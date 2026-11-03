@@ -11,6 +11,7 @@ ROLE_NAMES = (
     "Land Buyer (portal)",
 )
 FINANCE_ROLE_NAMES = ROLE_NAMES[:3]
+LANDLORD_MANAGEMENT_ROLE_NAMES = ROLE_NAMES[:4]
 
 
 def requires_finance_mfa(user):

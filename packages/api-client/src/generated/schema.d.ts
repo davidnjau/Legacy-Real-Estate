@@ -124,14 +124,1242 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible branches
+         * @description Returns only branches assigned to the authenticated user.
+         */
+        get: operations["listAccessibleBranches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/branches/{branch_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an accessible branch
+         * @description Returns a branch only when it is in the caller's access scope.
+         */
+        get: operations["getAccessibleBranch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlords": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible landlords
+         * @description Returns landlord records in the authenticated user's branch scope.
+         */
+        get: operations["listLandlords"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlords/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a landlord record
+         * @description Creates a landlord within a branch available to the authenticated user.
+         */
+        post: operations["createLandlord"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlords/{landlord_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an accessible landlord
+         * @description Returns a landlord only when it belongs to the authenticated user's branch scope.
+         */
+        get: operations["getLandlord"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlords/{landlord_id}/agreements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a management agreement
+         * @description Adds dated management terms to an accessible landlord record.
+         */
+        post: operations["createManagementAgreement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/properties": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible properties
+         * @description Returns branch-scoped properties visible to the authenticated user.
+         */
+        get: operations["listProperties"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/properties/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a property
+         * @description Creates a property within a branch accessible to the authenticated user.
+         */
+        post: operations["createProperty"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/properties/{property_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a property
+         * @description Returns one property when it is within the authenticated user's branch scope.
+         */
+        get: operations["getProperty"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/properties/{property_id}/blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a block to a property
+         * @description Adds a uniquely named block to an accessible property.
+         */
+        post: operations["createBlock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible units
+         * @description Returns units belonging to properties in the authenticated user's branch scope.
+         */
+        get: operations["listUnits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vacancy-board": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the vacancy board
+         * @description Returns accessible units with current rent and optional branch, area, unit type, status, listing, and rent filters.
+         */
+        get: operations["getVacancyBoard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a unit
+         * @description Creates a unit and validates its property, floor, status, and listing state.
+         */
+        post: operations["createUnit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a unit
+         * @description Returns one unit when it is within the authenticated user's branch scope.
+         */
+        get: operations["getUnit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get unit and tenancy history
+         * @description Returns preserved tenancies, effective-dated charges, unit status changes, charge audit events, and the currently available maintenance history.
+         */
+        get: operations["getUnitHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/unit-reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible unit reservations
+         * @description Returns reservations for units in the authenticated user's branch scope and reconciles elapsed reservations.
+         */
+        get: operations["listUnitReservations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/reservations/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reserve a unit
+         * @description Reserves a vacant unit for an accessible tenant until the requested expiry time.
+         */
+        post: operations["createUnitReservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/unit-reservations/{reservation_id}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release a unit reservation
+         * @description Releases an active reservation and restores the unit's prior listing state.
+         */
+        post: operations["releaseUnitReservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transition a unit status
+         * @description Applies one of the supported unit lifecycle transitions and records an audit event.
+         */
+        post: operations["transitionUnitStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/charges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List effective-dated unit charges
+         * @description Returns all rent, deposit, and recurring charge records for an accessible unit.
+         */
+        get: operations["listUnitCharges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/charges/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add an effective-dated unit charge
+         * @description Adds a future or current charge without overwriting prior charge history.
+         */
+        post: operations["createUnitCharge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/utilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List utility configurations
+         * @description Returns fixed and metered utility configurations for an accessible unit.
+         */
+        get: operations["listUnitUtilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/utilities/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure a utility
+         * @description Creates an effective-dated fixed or metered utility configuration.
+         */
+        post: operations["createUnitUtility"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/meter-readings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List meter readings
+         * @description Returns meter readings and optional image evidence for an accessible unit.
+         */
+        get: operations["listMeterReadings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/meter-readings/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a meter reading
+         * @description Records a monotonic meter reading with optional validated image evidence.
+         */
+        post: operations["createMeterReading"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/{unit_id}/water-bill/calculate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calculate a water bill
+         * @description Calculates water usage at the effective metered rate, applying the configured minimum charge.
+         */
+        post: operations["calculateWaterBill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/arrears": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List arrears ageing */
+        get: operations["listArrears"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/waiver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve an arrears waiver */
+        post: operations["createArrearsWaiver"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/demand-letter": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue a demand letter */
+        post: operations["createDemandLetter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/payment-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List arrears payment plans */
+        get: operations["listPaymentPlans"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/{tenancy_id}/payment-plans/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create an arrears payment plan */
+        post: operations["createPaymentPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/payment-plan-instalments/{instalment_id}/pay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record an instalment payment */
+        post: operations["payPaymentPlanInstalment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/payments/mpesa/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive an M-Pesa C2B callback
+         * @description Persists and idempotently processes an M-Pesa callback by transaction code.
+         */
+        post: operations["receiveMpesaCallback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible tenants
+         * @description Returns tenant records in branches available to the authenticated user.
+         */
+        get: operations["listTenants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible tenancies
+         * @description Returns tenancy records for units in the authenticated user's branch scope.
+         */
+        get: operations["listTenancies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a tenancy
+         * @description Creates a branch-scoped tenancy, validates its terms and occupancy, and releases a matching active reservation.
+         */
+        post: operations["createTenancy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/{tenancy_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a tenancy
+         * @description Returns a tenancy when its unit is within the authenticated user's branch scope.
+         */
+        get: operations["getTenancy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/{tenancy_id}/invoices/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a tenancy invoice
+         * @description Issues an immutable invoice from effective rent and recurring charges, using a sequential number scoped to the tenancy branch. Repeating the same period is idempotent.
+         */
+        post: operations["createTenancyInvoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/{tenancy_id}/move-in-package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate a move-in package
+         * @description Creates idempotent move-in charges and an inspection checklist from the tenancy terms and effective unit charges.
+         */
+        post: operations["createMoveInPackage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/{tenancy_id}/move-in-agreement.pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a move-in agreement PDF
+         * @description Returns a generated PDF for an existing move-in package.
+         */
+        get: operations["getMoveInAgreementPdf"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenancies/{tenancy_id}/tenant-activation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a tenant activation link
+         * @description Creates a single-use, expiring activation token for an active tenancy.
+         */
+        post: operations["issueTenantActivation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant-activation/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete tenant activation
+         * @description Consumes an activation token and sets the tenant portal password.
+         */
+        post: operations["activateTenant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenants/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a tenant record
+         * @description Creates an individual or company tenant within an accessible branch.
+         */
+        post: operations["createTenant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenants/{tenant_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a tenant
+         * @description Returns a tenant when it is within the authenticated user's branch scope.
+         */
+        get: operations["getTenant"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenants/{tenant_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add tenant KYC document metadata
+         * @description Records tenant document metadata and an object-storage key.
+         */
+        post: operations["createTenantDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PropertyInput: {
+            branch_id: number;
+            landlord_id?: number | null;
+            name: string;
+            property_type: string;
+            location: string;
+            gps_coordinates?: Record<string, never>;
+            amenities?: unknown[];
+            house_rules?: Record<string, never>;
+            photos?: string[];
+            caretaker_ids?: number[];
+        };
+        Property: components["schemas"]["PropertyInput"] & {
+            id: number;
+            blocks?: Record<string, never>[];
+            documents?: Record<string, never>[];
+        };
+        UnitInput: {
+            property_id: number;
+            floor_id?: number | null;
+            code: string;
+            unit_type: string;
+            bedrooms?: number;
+            characteristics?: Record<string, never>;
+            meters?: Record<string, never>;
+            listing_enabled?: boolean;
+            /** @enum {string} */
+            status?: "Draft" | "Vacant" | "Occupied" | "Notice Given" | "Maintenance" | "Archived";
+        };
+        Unit: components["schemas"]["UnitInput"] & {
+            id: number;
+        };
+        VacancyBoardUnit: components["schemas"]["Unit"] & {
+            branch_id: number;
+            property_name: string;
+            location: string;
+            rent: string | null;
+            rent_charge_id: number | null;
+        };
+        AuditHistoryEvent: {
+            id: number;
+            action: string;
+            entity: string;
+            old_values: Record<string, never> | null;
+            new_values: Record<string, never> | null;
+            user_id: number | null;
+            /** Format: date-time */
+            timestamp: string;
+        };
+        UnitHistory: {
+            unit: components["schemas"]["Unit"];
+            tenancies: components["schemas"]["Tenancy"][];
+            charges: components["schemas"]["UnitCharge"][];
+            status_changes: components["schemas"]["AuditHistoryEvent"][];
+            charge_history: components["schemas"]["AuditHistoryEvent"][];
+            maintenance: Record<string, never>[];
+        };
+        UnitChargeInput: {
+            /** @enum {string} */
+            charge_type: "rent" | "deposit" | "recurring";
+            name: string;
+            amount: string;
+            /** Format: date */
+            effective_from: string;
+            /** Format: date */
+            effective_to?: string | null;
+            metadata?: Record<string, never>;
+            /** @default default */
+            charge_code: string;
+        };
+        UnitCharge: components["schemas"]["UnitChargeInput"] & {
+            id: number;
+            unit_id: number;
+        };
+        UtilityConfigurationInput: {
+            /** @enum {string} */
+            utility_type: "water" | "electricity" | "other";
+            name: string;
+            /** @enum {string} */
+            billing_method: "fixed" | "metered";
+            fixed_amount?: string | null;
+            rate_per_unit?: string | null;
+            /** @default 0 */
+            minimum_charge: string;
+            /** Format: date */
+            effective_from: string;
+            /** Format: date */
+            effective_to?: string | null;
+            metadata?: Record<string, never>;
+        };
+        UtilityConfiguration: components["schemas"]["UtilityConfigurationInput"] & {
+            id: number;
+            unit_id: number;
+        };
+        MeterReadingInput: {
+            meter: string;
+            /** Format: date */
+            period: string;
+            previous_value: string;
+            current_value: string;
+            photo_key?: string | null;
+            photo_metadata?: Record<string, never>;
+        };
+        MeterReading: components["schemas"]["MeterReadingInput"] & {
+            id: number;
+            unit_id: number;
+            submitted_by: number;
+            /** Format: date-time */
+            submitted_at: string;
+        };
+        WaterBillCalculation: {
+            unit_id: number;
+            meter: string;
+            /** Format: date */
+            period: string;
+            reading_id: number;
+            utility_id: number;
+            previous_value: string;
+            current_value: string;
+            usage: string;
+            rate_per_unit: string;
+            minimum_charge: string;
+            calculated_charge: string;
+        };
+        ArrearsItem: {
+            invoice_id: number;
+            invoice_number: string;
+            tenancy_id: number;
+            tenant: string;
+            /** Format: date */
+            due_date: string;
+            days_overdue: number;
+            bucket: string;
+            outstanding: string;
+            penalty: string;
+            total_due: string;
+            reminder_due: boolean;
+        };
+        ArrearsReport: {
+            /** Format: date */
+            as_of: string;
+            arrears: components["schemas"]["ArrearsItem"][];
+            buckets: {
+                [key: string]: string;
+            };
+        };
+        ArrearsPaymentPlanInstalment: {
+            id: number;
+            sequence: number;
+            /** Format: date */
+            due_date: string;
+            amount_due: string;
+            amount_paid: string;
+            status: string;
+            /** Format: date-time */
+            paid_at?: string | null;
+            /** Format: date-time */
+            missed_at?: string | null;
+        };
+        ArrearsPaymentPlan: {
+            id: number;
+            tenancy_id: number;
+            total_amount: string;
+            instalment_amount: string;
+            /** Format: date */
+            start_date: string;
+            status: string;
+            reason: string;
+            balance: string;
+            instalments: components["schemas"]["ArrearsPaymentPlanInstalment"][];
+        };
+        MpesaCallbackResult: {
+            callback: {
+                id: number;
+                transaction_code: string | null;
+                status: string;
+            };
+        };
+        UnitReservationInput: {
+            applicant_id: number;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        UnitReservation: components["schemas"]["UnitReservationInput"] & {
+            id: number;
+            unit_id: number;
+            /** @enum {string} */
+            status: "active" | "released" | "expired";
+            /** Format: date-time */
+            reserved_at: string;
+            /** Format: date-time */
+            released_at: string | null;
+        };
+        TenantInput: {
+            branch_id: number;
+            /** @enum {string} */
+            tenant_type: "individual" | "company";
+            name: string;
+            company_registration_number?: string;
+            contact_person?: string;
+            national_id_or_passport?: string;
+            kra_pin?: string;
+            phone: string;
+            /** Format: email */
+            email?: string;
+            is_blacklisted?: boolean;
+            blacklist_reason?: string;
+        };
+        Tenant: components["schemas"]["TenantInput"] & {
+            id: number;
+            documents: Record<string, never>[];
+        };
+        TenantDocumentInput: {
+            document_type: string;
+            name: string;
+            storage_key: string;
+            metadata?: Record<string, never>;
+        };
+        TenancyInput: {
+            unit_id: number;
+            tenant_id: number;
+            /** @enum {string} */
+            tenancy_type: "fixed_term" | "month_to_month";
+            /** Format: date */
+            start_date: string;
+            /** Format: date */
+            end_date?: string | null;
+            due_day: number;
+            grace_period_days?: number;
+            notice_period_days?: number;
+            rent_escalation_terms?: Record<string, never>;
+        };
+        Tenancy: components["schemas"]["TenancyInput"] & {
+            id: number;
+            /** @enum {string} */
+            status: "active" | "ended" | "cancelled";
+        };
+        InvoiceLine: {
+            id: number;
+            invoice_id: number;
+            charge_type: string;
+            description: string;
+            amount: string;
+            metadata: Record<string, never>;
+        };
+        Invoice: {
+            id: number;
+            branch_id: number;
+            tenancy_id: number;
+            number: string;
+            /** Format: date */
+            period_start: string;
+            /** Format: date */
+            period_end: string;
+            /** Format: date */
+            due_date: string;
+            /** @enum {string} */
+            status: "issued" | "void";
+            total: string;
+            /** Format: date-time */
+            issued_at: string;
+            lines: components["schemas"]["InvoiceLine"][];
+        };
+        MoveInCharge: {
+            id: number;
+            /** @enum {string} */
+            charge_type: "rent" | "deposit" | "recurring" | "fee";
+            description: string;
+            amount: string;
+            calculation: Record<string, never>;
+        };
+        MoveInChecklistItem: {
+            id: number;
+            title: string;
+            /** @enum {string} */
+            status: "pending" | "completed" | "waived";
+            notes: string;
+            /** Format: date-time */
+            completed_at: string | null;
+        };
+        MoveInPackage: {
+            id: number;
+            tenancy_id: number;
+            agreement_reference: string;
+            /** Format: date-time */
+            generated_at: string;
+            charges: components["schemas"]["MoveInCharge"][];
+            total: string;
+            checklist: components["schemas"]["MoveInChecklistItem"][];
+        };
         Branch: {
             id: number;
             name: string;
             town: string;
+        };
+        ManagementAgreement: {
+            id: number;
+            /** Format: date */
+            effective_from: string;
+            /** Format: date */
+            effective_to: string | null;
+            commission_model: string;
+            commission_rate: string | null;
+            fixed_fee: string | null;
+            payout_day: number | null;
+            mri_enabled: boolean;
+            terms: {
+                [key: string]: unknown;
+            };
+        };
+        ManagementAgreementInput: {
+            /** Format: date */
+            effective_from: string;
+            /** Format: date */
+            effective_to?: string;
+            commission_model: string;
+            commission_rate?: string | number | null;
+            fixed_fee?: string | number | null;
+            payout_day?: number | null;
+            /** @default false */
+            mri_enabled: boolean;
+            terms?: {
+                [key: string]: unknown;
+            };
+        };
+        Landlord: {
+            id: number;
+            branch_id: number;
+            name: string;
+            id_or_registration_number: string;
+            kra_pin: string | null;
+            phone: string;
+            /** Format: email */
+            email: string | null;
+            payout_details: {
+                [key: string]: unknown;
+            };
+            management_agreements: components["schemas"]["ManagementAgreement"][];
+        };
+        LandlordInput: {
+            branch_id: number;
+            name: string;
+            id_or_registration_number: string;
+            kra_pin?: string;
+            phone: string;
+            /** Format: email */
+            email?: string;
+            payout_details?: {
+                [key: string]: unknown;
+            };
         };
         AuthUser: {
             id: number;
@@ -391,6 +1619,1191 @@ export interface operations {
                 };
             };
             401: components["responses"]["Problem"];
+        };
+    };
+    listAccessibleBranches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accessible branches */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        branches: components["schemas"]["Branch"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    getAccessibleBranch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                branch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accessible branch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        branch: components["schemas"]["Branch"];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listLandlords: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accessible landlord records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        landlords: components["schemas"]["Landlord"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createLandlord: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LandlordInput"];
+            };
+        };
+        responses: {
+            /** @description Landlord created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        landlord: components["schemas"]["Landlord"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getLandlord: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                landlord_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accessible landlord */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        landlord: components["schemas"]["Landlord"];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    createManagementAgreement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                landlord_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagementAgreementInput"];
+            };
+        };
+        responses: {
+            /** @description Management agreement created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        agreement: components["schemas"]["ManagementAgreement"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listProperties: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Properties visible to the authenticated user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        properties: components["schemas"]["Property"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createProperty: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PropertyInput"];
+            };
+        };
+        responses: {
+            /** @description Property created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        property?: components["schemas"]["Property"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getProperty: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Property details */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        property?: components["schemas"]["Property"];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    createBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Block created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listUnits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Units visible to the authenticated user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        units: components["schemas"]["Unit"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getVacancyBoard: {
+        parameters: {
+            query?: {
+                branch_id?: number;
+                area?: string;
+                unit_type?: string;
+                status?: string;
+                listing_enabled?: boolean;
+                rent_min?: number;
+                rent_max?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Vacancy board */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        vacancies: components["schemas"]["VacancyBoardUnit"][];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    createUnit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnitInput"];
+            };
+        };
+        responses: {
+            /** @description Unit created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    getUnit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unit details */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        unit?: components["schemas"]["Unit"];
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    getUnitHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unit history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnitHistory"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listUnitReservations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unit reservations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        reservations: components["schemas"]["UnitReservation"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createUnitReservation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnitReservationInput"];
+            };
+        };
+        responses: {
+            /** @description Reservation created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    releaseUnitReservation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reservation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reservation released or already expired */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    transitionUnitStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    status: "Draft" | "Vacant" | "Occupied" | "Notice Given" | "Maintenance" | "Archived";
+                };
+            };
+        };
+        responses: {
+            /** @description Unit status changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listUnitCharges: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Charge history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        charges: components["schemas"]["UnitCharge"][];
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    createUnitCharge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnitChargeInput"];
+            };
+        };
+        responses: {
+            /** @description Charge created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listUnitUtilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Utility configurations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        utilities: components["schemas"]["UtilityConfiguration"][];
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    createUnitUtility: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UtilityConfigurationInput"];
+            };
+        };
+        responses: {
+            /** @description Utility configuration created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listMeterReadings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Meter readings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        readings: components["schemas"]["MeterReading"][];
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    createMeterReading: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeterReadingInput"];
+            };
+        };
+        responses: {
+            /** @description Meter reading recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    calculateWaterBill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                unit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    meter: string;
+                    /** Format: date */
+                    period: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Calculated water bill */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        water_bill: components["schemas"]["WaterBillCalculation"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listArrears: {
+        parameters: {
+            query?: {
+                as_of?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Arrears report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArrearsReport"];
+                };
+            };
+        };
+    };
+    createArrearsWaiver: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    amount: string;
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Waiver approved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createDemandLetter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Demand letter issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Problem"];
+        };
+    };
+    listPaymentPlans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payment plans */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        payment_plans: components["schemas"]["ArrearsPaymentPlan"][];
+                    };
+                };
+            };
+        };
+    };
+    createPaymentPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    total_amount: string;
+                    instalment_amount: string;
+                    /** Format: date */
+                    start_date: string;
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Payment plan created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    payPaymentPlanInstalment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                instalment_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    amount: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated payment plan */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    receiveMpesaCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Callback accepted and processed */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MpesaCallbackResult"];
+                };
+            };
+            400: components["responses"]["Problem"];
+        };
+    };
+    listTenants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tenants: components["schemas"]["Tenant"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    listTenancies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenancy records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tenancies: components["schemas"]["Tenancy"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createTenancy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenancyInput"];
+            };
+        };
+        responses: {
+            /** @description Tenancy created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    getTenancy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenancy details */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tenancy: components["schemas"]["Tenancy"];
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    createTenancyInvoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: date */
+                    period_start: string;
+                    /** Format: date */
+                    period_end: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Existing invoice returned for the same tenancy period */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invoice issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invoice: components["schemas"]["Invoice"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    createMoveInPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing move-in package returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Move-in package created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    getMoveInAgreementPdf: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Move-in agreement PDF */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    issueTenantActivation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Activation token issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    activateTenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Tenant activated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+        };
+    };
+    createTenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantInput"];
+            };
+        };
+        responses: {
+            /** @description Tenant created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    getTenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant details */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tenant?: components["schemas"]["Tenant"];
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    createTenantDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantDocumentInput"];
+            };
+        };
+        responses: {
+            /** @description Document metadata created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
         };
     };
 }

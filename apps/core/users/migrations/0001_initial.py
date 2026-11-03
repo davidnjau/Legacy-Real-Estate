@@ -6,7 +6,6 @@ import django.db.models.functions.text
 from django.conf import settings
 from django.db import migrations, models
 
-
 ROLE_NAMES = (
     'Super Admin (Director)',
     'Branch Manager',

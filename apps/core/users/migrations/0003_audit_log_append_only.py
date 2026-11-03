@@ -1,6 +1,5 @@
 from django.db import migrations
 
-
 FORWARD_SQL = """
 CREATE FUNCTION users_auditlog_immutable() RETURNS trigger AS $$
 BEGIN

@@ -7,7 +7,7 @@
 | Event | Label |
 | --- | --- |
 | Issue opened | `status: todo` |
-| Commit referencing the issue pushed to a feature branch | `status: in-progress` |
+| Commit referencing the issue pushed to a feature or staging branch | `status: in-progress` |
 | PR merged into `develop` | `status: in-review` |
 | PR merged into `main` (release) | `status: done` + issue closed |
 
@@ -61,7 +61,9 @@ To fix commit messages: `git rebase -i develop`, mark commits `reword`, then
 ## Flow
 
 ```
-feature/W2-01-x ──commit──▶ in-progress
-     │ PR → develop (merged) ▶ in-review
-develop ─ PR → main (merged) ▶ done (closed)
+staging ──commit──▶ in-progress
+     │ validated release → main ▶ done (closed)
+
+Feature branches may still be used when work should remain isolated before
+being promoted to staging.
 ```

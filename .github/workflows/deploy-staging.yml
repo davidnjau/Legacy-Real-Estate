@@ -1,0 +1,63 @@
+name: Deploy staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: staging-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Create deployment archive
+        run: git archive --format=tar.gz --output=legacy-real-estate.tar.gz HEAD
+
+      - name: Configure SSH
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$HOME/.ssh/staging"
+          chmod 600 "$HOME/.ssh/staging"
+          ssh-keyscan -H "$STAGING_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Upload source archive
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          scp -i "$HOME/.ssh/staging" legacy-real-estate.tar.gz \
+            "$STAGING_USER@$STAGING_HOST:/tmp/legacy-real-estate.tar.gz"
+
+      - name: Deploy and verify
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/staging" "$STAGING_USER@$STAGING_HOST" \
+            'bash -s' <<'REMOTE'
+          set -euo pipefail
+          install -d -o deploy -g deploy /srv/legacy-real-estate
+          rm -rf /srv/legacy-real-estate/release
+          install -d -o deploy -g deploy /srv/legacy-real-estate/release
+          tar -xzf /tmp/legacy-real-estate.tar.gz \
+            -C /srv/legacy-real-estate/release
+          test -f /srv/legacy-real-estate/.env
+          cd /srv/legacy-real-estate/release
+          docker compose --env-file /srv/legacy-real-estate/.env \
+            -f tools/staging/docker-compose.yml config >/dev/null
+          docker compose --env-file /srv/legacy-real-estate/.env \
+            -f tools/staging/docker-compose.yml up -d --build --remove-orphans
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 5 \
+            https://staging.legacyhomes.live/api/v1/health
+          REMOTE
