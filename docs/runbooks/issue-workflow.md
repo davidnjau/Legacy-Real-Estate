@@ -32,6 +32,9 @@ chore/bump-turbo
 | `feature`, `fix`, `hotfix`, `refactor`, `test` | yes |
 | `chore`, `ci`, `docs`, `release` | no |
 
+The deployment branches `staging`, `develop`, and `main` are exempt from
+feature-branch naming validation.
+
 Lowercase, hyphens only. `main`, `develop` and `dependabot/*` are exempt.
 
 ## Commit messages

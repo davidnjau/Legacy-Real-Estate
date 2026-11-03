@@ -1,6 +1,8 @@
 // Fails the "conventions" check when a branch name, PR title or commit
 // message doesn't follow the standard in conventions.js.
 // Required on develop and main, so non-conforming PRs can't be merged.
+// The staging branch is the direct deployment branch and is exempt from
+// feature-branch naming rules.
 
 const { checkBranch, checkCommit } = require('./conventions.js');
 

@@ -15,7 +15,7 @@ const BRANCH_TYPES = {
 };
 
 // Branches that are never checked.
-const EXEMPT_BRANCHES = [/^main$/, /^develop$/, /^dependabot\//, /^renovate\//];
+const EXEMPT_BRANCHES = [/^main$/, /^develop$/, /^staging$/, /^dependabot\//, /^renovate\//];
 
 // Issue reference inside a branch: W2-01, 25, GH-25, issue-25
 const ISSUE_IN_BRANCH = '(?:W\\d+-\\d{2}|(?:issue-|gh-)?\\d+)';
