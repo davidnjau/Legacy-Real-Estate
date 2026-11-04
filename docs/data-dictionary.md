@@ -28,8 +28,13 @@ than filled with an assumed rule.
 | PaymentAllocation | Named as the allocation relationship; no key fields specified. | Links Payments to Invoices. |
 | MpesaTransaction | raw callback payload, unique trans ID | Becomes a Payment once matched. |
 | MeterReading | unit, type, previous, current, photo, date | Creates InvoiceLines. |
-| MaintenanceTicket | category, priority, status, cost, vendor | Belongs to Unit or Property. |
-| Vendor | name, trade, phone, M-Pesa | Has many Tickets, Expenses. |
+| MaintenanceTicket | category, priority, status, description, photos, assignee | Belongs to Unit or Property; comments are separately audited. |
+| Vendor | name, trade, phone, M-Pesa, rating, active status | Branch-scoped registry; links to maintenance tickets and future expense records. |
+| MaintenanceQuotation | vendor, amount, status, approval, validity | Linked to a maintenance ticket; approval is threshold-controlled. |
+| MaintenanceCostAllocation | target, amount, reason | Linked to an approved quotation and allocated to landlord or active tenant. |
+| PropertyInspection | schedule, checklist, photos, findings, sharing | Property/unit inspection with responsible staff and an auditable landlord-shareable report. |
+| PropertyExpense | category, amount, recurrence, due dates, approval | Property-scoped one-off or recurring expense with threshold-controlled approval. |
+| Announcement | branch, property, title, body, publication, expiry | Draft or published branch/property notice filtered to relevant tenant portal users. |
 | Expense | category, amount, property, approval status | Charged to Landlord or Agency. |
 | Remittance | period, gross, commission, expenses, tax, net, status | Belongs to Landlord. |
 | LandProject / Plot | title nos., size, price, status | A LandProject has many Plots. |

@@ -8,17 +8,23 @@ from users.admin_authentication import FinanceMFAAdminAuthenticationForm
 from users.audit import record_audit_event
 from users.models import (
     AuditLog,
+    Announcement,
     ArrearsPolicy,
     ArrearsPaymentPlan,
     ArrearsPaymentPlanInstalment,
     ArrearsWaiver,
     Block,
     Branch,
+    CaretakerInvitation,
     Floor,
     Invoice,
     InvoiceLine,
     InvoiceNumberSequence,
     MeterReading,
+    MaintenanceTicket,
+    MaintenanceTicketComment,
+    MaintenanceCostAllocation,
+    MaintenanceQuotation,
     MpesaCallback,
     Payment,
     PaymentAllocation,
@@ -36,7 +42,10 @@ from users.models import (
     MoveInPackage,
     TenantActivationChallenge,
     Property,
+    PropertyCaretakerAssignment,
     PropertyDocument,
+    PropertyExpense,
+    PropertyInspection,
     SMSLoginChallenge,
     Tenancy,
     Tenant,
@@ -46,6 +55,7 @@ from users.models import (
     UnitReservation,
     UserProfile,
     UtilityConfiguration,
+    Vendor,
 )
 from users.roles import SUPER_ADMIN_ROLE
 
@@ -193,6 +203,7 @@ def _landlord_audit_values(landlord):
     return {
         "id": landlord.pk,
         "branch_id": landlord.branch_id,
+        "portal_user_id": landlord.portal_user_id,
         "name": landlord.name,
         "id_or_registration_number": landlord.id_or_registration_number,
         "kra_pin": "[redacted]" if landlord.kra_pin else None,
@@ -408,6 +419,14 @@ class PropertyAdmin(admin.ModelAdmin):
     search_fields = ("name", "location", "landlord__name")
     filter_horizontal = ("caretakers",)
 
+
+@admin.register(PropertyCaretakerAssignment)
+class PropertyCaretakerAssignmentAdmin(admin.ModelAdmin):
+    list_display = ("property", "caretaker", "assigned_by", "assigned_at", "ended_at")
+    list_filter = ("ended_at",)
+    search_fields = ("property__name", "caretaker__email", "caretaker__profile__name")
+    readonly_fields = ("assigned_at",)
+
     def save_model(self, request, obj, form, change):
         previous = (
             _property_audit_values(Property.objects.get(pk=obj.pk)) if change else None
@@ -440,6 +459,30 @@ class PropertyDocumentAdmin(admin.ModelAdmin):
     list_filter = ("document_type",)
     search_fields = ("name", "property__name", "storage_key")
     readonly_fields = ("uploaded_by", "created_at")
+
+
+@admin.register(PropertyInspection)
+class PropertyInspectionAdmin(admin.ModelAdmin):
+    list_display = ("title", "property", "unit", "scheduled_for", "responsible_staff", "status", "shared_at")
+    list_filter = ("status", "inspection_type")
+    search_fields = ("title", "property__name", "unit__code", "responsible_staff__email")
+    readonly_fields = ("created_by", "completed_at", "share_token", "shared_at", "created_at", "updated_at")
+
+
+@admin.register(PropertyExpense)
+class PropertyExpenseAdmin(admin.ModelAdmin):
+    list_display = ("description", "property", "category", "amount", "recurrence", "status", "effective_from")
+    list_filter = ("status", "recurrence", "category")
+    search_fields = ("description", "property__name", "vendor__name")
+    readonly_fields = ("submitted_by", "approved_by", "approved_at", "created_at", "updated_at")
+
+
+@admin.register(Announcement)
+class AnnouncementAdmin(admin.ModelAdmin):
+    list_display = ("title", "branch", "property", "status", "publish_at", "expires_at", "published_by")
+    list_filter = ("status", "branch")
+    search_fields = ("title", "body", "property__name")
+    readonly_fields = ("created_by", "published_by", "created_at", "updated_at")
 
 
 @admin.register(Unit)
@@ -537,6 +580,76 @@ class MeterReadingAdmin(admin.ModelAdmin):
                 "period": obj.period.isoformat(),
                 "current_value": str(obj.current_value),
             },
+        )
+
+
+@admin.register(MaintenanceTicket)
+class MaintenanceTicketAdmin(admin.ModelAdmin):
+    list_display = ("title", "property", "unit", "category", "priority", "status", "assigned_to", "created_at")
+    list_filter = ("category", "priority", "status")
+    search_fields = ("title", "description", "property__name", "unit__code")
+    readonly_fields = ("reported_by", "created_at", "updated_at", "completed_at", "closed_at")
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.reported_by = request.user
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "maintenance_ticket.updated" if change else "maintenance_ticket.created",
+            "MaintenanceTicket",
+            new_values={"id": obj.pk, "status": obj.status, "assigned_to": obj.assigned_to_id},
+        )
+
+
+@admin.register(MaintenanceTicketComment)
+class MaintenanceTicketCommentAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "author", "created_at")
+    search_fields = ("ticket__title", "body", "author__email")
+    readonly_fields = ("author", "created_at")
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.author = request.user
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "maintenance_ticket.comment_added",
+            "MaintenanceTicketComment",
+            new_values={"id": obj.pk, "ticket_id": obj.ticket_id},
+        )
+
+
+@admin.register(MaintenanceQuotation)
+class MaintenanceQuotationAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "vendor", "amount", "status", "submitted_by", "approved_by", "created_at")
+    list_filter = ("status", "vendor")
+    search_fields = ("ticket__title", "vendor__name", "description")
+    readonly_fields = ("submitted_by", "approved_by", "approved_at", "created_at", "updated_at")
+
+
+@admin.register(MaintenanceCostAllocation)
+class MaintenanceCostAllocationAdmin(admin.ModelAdmin):
+    list_display = ("quotation", "target", "amount", "landlord", "tenant", "allocated_by", "created_at")
+    list_filter = ("target",)
+    search_fields = ("quotation__ticket__title", "landlord__name", "tenant__name")
+    readonly_fields = ("allocated_by", "created_at")
+
+
+@admin.register(Vendor)
+class VendorAdmin(admin.ModelAdmin):
+    list_display = ("name", "trade", "branch", "phone", "rating", "is_active", "updated_at")
+    list_filter = ("branch", "trade", "is_active")
+    search_fields = ("name", "trade", "phone", "email", "mpesa_number")
+    readonly_fields = ("created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "vendor.updated" if change else "vendor.created",
+            "Vendor",
+            new_values={"id": obj.pk, "branch_id": obj.branch_id, "name": obj.name, "is_active": obj.is_active},
         )
 
 
@@ -815,9 +928,17 @@ class MoveInChecklistItemAdmin(admin.ModelAdmin):
 
 @admin.register(TenantActivationChallenge)
 class TenantActivationChallengeAdmin(admin.ModelAdmin):
-    list_display = ("tenant", "expires_at", "used_at", "created_at")
-    search_fields = ("tenant__name", "tenant__email", "tenant__phone")
-    readonly_fields = ("token_hash", "created_at", "used_at")
+    list_display = ("tenant", "unit", "expires_at", "used_at", "created_at")
+    search_fields = ("tenant__name", "tenant__email", "tenant__phone", "unit__code")
+    readonly_fields = ("token_hash", "code_hash", "created_at", "used_at")
+
+
+@admin.register(CaretakerInvitation)
+class CaretakerInvitationAdmin(admin.ModelAdmin):
+    list_display = ("email", "property", "created_by", "expires_at", "used_at", "revoked_at")
+    list_filter = ("property__branch",)
+    search_fields = ("email", "property__name")
+    readonly_fields = ("token_hash", "created_at", "used_at", "used_by", "revoked_at")
 
 
 @admin.register(TenantDocument)

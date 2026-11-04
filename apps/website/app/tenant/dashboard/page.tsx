@@ -54,8 +54,8 @@ type TenantProfile = {
 type TenantAnnouncement = {
   id: string;
   title: string;
-  message: string;
-  expires_at: string;
+  body: string;
+  expires_at: string | null;
 };
 
 const currency = new Intl.NumberFormat('en-KE', {
@@ -377,8 +377,8 @@ export default function TenantDashboard() {
           {announcements.map((announcement) => (
             <article key={announcement.id} className="rounded-xl border border-blue-200 bg-blue-50 p-5">
               <h2 className="font-bold text-blue-950">{announcement.title}</h2>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-blue-900">{announcement.message}</p>
-              <p className="mt-3 text-xs text-blue-700">Notice expires {new Date(announcement.expires_at).toLocaleDateString('en-KE')}</p>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-blue-900">{announcement.body}</p>
+              {announcement.expires_at && <p className="mt-3 text-xs text-blue-700">Notice expires {new Date(announcement.expires_at).toLocaleDateString('en-KE')}</p>}
             </article>
           ))}
         </section>

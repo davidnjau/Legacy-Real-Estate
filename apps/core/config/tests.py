@@ -26,17 +26,23 @@ from users.models import (
     ArrearsPaymentPlan,
     ArrearsPolicy,
     AuditLog,
+    Announcement,
     BankStatementImport,
     BankStatementRow,
     Block,
     Branch,
+    CaretakerInvitation,
     DepositAccount,
     DepositEntry,
     Floor,
     Invoice,
     Landlord,
     ManagementAgreement,
+    MaintenanceCostAllocation,
     MeterReading,
+    MaintenanceTicket,
+    MaintenanceTicketComment,
+    MaintenanceQuotation,
     MoveInCharge,
     MoveInChecklistItem,
     MoveInPackage,
@@ -44,7 +50,10 @@ from users.models import (
     Payment,
     PaymentAllocation,
     Property,
+    PropertyCaretakerAssignment,
     PropertyDocument,
+    PropertyExpense,
+    PropertyInspection,
     Receipt,
     SMSLoginChallenge,
     Tenancy,
@@ -57,6 +66,7 @@ from users.models import (
     UnitReservation,
     UserProfile,
     UtilityConfiguration,
+    Vendor,
 )
 from users.roles import SUPER_ADMIN_ROLE
 from users.sms import send_sms
@@ -101,6 +111,27 @@ class UserAccessTests(TestCase):
             phone=defaults["phone"],
         )
         return user
+
+    def create_portal_landlord(self, email="landlord@example.com"):
+        phone = f"25471234{UserProfile.objects.count():04d}"
+        user = self.create_user(email=email, phone=phone)
+        user.groups.add(Group.objects.get(name="Landlord (portal)"))
+        landlord = Landlord.objects.create(
+            branch=self.nairobi,
+            portal_user=user,
+            name="Portal Landlord",
+            id_or_registration_number=f"PORTAL-{user.pk}",
+            phone=phone,
+            email=email,
+        )
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            landlord=landlord,
+            name=f"Portal Property {user.pk}",
+            property_type="residential",
+            location="Nairobi",
+        )
+        return user, property_obj
 
     def test_seeded_srs_roles_and_branches_exist(self):
         self.assertEqual(
@@ -382,6 +413,519 @@ class UserAccessTests(TestCase):
         self.assertEqual(document_response.status_code, 201)
         self.assertTrue(Floor.objects.filter(block=block, level=0).exists())
         self.assertTrue(PropertyDocument.objects.filter(property=property_obj).exists())
+
+    def test_caretaker_account_assignment_and_scope(self):
+        manager = self.create_user(email="manager@example.com", phone="254712345686")
+        manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
+        manager.profile.branches.add(self.nairobi)
+        self.client.force_login(manager)
+
+        created = self.client.post(
+            "/api/v1/caretakers/create",
+            data={
+                "email": "caretaker@example.com",
+                "name": "Assigned Caretaker",
+                "phone": "254712345687",
+                "password": "Long-test-passphrase-29!",
+                "branch_ids": [self.nairobi.pk],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        caretaker_id = created.json()["caretaker"]["id"]
+        caretaker = self.user_model.objects.get(pk=caretaker_id)
+        self.assertTrue(caretaker.groups.filter(name="Caretaker").exists())
+
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Caretaker Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        assigned = self.client.post(
+            f"/api/v1/properties/{property_obj.pk}/caretakers/assign",
+            data={"caretaker_id": caretaker_id},
+            content_type="application/json",
+        )
+        self.assertEqual(assigned.status_code, 201)
+        self.assertTrue(
+            PropertyCaretakerAssignment.objects.filter(
+                property=property_obj, caretaker=caretaker, ended_at__isnull=True
+            ).exists()
+        )
+
+        self.client.force_login(caretaker)
+        properties = self.client.get("/api/v1/properties")
+        self.assertEqual(properties.status_code, 200)
+        self.assertEqual([item["id"] for item in properties.json()["properties"]], [property_obj.pk])
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/caretakers/create",
+                data={
+                    "email": "unauthorized@example.com",
+                    "name": "Unauthorized",
+                    "password": "Long-test-passphrase-29!",
+                    "branch_ids": [self.nairobi.pk],
+                },
+                content_type="application/json",
+            ).status_code,
+            403,
+        )
+
+        self.client.force_login(manager)
+        ended = self.client.post(
+            f"/api/v1/properties/{property_obj.pk}/caretakers/{caretaker_id}/end"
+        )
+        self.assertEqual(ended.status_code, 200)
+        self.assertFalse(
+            PropertyCaretakerAssignment.objects.filter(
+                property=property_obj, caretaker=caretaker, ended_at__isnull=True
+            ).exists()
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="caretaker.assigned",
+                entity="PropertyCaretakerAssignment",
+                user=manager,
+            ).exists()
+        )
+
+    def test_caretaker_dashboard_and_bulk_meter_readings_are_scoped(self):
+        manager = self.create_user(email="dashboard-manager@example.com", phone="254712345688")
+        manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
+        manager.profile.branches.add(self.nairobi)
+        caretaker = self.create_user(email="dashboard-caretaker@example.com", phone="254712345689")
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Dashboard Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        occupied = Unit.objects.create(
+            property=property_obj,
+            code="D-001",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        vacant = Unit.objects.create(
+            property=property_obj,
+            code="D-002",
+            unit_type="Studio",
+            status=Unit.STATUS_VACANT,
+        )
+        PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        self.client.force_login(caretaker)
+        dashboard = self.client.get("/api/v1/caretaker/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(dashboard.json()["summary"]["properties"], 1)
+        self.assertEqual(dashboard.json()["summary"]["occupied"], 1)
+        self.assertEqual(dashboard.json()["summary"]["vacant"], 1)
+        self.assertEqual(dashboard.json()["summary"]["readings_pending"], 2)
+
+        created = self.client.post(
+            "/api/v1/caretaker/meter-readings",
+            data={
+                "readings": [
+                    {
+                        "unit_id": occupied.pk,
+                        "meter": "WM-D001",
+                        "period": "2026-11-01",
+                        "previous_value": "10",
+                        "current_value": "14.5",
+                    },
+                ]
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["readings"][0]["current_value"], "14.5000")
+        self.assertEqual(MeterReading.objects.get(unit=occupied).submitted_by, caretaker)
+
+        self.client.force_login(manager)
+        self.assertEqual(self.client.get("/api/v1/caretaker/dashboard").status_code, 403)
+
+    def test_maintenance_ticket_lifecycle_is_scoped_and_audited(self):
+        manager = self.create_user(email="ticket-manager@example.com", phone="254712345690")
+        manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
+        manager.profile.branches.add(self.nairobi)
+        caretaker = self.create_user(email="ticket-caretaker@example.com", phone="254712345691")
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Maintenance Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        unit = Unit.objects.create(property=property_obj, code="MT-001", unit_type="Studio")
+        PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        self.client.force_login(manager)
+        vendor_response = self.client.post(
+            "/api/v1/vendors/create",
+            data={
+                "branch_id": self.nairobi.pk,
+                "name": "Kilimani Plumbing Services",
+                "trade": "Plumbing",
+                "phone": "254712345692",
+                "mpesa_number": "254712345692",
+                "rating": "4.50",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(vendor_response.status_code, 201)
+        vendor_id = vendor_response.json()["vendor"]["id"]
+        self.client.force_login(caretaker)
+        created = self.client.post(
+            "/api/v1/maintenance-tickets/create",
+            data={
+                "property_id": property_obj.pk,
+                "unit_id": unit.pk,
+                "title": "Leaking kitchen tap",
+                "description": "Water is leaking continuously.",
+                "category": "plumbing",
+                "priority": "high",
+                "vendor_id": vendor_id,
+                "photos": [{"storage_key": "tickets/tap.jpg", "content_type": "image/jpeg"}],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        ticket_id = created.json()["ticket"]["id"]
+        self.assertEqual(created.json()["ticket"]["vendor"]["id"], vendor_id)
+        self.assertEqual(created.json()["ticket"]["status"], MaintenanceTicket.STATUS_OPEN)
+
+        assigned = self.client.post(
+            f"/api/v1/maintenance-tickets/{ticket_id}/status",
+            data={"status": "assigned", "assigned_to": caretaker.pk},
+            content_type="application/json",
+        )
+        self.assertEqual(assigned.status_code, 200)
+        progressing = self.client.post(
+            f"/api/v1/maintenance-tickets/{ticket_id}/status",
+            data={"status": "in_progress"},
+            content_type="application/json",
+        )
+        self.assertEqual(progressing.status_code, 200)
+        comment = self.client.post(
+            f"/api/v1/maintenance-tickets/{ticket_id}/comments",
+            data={
+                "body": "Fundi has started the repair.",
+                "photos": [{"storage_key": "tickets/work.jpg"}],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(comment.status_code, 201)
+        self.assertEqual(MaintenanceTicketComment.objects.filter(ticket_id=ticket_id).count(), 1)
+
+        self.client.force_login(manager)
+        listed = self.client.get("/api/v1/maintenance-tickets?status=in_progress")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(len(listed.json()["tickets"]), 1)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_ticket.status_changed",
+                entity="MaintenanceTicket",
+            ).exists()
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(action="vendor.created", entity="Vendor").exists()
+        )
+
+    def test_quotation_approval_threshold_and_landlord_cost_allocation(self):
+        manager = self.create_user(email="quote-manager@example.com", phone="254712345693")
+        manager.groups.add(Group.objects.get(name="Branch Manager"))
+        manager.profile.branches.add(self.nairobi)
+        caretaker = self.create_user(email="quote-caretaker@example.com", phone="254712345694")
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
+        landlord = Landlord.objects.create(
+            branch=self.nairobi,
+            name="Quote Landlord",
+            id_or_registration_number="QL-001",
+            phone="254712345695",
+        )
+        ManagementAgreement.objects.create(
+            landlord=landlord,
+            effective_from=date(2026, 1, 1),
+            commission_model="percentage",
+            commission_rate=Decimal("10.00"),
+            terms={"maintenance_approval_threshold": "1000.00"},
+        )
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            landlord=landlord,
+            name="Quote Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        ticket = MaintenanceTicket.objects.create(
+            property=property_obj,
+            reported_by=caretaker,
+            assigned_to=caretaker,
+            title="Broken socket",
+            description="Socket is unsafe.",
+            category=MaintenanceTicket.CATEGORY_ELECTRICAL,
+            status=MaintenanceTicket.STATUS_ASSIGNED,
+        )
+        vendor = Vendor.objects.create(
+            branch=self.nairobi,
+            name="Electrical Fundi",
+            trade="Electrical",
+            phone="254712345696",
+        )
+        self.client.force_login(caretaker)
+        quote = self.client.post(
+            f"/api/v1/maintenance-tickets/{ticket.pk}/quotations/create",
+            data={
+                "vendor_id": vendor.pk,
+                "description": "Replace socket and wiring",
+                "amount": "2500.00",
+                "valid_until": "2026-12-01",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(quote.status_code, 201)
+        quotation_id = quote.json()["quotation"]["id"]
+        self.assertEqual(MaintenanceQuotation.objects.get(pk=quotation_id).status, "submitted")
+
+        self.client.force_login(manager)
+        approved = self.client.post(
+            f"/api/v1/maintenance-quotations/{quotation_id}/approval",
+            data={"approved": True},
+            content_type="application/json",
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["quotation"]["status"], "approved")
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.assigned_to_id, caretaker.pk)
+        allocation = self.client.post(
+            f"/api/v1/maintenance-quotations/{quotation_id}/allocations/create",
+            data={"target": "landlord", "amount": "2500.00", "reason": "Owner responsibility"},
+            content_type="application/json",
+        )
+        self.assertEqual(allocation.status_code, 201)
+        self.assertEqual(
+            MaintenanceCostAllocation.objects.get(quotation_id=quotation_id).landlord_id,
+            landlord.pk,
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_quotation.approved",
+                entity="MaintenanceQuotation",
+            ).exists()
+        )
+
+    def test_scheduled_inspection_completion_and_shared_report(self):
+        manager = self.create_user(email="inspection-manager@example.com", phone="254712345697")
+        manager.groups.add(Group.objects.get(name="Branch Manager"))
+        manager.profile.branches.add(self.nairobi)
+        caretaker = self.create_user(email="inspection-caretaker@example.com", phone="254712345698")
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Inspection Property",
+            property_type="Apartment",
+            location="Westlands",
+        )
+        PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        self.client.force_login(caretaker)
+        created = self.client.post(
+            "/api/v1/inspections/create",
+            data={
+                "property_id": property_obj.pk,
+                "title": "Quarterly property inspection",
+                "inspection_type": "routine",
+                "scheduled_for": "2026-11-15T09:00:00+03:00",
+                "responsible_staff_id": caretaker.pk,
+                "checklist": [{"title": "Check common areas", "status": "pending"}],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        inspection_id = created.json()["inspection"]["id"]
+        completed = self.client.post(
+            f"/api/v1/inspections/{inspection_id}/complete",
+            data={
+                "checklist": [{"title": "Check common areas", "status": "completed", "notes": "Clean"}],
+                "photos": [{"storage_key": "inspections/1/common-area.jpg", "caption": "Common area"}],
+                "findings": "No urgent defects.",
+                "recommendations": "Continue quarterly checks.",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["inspection"]["status"], PropertyInspection.STATUS_COMPLETED)
+        self.client.force_login(manager)
+        shared = self.client.post(f"/api/v1/inspections/{inspection_id}/share")
+        self.assertEqual(shared.status_code, 200)
+        token = shared.json()["report"]["share_token"]
+        public_report = self.client.get(f"/api/v1/inspection-reports/{token}")
+        self.assertEqual(public_report.status_code, 200)
+        self.assertEqual(public_report.json()["report"]["findings"], "No urgent defects.")
+        self.assertNotIn("share_token", public_report.json()["report"])
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="property_inspection.report_shared",
+                entity="PropertyInspection",
+            ).exists()
+        )
+
+    def test_recurring_property_expense_threshold_and_audit(self):
+        manager = self.create_user(email="expense-manager@example.com", phone="254712345699")
+        manager.groups.add(Group.objects.get(name="Branch Manager"))
+        manager.profile.branches.add(self.nairobi)
+        caretaker = self.create_user(email="expense-caretaker@example.com", phone="254712345600")
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
+        landlord = Landlord.objects.create(
+            branch=self.nairobi,
+            name="Expense Landlord",
+            id_or_registration_number="EL-001",
+            phone="254712345601",
+        )
+        ManagementAgreement.objects.create(
+            landlord=landlord,
+            effective_from=date(2026, 1, 1),
+            commission_model="percentage",
+            terms={"expense_approval_threshold": "5000.00"},
+        )
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            landlord=landlord,
+            name="Expense Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        self.client.force_login(caretaker)
+        created = self.client.post(
+            "/api/v1/property-expenses/create",
+            data={
+                "property_id": property_obj.pk,
+                "category": "Security",
+                "description": "Night guard service",
+                "amount": "4500.00",
+                "recurrence": "monthly",
+                "effective_from": "2026-11-01",
+                "next_due_date": "2026-12-01",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        expense_id = created.json()["expense"]["id"]
+        self.assertEqual(
+            PropertyExpense.objects.get(pk=expense_id).status,
+            PropertyExpense.STATUS_SUBMITTED,
+        )
+        approved = self.client.post(
+            f"/api/v1/property-expenses/{expense_id}/approval",
+            data={"approved": True},
+            content_type="application/json",
+        )
+        self.assertEqual(approved.status_code, 403)
+        self.client.force_login(manager)
+        approved = self.client.post(
+            f"/api/v1/property-expenses/{expense_id}/approval",
+            data={"approved": True},
+            content_type="application/json",
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["expense"]["status"], PropertyExpense.STATUS_APPROVED)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="property_expense.approved",
+                entity="PropertyExpense",
+            ).exists()
+        )
+
+    def test_announcements_are_published_and_tenant_scoped(self):
+        manager = self.create_user(email="announcement-manager@example.com", phone="254712345602")
+        manager.groups.add(Group.objects.get(name="Branch Manager"))
+        manager.profile.branches.add(self.nairobi)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Notice Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        unit = Unit.objects.create(property=property_obj, code="NOTICE-001", unit_type="Studio")
+        tenant = Tenant.objects.create(
+            branch=self.nairobi,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Notice Tenant",
+            national_id_or_passport="NOTICE-ID",
+            phone="254712345603",
+            email="notice-tenant@example.com",
+        )
+        portal_user = self.create_user(email="notice-tenant@example.com", phone="254712345603")
+        portal_user.groups.add(Group.objects.get(name="Tenant (portal)"))
+        tenant.portal_user = portal_user
+        tenant.save(update_fields=["portal_user", "updated_at"])
+        Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=date(2026, 1, 1),
+        )
+        self.client.force_login(manager)
+        created = self.client.post(
+            "/api/v1/announcements/create",
+            data={
+                "branch_id": self.nairobi.pk,
+                "property_id": property_obj.pk,
+                "title": "Water interruption",
+                "body": "Water will be interrupted tomorrow.",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        announcement_id = created.json()["announcement"]["id"]
+        published = self.client.post(f"/api/v1/announcements/{announcement_id}/publish")
+        self.assertEqual(published.status_code, 200)
+        self.client.force_login(portal_user)
+        notices = self.client.get("/api/v1/announcements")
+        self.assertEqual(notices.status_code, 200)
+        self.assertEqual(len(notices.json()["announcements"]), 1)
+        self.assertEqual(notices.json()["announcements"][0]["title"], "Water interruption")
+        self.assertNotIn("created_by", notices.json()["announcements"][0])
+        other = Announcement.objects.create(
+            branch=self.nairobi,
+            title="Draft notice",
+            body="Not visible.",
+            status=Announcement.STATUS_DRAFT,
+            created_by=manager,
+        )
+        self.assertEqual(other.status, Announcement.STATUS_DRAFT)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="announcement.published",
+                entity="Announcement",
+            ).exists()
+        )
 
     def test_unit_api_validates_scope_and_status_transitions(self):
         user = self.create_user(phone="254712345686")
@@ -1147,6 +1691,7 @@ class UserAccessTests(TestCase):
             phone="254712345683",
         )
         received_at = timezone.now()
+        reconciliation_date = timezone.localdate(received_at)
         Payment.objects.create(
             tenant=tenant,
             amount="1000.00",
@@ -1175,7 +1720,7 @@ class UserAccessTests(TestCase):
             status=Payment.STATUS_UNMATCHED,
         )
         response = self.client.get(
-            f"/api/v1/payments/daily-reconciliation?from={received_at.date().isoformat()}&to={received_at.date().isoformat()}"
+            f"/api/v1/payments/daily-reconciliation?from={reconciliation_date.isoformat()}&to={reconciliation_date.isoformat()}"
         )
         self.assertEqual(response.status_code, 200)
         report = response.json()
@@ -1906,8 +2451,10 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(issued.status_code, 201)
         token = issued.json()["activation_token"]
+        activation_code = issued.json()["activation_code"]
         challenge = TenantActivationChallenge.objects.get(tenant=tenant)
         self.assertNotEqual(challenge.token_hash, token)
+        self.assertNotEqual(challenge.code_hash, activation_code)
 
         activated = self.client.post(
             "/api/v1/tenant-activation/complete",
@@ -1918,6 +2465,7 @@ class UserAccessTests(TestCase):
         tenant.refresh_from_db()
         self.assertIsNotNone(tenant.portal_user_id)
         self.assertTrue(tenant.portal_user.check_password("a-secure-password"))
+        self.assertEqual(self.client.get("/api/v1/auth/me").json()["user"]["id"], tenant.portal_user_id)
         self.assertEqual(
             self.client.post(
                 "/api/v1/tenant-activation/complete",
@@ -1926,6 +2474,77 @@ class UserAccessTests(TestCase):
             ).status_code,
             400,
         )
+
+    def test_tenant_activation_code_requires_matching_active_unit_and_logs_in(self):
+        manager = self.create_user(phone="254712345682")
+        manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
+        manager.profile.branches.add(self.nairobi)
+        self.client.force_login(manager)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Code Activation Property",
+            property_type="Apartment",
+            location="Westlands",
+        )
+        unit = Unit.objects.create(
+            property=property_obj,
+            code="B-201",
+            unit_type="One bedroom",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        tenant = Tenant.objects.create(
+            branch=self.nairobi,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Code Activation Tenant",
+            national_id_or_passport="ID-CODE-1",
+            phone="254712345683",
+            email="code-activation@example.com",
+        )
+        tenancy = Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=date(2026, 1, 1),
+            due_day=5,
+        )
+        issued = self.client.post(
+            f"/api/v1/tenancies/{tenancy.pk}/tenant-activation",
+            content_type="application/json",
+        )
+        code = issued.json()["activation_code"]
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/tenant-activation/verify",
+                data={"unit_code": "wrong-unit", "code": code},
+                content_type="application/json",
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/tenant-activation/verify",
+                data={"unit_code": "b-201", "code": code},
+                content_type="application/json",
+            ).json()["tenant_id"],
+            tenant.pk,
+        )
+
+        self.client.logout()
+        completed = self.client.post(
+            "/api/v1/tenant-activation/complete",
+            data={
+                "code": code,
+                "unit_code": unit.code,
+                "password": "Tenant-secure-password-91!",
+                "full_name": "Tenant Updated Name",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(completed.status_code, 200)
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.portal_user.check_password("Tenant-secure-password-91!"))
+        self.assertEqual(tenant.portal_user.profile.name, "Tenant Updated Name")
+        self.assertEqual(self.client.get("/api/v1/auth/me").json()["user"]["id"], tenant.portal_user_id)
 
     def test_tenant_api_supports_individuals_companies_and_kyc_documents(self):
         user = self.create_user(phone="254712345690")
@@ -2150,6 +2769,125 @@ class UserAccessTests(TestCase):
                 self.client.get("/api/v1/auth/me").json()["user"]["id"],
                 user.pk,
             )
+
+    def test_public_landlord_registration_creates_portal_session_and_property(self):
+        response = self.client.post(
+            "/api/v1/auth/register-landlord",
+            data={
+                "name": "New Landlord",
+                "email": "new-landlord@example.com",
+                "phone": "254712345679",
+                "password": "Long-test-passphrase-29!",
+                "property_name": "New Property",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["user"]["email"], "new-landlord@example.com")
+        self.assertEqual(self.client.get("/api/v1/auth/me").status_code, 200)
+        property_obj = Property.objects.get(name="New Property")
+        self.assertEqual(property_obj.landlord.portal_user_id, response.json()["user"]["id"])
+
+    def test_caretaker_invitation_creates_single_use_account_and_assignment(self):
+        landlord_user, property_obj = self.create_portal_landlord()
+        self.client.force_login(landlord_user)
+
+        issued = self.client.post(
+            "/api/v1/caretaker-invitations/create",
+            data={"property_id": property_obj.pk, "email": "new-caretaker@example.com"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(issued.status_code, 201)
+        token = issued.json()["activation_token"]
+        invitation = CaretakerInvitation.objects.get(email="new-caretaker@example.com")
+        self.assertNotEqual(invitation.token_hash, token)
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/caretaker-invitations/verify?token={token}"
+            ).status_code,
+            200,
+        )
+
+        self.client.logout()
+        activated = self.client.post(
+            "/api/v1/caretaker-invitations/complete",
+            data={
+                "token": token,
+                "name": "New Caretaker",
+                "phone": "254712340002",
+                "password": "Caretaker-secure-Password-92!",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(activated.status_code, 201)
+        caretaker_id = activated.json()["user"]["id"]
+        self.assertEqual(self.client.get("/api/v1/auth/me").json()["user"]["id"], caretaker_id)
+        self.assertTrue(
+            PropertyCaretakerAssignment.objects.filter(
+                property=property_obj,
+                caretaker_id=caretaker_id,
+                ended_at__isnull=True,
+            ).exists()
+        )
+        invitation.refresh_from_db()
+        self.assertIsNotNone(invitation.used_at)
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/caretaker-invitations/complete",
+                data={
+                    "token": token,
+                    "name": "New Caretaker",
+                    "phone": "254712340002",
+                    "password": "Caretaker-secure-Password-92!",
+                },
+                content_type="application/json",
+            ).status_code,
+            400,
+        )
+
+    def test_caretaker_invitation_is_scoped_to_own_property_and_can_be_resent(self):
+        landlord_user, property_obj = self.create_portal_landlord()
+        _, other_property = self.create_portal_landlord(
+            email="another-landlord@example.com"
+        )
+        self.client.force_login(landlord_user)
+
+        forbidden = self.client.post(
+            "/api/v1/caretaker-invitations/create",
+            data={"property_id": other_property.pk, "email": "unauthorized@example.com"},
+            content_type="application/json",
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
+        issued = self.client.post(
+            "/api/v1/caretaker-invitations/create",
+            data={"property_id": property_obj.pk, "email": "invite@example.com"},
+            content_type="application/json",
+        )
+        invitation_id = issued.json()["invitation"]["id"]
+        old_token = issued.json()["activation_token"]
+        resent = self.client.post(
+            f"/api/v1/caretaker-invitations/{invitation_id}/resend",
+            content_type="application/json",
+        )
+        self.assertEqual(resent.status_code, 200)
+        new_token = resent.json()["activation_token"]
+        self.assertNotEqual(old_token, new_token)
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/caretaker-invitations/verify?token={old_token}"
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/caretaker-invitations/verify?token={new_token}"
+            ).status_code,
+            200,
+        )
 
     def test_phone_only_user_can_sign_in(self):
         user = self.user_model.objects.create_user(

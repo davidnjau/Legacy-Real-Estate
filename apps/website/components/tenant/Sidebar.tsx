@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Home, Wrench, LogOut, UserCircle } from 'lucide-react';
-import { createClient } from '../../lib/supabase/client';
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -24,8 +23,11 @@ export function Sidebar() {
   }, []);
 
   const handleLogout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
+    const csrf = await fetch('/api/auth/csrf').then((response) => response.json());
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf.csrfToken || '' },
+    });
     router.push('/login');
     router.refresh();
   };

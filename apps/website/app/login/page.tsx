@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Building2, Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react';
-import { createClient } from '../../lib/supabase/client';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,42 +31,31 @@ export default function LoginPage() {
     setIsLoading(true);
     setError('');
 
-    const supabase = createClient();
-    const { data, error: signInError } = await supabase.auth.signInWithPassword({
-      email: credentials.email,
-      password: credentials.password,
+    const csrfResponse = await fetch('/api/auth/csrf');
+    const csrfPayload = await csrfResponse.json();
+    if (!csrfResponse.ok || !csrfPayload.csrfToken) {
+      setError('Unable to prepare secure sign-in. Please try again.');
+      setIsLoading(false);
+      return;
+    }
+
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfPayload.csrfToken },
+      body: JSON.stringify({ email: credentials.email, password: credentials.password }),
     });
-
-    if (signInError || !data.user) {
-      setError(signInError?.message || 'Invalid email or password.');
+    const payload = await response.json();
+    if (!response.ok || !payload.user) {
+      setError(payload.detail || payload.error || 'Invalid email or password.');
       setIsLoading(false);
       return;
     }
 
-    const { data: profile, error: profileError } = await supabase
-      .from('users')
-      .select('role, onboarding_completed')
-      .eq('id', data.user.id)
-      .maybeSingle();
+    const roles = (payload.user.roles || []).map((role: string) => role.trim().toLowerCase());
 
-    if (profileError) {
-      console.error('Profile fetch error:', profileError);
-      setError('Failed to fetch your profile. Please try again.');
-      setIsLoading(false);
-      return;
-    }
-
-    if (!profile) {
-      setError('Your account profile could not be found in our system. Please contact the landlord.');
-      setIsLoading(false);
-      return;
-    }
-
-    const normalizedRole = String(profile.role || '').trim().toLowerCase();
-
-    if (normalizedRole === 'landlord') {
-      router.push(profile.onboarding_completed ? '/landlord/dashboard' : '/landlord/welcome');
-    } else if (normalizedRole === 'caretaker') {
+    if (roles.includes('landlord (portal)') || roles.includes('landlord')) {
+      router.push('/landlord/dashboard');
+    } else if (roles.includes('caretaker')) {
       router.push('/caretaker/dashboard');
     } else {
       router.push('/tenant/dashboard');

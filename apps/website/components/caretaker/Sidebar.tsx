@@ -4,7 +4,6 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutDashboard, Droplets, LogOut, UserCircle, FolderUp, Megaphone, Wallet, Wrench, FileText } from 'lucide-react';
-import { createClient } from '../../lib/supabase/client';
 
 const navItems = [
   { name: 'Room Status', href: '/caretaker/dashboard', icon: LayoutDashboard },
@@ -22,8 +21,11 @@ export function CaretakerSidebar() {
   const router = useRouter();
 
   const handleLogout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
+    const csrf = await fetch('/api/auth/csrf').then((response) => response.json());
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf.csrfToken || '' },
+    });
     router.push('/login');
     router.refresh();
   };

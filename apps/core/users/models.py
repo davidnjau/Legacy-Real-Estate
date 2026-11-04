@@ -1,3 +1,5 @@
+import builtins
+import uuid
 from datetime import date
 
 from django.conf import settings
@@ -28,6 +30,13 @@ class Landlord(models.Model):
         Branch,
         on_delete=models.PROTECT,
         related_name="landlords",
+    )
+    portal_user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="landlord_record",
+        blank=True,
+        null=True,
     )
     name = models.CharField(max_length=255)
     id_or_registration_number = models.CharField(max_length=100)
@@ -142,6 +151,592 @@ class Property(models.Model):
         return self.name
 
 
+class PropertyCaretakerAssignment(models.Model):
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="caretaker_assignments",
+    )
+    caretaker = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="property_caretaker_assignments",
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_caretaker_assignments",
+    )
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(blank=True, null=True)
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="ended_caretaker_assignments",
+        blank=True,
+        null=True,
+    )
+
+    class Meta:
+        ordering = ["-assigned_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["property", "caretaker"],
+                condition=models.Q(ended_at__isnull=True),
+                name="users_active_property_caretaker_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["caretaker", "ended_at"]),
+            models.Index(fields=["property", "ended_at"]),
+        ]
+
+    @builtins.property
+    def is_active(self):
+        return self.ended_at is None
+
+    def __str__(self):
+        return f"{self.caretaker} assigned to {self.property}"
+
+
+class CaretakerInvitation(models.Model):
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="caretaker_invitations",
+    )
+    email = models.EmailField()
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_caretaker_invitations",
+    )
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(blank=True, null=True)
+    used_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="accepted_caretaker_invitations",
+        blank=True,
+        null=True,
+    )
+    revoked_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["property", "created_at"]),
+            models.Index(fields=["email", "expires_at"]),
+        ]
+
+    @builtins.property
+    def status(self):
+        if self.used_at is not None:
+            return "used"
+        if self.revoked_at is not None:
+            return "revoked"
+        if self.expires_at <= timezone.now():
+            return "expired"
+        return "active"
+
+    @builtins.property
+    def is_usable(self):
+        return self.status == "active"
+
+    def __str__(self):
+        return f"{self.email} invited to {self.property}"
+
+
+class Vendor(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="vendors")
+    name = models.CharField(max_length=255)
+    trade = models.CharField(max_length=100)
+    phone = models.CharField(
+        max_length=12,
+        validators=[
+            RegexValidator(
+                r"^254[17]\d{8}$",
+                "Use international format 2547XXXXXXXX or 2541XXXXXXXX.",
+            )
+        ],
+    )
+    email = models.EmailField(blank=True)
+    mpesa_number = models.CharField(
+        max_length=12,
+        blank=True,
+        validators=[
+            RegexValidator(
+                r"^254[17]\d{8}$",
+                "Use international format 2547XXXXXXXX or 2541XXXXXXXX.",
+            )
+        ],
+    )
+    rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["branch", "phone"],
+                name="users_vendor_branch_phone_unique",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(rating__gte=0) & models.Q(rating__lte=5),
+                name="users_vendor_rating_valid",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.rating < 0 or self.rating > 5:
+            raise ValidationError({"rating": "Rating must be between 0 and 5."})
+
+    def __str__(self):
+        return f"{self.name} ({self.trade})"
+
+
+class MaintenanceTicket(models.Model):
+    CATEGORY_PLUMBING = "plumbing"
+    CATEGORY_ELECTRICAL = "electrical"
+    CATEGORY_STRUCTURAL = "structural"
+    CATEGORY_SECURITY = "security"
+    CATEGORY_OTHER = "other"
+    CATEGORY_CHOICES = (
+        (CATEGORY_PLUMBING, "Plumbing"),
+        (CATEGORY_ELECTRICAL, "Electrical"),
+        (CATEGORY_STRUCTURAL, "Structural"),
+        (CATEGORY_SECURITY, "Security"),
+        (CATEGORY_OTHER, "Other"),
+    )
+    PRIORITY_LOW = "low"
+    PRIORITY_NORMAL = "normal"
+    PRIORITY_HIGH = "high"
+    PRIORITY_URGENT = "urgent"
+    PRIORITY_CHOICES = (
+        (PRIORITY_LOW, "Low"),
+        (PRIORITY_NORMAL, "Normal"),
+        (PRIORITY_HIGH, "High"),
+        (PRIORITY_URGENT, "Urgent"),
+    )
+    STATUS_OPEN = "open"
+    STATUS_ASSIGNED = "assigned"
+    STATUS_QUOTATION = "quotation"
+    STATUS_AWAITING_LANDLORD_APPROVAL = "awaiting_landlord_approval"
+    STATUS_IN_PROGRESS = "in_progress"
+    STATUS_COMPLETED = "completed"
+    STATUS_CLOSED = "closed"
+    STATUS_CHOICES = (
+        (STATUS_OPEN, "Open"),
+        (STATUS_ASSIGNED, "Assigned"),
+        (STATUS_QUOTATION, "Quotation"),
+        (STATUS_AWAITING_LANDLORD_APPROVAL, "Awaiting landlord approval"),
+        (STATUS_IN_PROGRESS, "In progress"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CLOSED, "Closed"),
+    )
+    ALLOWED_TRANSITIONS = {
+        STATUS_OPEN: {STATUS_ASSIGNED},
+        STATUS_ASSIGNED: {STATUS_QUOTATION, STATUS_IN_PROGRESS},
+        STATUS_QUOTATION: {STATUS_AWAITING_LANDLORD_APPROVAL, STATUS_IN_PROGRESS},
+        STATUS_AWAITING_LANDLORD_APPROVAL: {STATUS_IN_PROGRESS},
+        STATUS_IN_PROGRESS: {STATUS_COMPLETED},
+        STATUS_COMPLETED: {STATUS_CLOSED},
+        STATUS_CLOSED: set(),
+    }
+
+    property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="maintenance_tickets")
+    unit = models.ForeignKey(
+        "Unit",
+        on_delete=models.PROTECT,
+        related_name="maintenance_tickets",
+        blank=True,
+        null=True,
+    )
+    reported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reported_maintenance_tickets",
+    )
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="assigned_maintenance_tickets",
+        blank=True,
+        null=True,
+    )
+    vendor = models.ForeignKey(
+        Vendor,
+        on_delete=models.PROTECT,
+        related_name="maintenance_tickets",
+        blank=True,
+        null=True,
+    )
+    title = models.CharField(max_length=255)
+    description = models.TextField()
+    category = models.CharField(max_length=30, choices=CATEGORY_CHOICES)
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default=PRIORITY_NORMAL)
+    status = models.CharField(max_length=40, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    photos = models.JSONField(default=list, blank=True)
+    resolution_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    closed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["property", "status"]),
+            models.Index(fields=["assigned_to", "status"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.unit_id and self.unit.property_id != self.property_id:
+            raise ValidationError({"unit": "The unit must belong to the ticket property."})
+        if self.vendor_id and self.vendor.branch_id != self.property.branch_id:
+            raise ValidationError({"vendor": "The vendor must belong to the ticket property's branch."})
+        if not isinstance(self.photos, list):
+            raise ValidationError({"photos": "Photos must be an array."})
+        if self.status == self.STATUS_OPEN and self.assigned_to_id:
+            raise ValidationError({"assigned_to": "Open tickets cannot be assigned."})
+        if self.status != self.STATUS_OPEN and self.assigned_to_id is None:
+            raise ValidationError({"assigned_to": "Non-open tickets require an assignee."})
+        if self.status == self.STATUS_COMPLETED and self.completed_at is None:
+            raise ValidationError({"completed_at": "Completed tickets require a completion time."})
+        if self.status == self.STATUS_CLOSED and self.closed_at is None:
+            raise ValidationError({"closed_at": "Closed tickets require a closure time."})
+
+    def transition_to(self, new_status):
+        if new_status not in dict(self.STATUS_CHOICES):
+            raise ValidationError({"status": "This maintenance status is not supported."})
+        if new_status == self.status:
+            return
+        if new_status not in self.ALLOWED_TRANSITIONS[self.status]:
+            raise ValidationError(
+                {"status": f"Tickets cannot transition from {self.status} to {new_status}."}
+            )
+        if new_status != self.STATUS_OPEN and self.assigned_to_id is None:
+            raise ValidationError({"assigned_to": "Assign the ticket before changing its status."})
+        self.status = new_status
+        now = timezone.now()
+        if new_status == self.STATUS_COMPLETED:
+            self.completed_at = now
+        if new_status == self.STATUS_CLOSED:
+            self.closed_at = now
+
+    def __str__(self):
+        return f"{self.property} - {self.title} ({self.status})"
+
+
+class MaintenanceTicketComment(models.Model):
+    ticket = models.ForeignKey(MaintenanceTicket, on_delete=models.PROTECT, related_name="comments")
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="maintenance_ticket_comments",
+    )
+    body = models.TextField()
+    photos = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def clean(self):
+        super().clean()
+        if not self.body.strip():
+            raise ValidationError({"body": "A comment is required."})
+        if not isinstance(self.photos, list):
+            raise ValidationError({"photos": "Photos must be an array."})
+
+    def __str__(self):
+        return f"Comment on {self.ticket_id} by {self.author_id}"
+
+
+class MaintenanceQuotation(models.Model):
+    STATUS_DRAFT = "draft"
+    STATUS_SUBMITTED = "submitted"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = (
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_SUBMITTED, "Submitted"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    )
+
+    ticket = models.ForeignKey(MaintenanceTicket, on_delete=models.PROTECT, related_name="quotations")
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="maintenance_quotations")
+    description = models.TextField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    valid_until = models.DateField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="submitted_maintenance_quotations",
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="approved_maintenance_quotations",
+        blank=True,
+        null=True,
+    )
+    approved_at = models.DateTimeField(blank=True, null=True)
+    rejection_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="users_maintenancequotation_amount_positive",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.amount <= 0:
+            raise ValidationError({"amount": "Quotation amount must be positive."})
+        if self.vendor.branch_id != self.ticket.property.branch_id:
+            raise ValidationError({"vendor": "The vendor must belong to the ticket property branch."})
+        if self.status == self.STATUS_APPROVED and (
+            self.approved_by_id is None or self.approved_at is None
+        ):
+            raise ValidationError({"approved_by": "Approved quotations require an approver and approval time."})
+        if self.status == self.STATUS_REJECTED and not self.rejection_reason.strip():
+            raise ValidationError({"rejection_reason": "Rejected quotations require a reason."})
+
+    def __str__(self):
+        return f"{self.ticket_id} - {self.vendor} - {self.amount}"
+
+
+class MaintenanceCostAllocation(models.Model):
+    TARGET_LANDLORD = "landlord"
+    TARGET_TENANT = "tenant"
+    TARGET_CHOICES = (
+        (TARGET_LANDLORD, "Landlord"),
+        (TARGET_TENANT, "Tenant"),
+    )
+
+    quotation = models.ForeignKey(
+        MaintenanceQuotation,
+        on_delete=models.PROTECT,
+        related_name="allocations",
+    )
+    target = models.CharField(max_length=20, choices=TARGET_CHOICES)
+    landlord = models.ForeignKey(
+        Landlord,
+        on_delete=models.PROTECT,
+        related_name="maintenance_cost_allocations",
+        blank=True,
+        null=True,
+    )
+    tenant = models.ForeignKey(
+        "Tenant",
+        on_delete=models.PROTECT,
+        related_name="maintenance_cost_allocations",
+        blank=True,
+        null=True,
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.TextField(blank=True)
+    allocated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_maintenance_cost_allocations",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="users_maintenanceallocation_amount_positive",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.amount <= 0:
+            raise ValidationError({"amount": "Allocated amount must be positive."})
+        if self.target == self.TARGET_LANDLORD:
+            if self.landlord_id is None or self.tenant_id is not None:
+                raise ValidationError({"landlord": "Landlord allocations require only a landlord."})
+            if self.landlord.branch_id != self.quotation.ticket.property.branch_id:
+                raise ValidationError({"landlord": "The landlord must belong to the ticket branch."})
+        elif self.target == self.TARGET_TENANT:
+            if self.tenant_id is None or self.landlord_id is not None:
+                raise ValidationError({"tenant": "Tenant allocations require only a tenant."})
+            if self.tenant.branch_id != self.quotation.ticket.property.branch_id:
+                raise ValidationError({"tenant": "The tenant must belong to the ticket branch."})
+        else:
+            raise ValidationError({"target": "This allocation target is not supported."})
+
+    def __str__(self):
+        return f"{self.quotation_id} - {self.target} - {self.amount}"
+
+
+class PropertyExpense(models.Model):
+    RECURRENCE_ONE_OFF = "one_off"
+    RECURRENCE_MONTHLY = "monthly"
+    RECURRENCE_QUARTERLY = "quarterly"
+    RECURRENCE_ANNUAL = "annual"
+    RECURRENCE_CHOICES = (
+        (RECURRENCE_ONE_OFF, "One-off"),
+        (RECURRENCE_MONTHLY, "Monthly"),
+        (RECURRENCE_QUARTERLY, "Quarterly"),
+        (RECURRENCE_ANNUAL, "Annual"),
+    )
+    STATUS_SUBMITTED = "submitted"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = (
+        (STATUS_SUBMITTED, "Submitted"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    )
+
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="expenses",
+    )
+    vendor = models.ForeignKey(
+        Vendor,
+        on_delete=models.PROTECT,
+        related_name="expenses",
+        blank=True,
+        null=True,
+    )
+    category = models.CharField(max_length=100)
+    description = models.CharField(max_length=255)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    recurrence = models.CharField(max_length=20, choices=RECURRENCE_CHOICES, default=RECURRENCE_ONE_OFF)
+    effective_from = models.DateField()
+    effective_to = models.DateField(blank=True, null=True)
+    next_due_date = models.DateField(blank=True, null=True)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="submitted_property_expenses",
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="approved_property_expenses",
+        blank=True,
+        null=True,
+    )
+    approved_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    rejection_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-effective_from", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="users_propertyexpense_amount_positive",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.amount <= 0:
+            raise ValidationError({"amount": "Expense amount must be positive."})
+        if self.effective_to and self.effective_to < self.effective_from:
+            raise ValidationError({"effective_to": "The expense end date cannot be before its start date."})
+        if self.recurrence == self.RECURRENCE_ONE_OFF and self.next_due_date is not None:
+            raise ValidationError({"next_due_date": "One-off expenses cannot have a next due date."})
+        if self.recurrence != self.RECURRENCE_ONE_OFF and self.next_due_date is None:
+            raise ValidationError({"next_due_date": "Recurring expenses require a next due date."})
+        if self.vendor_id and self.vendor.branch_id != self.property.branch_id:
+            raise ValidationError({"vendor": "The vendor must belong to the property branch."})
+        if self.status == self.STATUS_APPROVED and (
+            self.approved_by_id is None or self.approved_at is None
+        ):
+            raise ValidationError({"approved_by": "Approved expenses require an approver and approval time."})
+        if self.status == self.STATUS_REJECTED and not self.rejection_reason.strip():
+            raise ValidationError({"rejection_reason": "Rejected expenses require a reason."})
+
+    def __str__(self):
+        return f"{self.property} - {self.description} - {self.amount}"
+
+
+class Announcement(models.Model):
+    STATUS_DRAFT = "draft"
+    STATUS_PUBLISHED = "published"
+    STATUS_ARCHIVED = "archived"
+    STATUS_CHOICES = (
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_PUBLISHED, "Published"),
+        (STATUS_ARCHIVED, "Archived"),
+    )
+
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="announcements")
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="announcements",
+        blank=True,
+        null=True,
+    )
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    publish_at = models.DateTimeField(blank=True, null=True)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_announcements",
+    )
+    published_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="published_announcements",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-publish_at", "-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["branch", "status", "publish_at"]),
+            models.Index(fields=["property", "status", "publish_at"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.property_id and self.property.branch_id != self.branch_id:
+            raise ValidationError({"property": "The property must belong to the announcement branch."})
+        if self.expires_at and self.publish_at and self.expires_at <= self.publish_at:
+            raise ValidationError({"expires_at": "The expiry must be after publication."})
+        if self.status == self.STATUS_PUBLISHED and (
+            self.publish_at is None or self.published_by_id is None
+        ):
+            raise ValidationError({"published_by": "Published announcements require publication details."})
+
+    def __str__(self):
+        return self.title
+
+
 class Block(models.Model):
     property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="blocks")
     name = models.CharField(max_length=100)
@@ -193,6 +788,76 @@ class PropertyDocument(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class PropertyInspection(models.Model):
+    STATUS_SCHEDULED = "scheduled"
+    STATUS_IN_PROGRESS = "in_progress"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = (
+        (STATUS_SCHEDULED, "Scheduled"),
+        (STATUS_IN_PROGRESS, "In progress"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+    )
+
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="inspections",
+    )
+    unit = models.ForeignKey(
+        "Unit",
+        on_delete=models.PROTECT,
+        related_name="inspections",
+        blank=True,
+        null=True,
+    )
+    title = models.CharField(max_length=255)
+    inspection_type = models.CharField(max_length=100)
+    scheduled_for = models.DateTimeField()
+    responsible_staff = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="responsible_property_inspections",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_property_inspections",
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SCHEDULED)
+    checklist = models.JSONField(default=list, blank=True)
+    photos = models.JSONField(default=list, blank=True)
+    findings = models.TextField(blank=True)
+    recommendations = models.TextField(blank=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    share_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    shared_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_for", "id"]
+        indexes = [
+            models.Index(fields=["property", "scheduled_for"]),
+            models.Index(fields=["responsible_staff", "status"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.unit_id and self.unit.property_id != self.property_id:
+            raise ValidationError({"unit": "The unit must belong to the inspected property."})
+        if not isinstance(self.checklist, list):
+            raise ValidationError({"checklist": "Checklist must be an array."})
+        if not isinstance(self.photos, list):
+            raise ValidationError({"photos": "Photos must be an array."})
+        if self.status == self.STATUS_COMPLETED and self.completed_at is None:
+            raise ValidationError({"completed_at": "Completed inspections require a completion time."})
+
+    def __str__(self):
+        return f"{self.property} - {self.title} ({self.scheduled_for:%Y-%m-%d})"
 
 
 class Unit(models.Model):
@@ -1186,6 +1851,14 @@ class TenantActivationChallenge(models.Model):
         related_name="activation_challenges",
     )
     token_hash = models.CharField(max_length=128, unique=True)
+    code_hash = models.CharField(max_length=64, unique=True, blank=True, null=True)
+    unit = models.ForeignKey(
+        "Unit",
+        on_delete=models.PROTECT,
+        related_name="activation_challenges",
+        blank=True,
+        null=True,
+    )
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

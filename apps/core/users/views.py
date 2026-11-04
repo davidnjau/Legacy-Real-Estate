@@ -2,16 +2,18 @@ import calendar
 import csv
 import hashlib
 import json
+import re
 import secrets
 from datetime import date, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO, StringIO
 
 from django.conf import settings
-from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.db.models.functions import Coalesce
@@ -30,11 +32,13 @@ from users.models import (
     ArrearsPaymentPlan,
     ArrearsPaymentPlanInstalment,
     ArrearsWaiver,
+    Announcement,
     AuditLog,
     BankStatementImport,
     BankStatementRow,
     Block,
     Branch,
+    CaretakerInvitation,
     DemandLetter,
     DepositAccount,
     DepositEntry,
@@ -44,7 +48,11 @@ from users.models import (
     InvoiceNumberSequence,
     Landlord,
     ManagementAgreement,
+    MaintenanceCostAllocation,
+    MaintenanceQuotation,
     MeterReading,
+    MaintenanceTicket,
+    MaintenanceTicketComment,
     MoveInCharge,
     MoveInChecklistItem,
     MoveInPackage,
@@ -52,7 +60,10 @@ from users.models import (
     Payment,
     PaymentAllocation,
     Property,
+    PropertyCaretakerAssignment,
     PropertyDocument,
+    PropertyExpense,
+    PropertyInspection,
     Receipt,
     SMSLoginChallenge,
     Tenancy,
@@ -65,8 +76,15 @@ from users.models import (
     UnitReservation,
     UserProfile,
     UtilityConfiguration,
+    Vendor,
 )
-from users.roles import LANDLORD_MANAGEMENT_ROLE_NAMES, requires_finance_mfa
+from users.roles import (
+    CARETAKER_ROLE,
+    LANDLORD_PORTAL_ROLE,
+    LANDLORD_MANAGEMENT_ROLE_NAMES,
+    TENANT_PORTAL_ROLE,
+    requires_finance_mfa,
+)
 from users.sms import send_sms
 
 
@@ -105,6 +123,10 @@ def _has_landlord_management_access(user):
     return user.groups.filter(name__in=LANDLORD_MANAGEMENT_ROLE_NAMES).exists()
 
 
+def _is_caretaker(user):
+    return user.groups.filter(name=CARETAKER_ROLE).exists()
+
+
 def _accessible_branches(user):
     return accessible_branches(user)
 
@@ -118,7 +140,14 @@ def _accessible_landlords(user):
 
 def _accessible_properties(user):
     profile = getattr(user, "profile", None)
-    if profile is None or not _has_landlord_management_access(user):
+    if profile is None:
+        return Property.objects.none()
+    if _is_caretaker(user):
+        return Property.objects.filter(
+            caretaker_assignments__caretaker=user,
+            caretaker_assignments__ended_at__isnull=True,
+        ).distinct()
+    if not _has_landlord_management_access(user):
         return Property.objects.none()
     return Property.objects.filter(branch__in=profile.accessible_branches())
 
@@ -190,8 +219,21 @@ def _property_payload(property_obj):
         "house_rules": property_obj.house_rules,
         "photos": property_obj.photos,
         "caretaker_ids": list(
-            property_obj.caretakers.order_by("pk").values_list("pk", flat=True)
+            property_obj.caretaker_assignments.filter(ended_at__isnull=True)
+            .order_by("caretaker_id")
+            .values_list("caretaker_id", flat=True)
         ),
+        "caretakers": [
+            {
+                "id": assignment.caretaker_id,
+                "name": assignment.caretaker.profile.name,
+                "email": assignment.caretaker.email,
+                "assigned_at": assignment.assigned_at.isoformat(),
+            }
+            for assignment in property_obj.caretaker_assignments.filter(
+                ended_at__isnull=True
+            ).select_related("caretaker__profile")
+        ],
         "blocks": [
             {
                 "id": block.pk,
@@ -339,8 +381,8 @@ def _meter_reading_payload(reading):
         "unit_id": reading.unit_id,
         "meter": reading.meter,
         "period": reading.period.isoformat(),
-        "previous_value": str(reading.previous_value),
-        "current_value": str(reading.current_value),
+        "previous_value": f"{reading.previous_value:.4f}",
+        "current_value": f"{reading.current_value:.4f}",
         "submitted_by": reading.submitted_by_id,
         "submitted_at": reading.submitted_at.isoformat(),
         "photo_key": reading.photo_key or None,
@@ -355,9 +397,9 @@ def _water_bill_payload(reading, utility, usage, charge):
         "period": reading.period.isoformat(),
         "reading_id": reading.pk,
         "utility_id": utility.pk,
-        "previous_value": str(reading.previous_value),
-        "current_value": str(reading.current_value),
-        "usage": str(usage),
+        "previous_value": f"{reading.previous_value:.4f}",
+        "current_value": f"{reading.current_value:.4f}",
+        "usage": f"{usage:.4f}",
         "rate_per_unit": str(utility.rate_per_unit),
         "minimum_charge": str(utility.minimum_charge),
         "calculated_charge": str(charge),
@@ -1590,6 +1632,15 @@ def _activation_hash(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _normalize_ke_phone(phone):
+    value = re.sub(r"[\s()+-]", "", str(phone or ""))
+    if value.startswith("0") and len(value) == 10:
+        value = f"254{value[1:]}"
+    if not re.fullmatch(r"254[17]\d{8}", value):
+        raise ValueError("Use a Kenyan mobile number such as 0712345678 or 254712345678.")
+    return value
+
+
 def _agreement_pdf(tenancy, package):
     lines = [
         "MOVE-IN TENANCY AGREEMENT",
@@ -1690,6 +1741,62 @@ def _user_payload(user):
         "roles": list(user.groups.order_by("name").values_list("name", flat=True)),
         "branches": list(branches.order_by("name").values("id", "name", "town")),
     }
+
+
+@require_POST
+def register_landlord_portal(request):
+    body = _json_body(request)
+    if body is None:
+        return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
+    name = str(body.get("name") or "").strip()
+    email = str(body.get("email") or "").strip().lower()
+    phone = str(body.get("phone") or "").strip()
+    password = body.get("password")
+    property_name = str(body.get("property_name") or "").strip()
+    if not name or not email or not phone or not property_name or not isinstance(password, str):
+        return _problem(400, "Invalid request", "name, email, phone, property_name, and password are required.", "invalid-request")
+    if len(password) < 12:
+        return _problem(400, "Invalid password", "Password must contain at least 12 characters.", "invalid-password")
+    try:
+        validate_email(email)
+        phone = _normalize_ke_phone(phone)
+        password_validation.validate_password(password)
+    except (ValidationError, ValueError) as error:
+        detail = "; ".join(error.messages) if isinstance(error, ValidationError) else str(error)
+        return _problem(400, "Invalid registration", detail, "invalid-registration")
+    user_model = get_user_model()
+    if user_model.objects.filter(Q(username__iexact=email) | Q(email__iexact=email)).exists():
+        return _problem(409, "Account exists", "An account already exists for this email.", "account-exists")
+    branch = Branch.objects.order_by("pk").first()
+    if branch is None:
+        return _problem(503, "Registration unavailable", "No registration branch is configured.", "registration-unavailable")
+    try:
+        with transaction.atomic():
+            user = user_model.objects.create_user(username=email, email=email, password=password, is_active=True)
+            profile = UserProfile.objects.create(user=user, name=name, phone=phone)
+            profile.full_clean()
+            profile.branches.add(branch)
+            user.groups.add(Group.objects.get(name=LANDLORD_PORTAL_ROLE))
+            landlord = Landlord.objects.create(
+                branch=branch,
+                portal_user=user,
+                name=name,
+                id_or_registration_number=f"PORTAL-{user.pk}",
+                phone=phone,
+                email=email,
+            )
+            property_obj = Property.objects.create(
+                branch=branch,
+                landlord=landlord,
+                name=property_name,
+                property_type="residential",
+                location=branch.town,
+            )
+        login(request, user, backend="users.authentication.EmailOrPhoneBackend")
+    except (ValidationError, IntegrityError, Group.DoesNotExist) as error:
+        return _problem(400, "Invalid registration", str(error), "invalid-registration")
+    _record_auth_event(request, "portal_registration.succeeded", user)
+    return JsonResponse({"user": _user_payload(user), "property": _property_payload(property_obj)}, status=201)
 
 
 @require_GET
@@ -2145,7 +2252,7 @@ def create_management_agreement(request, landlord_id):
 def _property_access_error(request):
     if not request.user.is_authenticated:
         return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
-    if not _has_landlord_management_access(request.user):
+    if not (_has_landlord_management_access(request.user) or _is_caretaker(request.user)):
         return _problem(
             403,
             "Permission denied",
@@ -2153,6 +2260,652 @@ def _property_access_error(request):
             "property-access-denied",
         )
     return None
+
+
+def _caretaker_management_error(request):
+    error = _property_access_error(request)
+    if error:
+        return error
+    if not _has_landlord_management_access(request.user):
+        return _problem(
+            403,
+            "Permission denied",
+            "Only authorized property staff can manage caretaker accounts and assignments.",
+            "caretaker-management-denied",
+        )
+    return None
+
+
+def _caretaker_dashboard_error(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not _is_caretaker(request.user):
+        return _problem(
+            403,
+            "Permission denied",
+            "Only caretaker accounts can access the caretaker dashboard.",
+            "caretaker-dashboard-denied",
+        )
+    return None
+
+
+def _caretaker_payload(user):
+    profile = getattr(user, "profile", None)
+    return {
+        "id": user.pk,
+        "email": user.email,
+        "is_active": user.is_active,
+        "name": profile.name if profile else user.get_full_name(),
+        "phone": profile.phone if profile else "",
+        "branch_ids": list(profile.branches.order_by("pk").values_list("pk", flat=True)) if profile else [],
+    }
+
+
+def _caretaker_assignment_payload(assignment):
+    return {
+        "id": assignment.pk,
+        "property_id": assignment.property_id,
+        "caretaker": _caretaker_payload(assignment.caretaker),
+        "assigned_by": assignment.assigned_by_id,
+        "assigned_at": assignment.assigned_at.isoformat(),
+        "ended_at": assignment.ended_at.isoformat() if assignment.ended_at else None,
+        "ended_by": assignment.ended_by_id,
+        "active": assignment.is_active,
+    }
+
+
+@require_POST
+def create_caretaker(request):
+    error = _caretaker_management_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    if body is None:
+        return _problem(400, "Invalid request", "A JSON object is required.", "invalid-request")
+    email = body.get("email")
+    name = body.get("name")
+    phone = body.get("phone", "")
+    password = body.get("password")
+    branch_ids = body.get("branch_ids")
+    if (
+        not isinstance(email, str)
+        or not email.strip()
+        or not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(password, str)
+        or len(password) < 12
+        or not isinstance(branch_ids, list)
+        or not branch_ids
+    ):
+        return _problem(
+            400,
+            "Invalid caretaker",
+            "email, name, a password of at least 12 characters, and branch_ids are required.",
+            "invalid-caretaker",
+        )
+    try:
+        branch_ids = [int(value) for value in branch_ids]
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid caretaker", "branch_ids must contain integers.", "invalid-caretaker")
+    branches = _accessible_branches(request.user).filter(pk__in=branch_ids)
+    if branches.count() != len(set(branch_ids)):
+        return _problem(
+            400,
+            "Invalid branches",
+            "Every branch must be within your access scope.",
+            "invalid-caretaker-branches",
+        )
+    user_model = get_user_model()
+    if user_model.objects.filter(username=email.strip()).exists():
+        return _problem(409, "Caretaker exists", "A user with this email already exists.", "caretaker-exists")
+    try:
+        with transaction.atomic():
+            user = user_model.objects.create_user(
+                username=email.strip(),
+                email=email.strip(),
+                password=password,
+                is_active=True,
+            )
+            group = Group.objects.get(name=CARETAKER_ROLE)
+            user.groups.add(group)
+            profile = UserProfile.objects.create(
+                user=user,
+                name=name.strip(),
+                phone=phone.strip() if isinstance(phone, str) else "",
+            )
+            profile.branches.set(branches)
+    except (ValidationError, IntegrityError) as exc:
+        return _problem(400, "Invalid caretaker", str(exc), "invalid-caretaker")
+    record_audit_event(
+        request,
+        "caretaker.created",
+        "User",
+        new_values={"id": user.pk, "email": user.email, "branch_ids": sorted(set(branch_ids))},
+    )
+    return JsonResponse({"caretaker": _caretaker_payload(user)}, status=201)
+
+
+@require_GET
+def list_property_caretakers(request, property_id):
+    error = _property_access_error(request)
+    if error:
+        return error
+    property_obj = _accessible_properties(request.user).filter(pk=property_id).first()
+    if property_obj is None:
+        return _problem(404, "Property not found", "The property is unavailable.", "property-not-found")
+    assignments = property_obj.caretaker_assignments.select_related(
+        "caretaker__profile", "assigned_by", "ended_by"
+    )
+    return JsonResponse({"assignments": [_caretaker_assignment_payload(item) for item in assignments]})
+
+
+@require_POST
+def assign_property_caretaker(request, property_id):
+    error = _caretaker_management_error(request)
+    if error:
+        return error
+    property_obj = _accessible_properties(request.user).filter(pk=property_id).first()
+    if property_obj is None:
+        return _problem(404, "Property not found", "The property is unavailable.", "property-not-found")
+    body = _json_body(request)
+    try:
+        caretaker_id = int(body["caretaker_id"]) if body else None
+    except (KeyError, TypeError, ValueError):
+        caretaker_id = None
+    caretaker = get_user_model().objects.filter(
+        pk=caretaker_id,
+        is_active=True,
+        groups__name=CARETAKER_ROLE,
+        profile__branches=property_obj.branch,
+    ).select_related("profile").first()
+    if caretaker is None:
+        return _problem(
+            400,
+            "Invalid caretaker",
+            "The caretaker must be active, have the Caretaker role, and belong to the property branch.",
+            "invalid-caretaker",
+        )
+    if PropertyCaretakerAssignment.objects.filter(
+        property=property_obj, caretaker=caretaker, ended_at__isnull=True
+    ).exists():
+        return _problem(409, "Already assigned", "The caretaker is already assigned.", "caretaker-already-assigned")
+    with transaction.atomic():
+        assignment = PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=request.user,
+        )
+        property_obj.caretakers.add(caretaker)
+    record_audit_event(
+        request,
+        "caretaker.assigned",
+        "PropertyCaretakerAssignment",
+        new_values=_caretaker_assignment_payload(assignment),
+    )
+    return JsonResponse({"assignment": _caretaker_assignment_payload(assignment)}, status=201)
+
+
+@require_POST
+def end_property_caretaker_assignment(request, property_id, caretaker_id):
+    error = _caretaker_management_error(request)
+    if error:
+        return error
+    property_obj = _accessible_properties(request.user).filter(pk=property_id).first()
+    if property_obj is None:
+        return _problem(404, "Property not found", "The property is unavailable.", "property-not-found")
+    assignment = PropertyCaretakerAssignment.objects.filter(
+        property=property_obj, caretaker_id=caretaker_id, ended_at__isnull=True
+    ).select_related("caretaker__profile").first()
+    if assignment is None:
+        return _problem(404, "Assignment not found", "The active assignment is unavailable.", "assignment-not-found")
+    assignment.ended_at = timezone.now()
+    assignment.ended_by = request.user
+    assignment.save(update_fields=["ended_at", "ended_by"])
+    property_obj.caretakers.remove(assignment.caretaker)
+    record_audit_event(
+        request,
+        "caretaker.unassigned",
+        "PropertyCaretakerAssignment",
+        old_values={"id": assignment.pk, "property_id": property_id, "caretaker_id": caretaker_id},
+        new_values=_caretaker_assignment_payload(assignment),
+    )
+    return JsonResponse({"assignment": _caretaker_assignment_payload(assignment)})
+
+
+def _landlord_portal_properties(user):
+    return Property.objects.filter(landlord__portal_user=user).select_related("landlord")
+
+
+def _landlord_portal_error(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not request.user.groups.filter(name=LANDLORD_PORTAL_ROLE).exists():
+        return _problem(403, "Permission denied", "A landlord portal account is required.", "landlord-portal-required")
+    return None
+
+
+def _caretaker_invitation_payload(invitation):
+    return {
+        "id": invitation.pk,
+        "email": invitation.email,
+        "property_id": invitation.property_id,
+        "property_name": invitation.property.name,
+        "expires_at": invitation.expires_at.isoformat(),
+        "status": invitation.status,
+        "used_at": invitation.used_at.isoformat() if invitation.used_at else None,
+    }
+
+
+@require_GET
+def list_caretaker_invitations(request):
+    error = _landlord_portal_error(request)
+    if error:
+        return error
+    properties = _landlord_portal_properties(request.user)
+    raw_property_id = request.GET.get("property_id")
+    if raw_property_id:
+        try:
+            property_id = int(raw_property_id)
+        except ValueError:
+            return _problem(400, "Invalid property", "property_id must be an integer.", "invalid-property")
+        properties = properties.filter(pk=property_id)
+        if not properties.exists():
+            return _problem(404, "Property not found", "The property is not owned by this account.", "property-not-found")
+    property_ids = list(properties.values_list("id", flat=True))
+    invitations = CaretakerInvitation.objects.filter(
+        property_id__in=property_ids,
+    ).select_related("property")[:100]
+    assignments = PropertyCaretakerAssignment.objects.filter(
+        property_id__in=property_ids,
+        ended_at__isnull=True,
+    ).select_related("property", "caretaker__profile")
+    caretakers = [
+        {
+            "id": assignment.caretaker_id,
+            "full_name": assignment.caretaker.profile.name,
+            "email": assignment.caretaker.email,
+            "phone": assignment.caretaker.profile.phone,
+            "created_at": assignment.caretaker.date_joined.isoformat(),
+            "property_id": assignment.property_id,
+            "property_name": assignment.property.name,
+        }
+        for assignment in assignments
+    ]
+    return JsonResponse(
+        {
+            "properties": list(properties.values("id", "name")),
+            "invites": [_caretaker_invitation_payload(item) for item in invitations],
+            "caretakers": caretakers,
+        }
+    )
+
+
+@require_POST
+def create_caretaker_invitation(request):
+    error = _landlord_portal_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    if body is None:
+        return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
+    email = body.get("email")
+    if not isinstance(email, str):
+        return _problem(400, "Invalid email", "A valid caretaker email address is required.", "invalid-email")
+    email = email.strip().lower()
+    try:
+        validate_email(email)
+    except ValidationError:
+        return _problem(400, "Invalid email", "A valid caretaker email address is required.", "invalid-email")
+    try:
+        property_id = int(body.get("property_id"))
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid property", "property_id is required.", "invalid-property")
+    user_model = get_user_model()
+    if user_model.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).exists():
+        return _problem(409, "Account exists", "This email already belongs to an account.", "caretaker-exists")
+    token = secrets.token_urlsafe(32)
+    with transaction.atomic():
+        property_obj = _landlord_portal_properties(request.user).select_for_update().filter(
+            pk=property_id,
+            landlord__portal_user=request.user,
+        ).first()
+        if property_obj is None:
+            return _problem(404, "Property not found", "The property is not owned by this account.", "property-not-found")
+        if CaretakerInvitation.objects.filter(
+            property=property_obj,
+            email__iexact=email,
+            used_at__isnull=True,
+            revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).exists():
+            return _problem(409, "Invitation exists", "An active invitation already exists for this email.", "invitation-exists")
+        invitation = CaretakerInvitation.objects.create(
+            property=property_obj,
+            email=email,
+            token_hash=_activation_hash(token),
+            created_by=request.user,
+            expires_at=timezone.now() + timedelta(hours=48),
+        )
+    record_audit_event(
+        request,
+        "caretaker_invitation.created",
+        "CaretakerInvitation",
+        new_values={"id": invitation.pk, "property_id": property_obj.pk, "email": email},
+    )
+    return JsonResponse(
+        {
+            "invitation": _caretaker_invitation_payload(invitation),
+            "activation_token": token,
+        },
+        status=201,
+    )
+
+
+@require_POST
+def resend_caretaker_invitation(request, invitation_id):
+    error = _landlord_portal_error(request)
+    if error:
+        return error
+    token = secrets.token_urlsafe(32)
+    with transaction.atomic():
+        invitation = CaretakerInvitation.objects.select_for_update().filter(
+            pk=invitation_id,
+            property__in=_landlord_portal_properties(request.user),
+        ).select_related("property").first()
+        if invitation is None or invitation.used_at or invitation.revoked_at:
+            return _problem(404, "Invitation not found", "The invitation is unavailable or no longer active.", "invitation-not-found")
+        invitation.token_hash = _activation_hash(token)
+        invitation.expires_at = timezone.now() + timedelta(hours=48)
+        invitation.save(update_fields=["token_hash", "expires_at"])
+    record_audit_event(
+        request,
+        "caretaker_invitation.resent",
+        "CaretakerInvitation",
+        new_values={"id": invitation.pk, "property_id": invitation.property_id},
+    )
+    return JsonResponse(
+        {
+            "invitation": _caretaker_invitation_payload(invitation),
+            "activation_token": token,
+        }
+    )
+
+
+@require_POST
+def revoke_caretaker_access(request):
+    error = _landlord_portal_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    try:
+        property_id = int(body["property_id"]) if body else None
+        caretaker_id = int(body["caretaker_id"]) if body else None
+    except (KeyError, TypeError, ValueError):
+        property_id = caretaker_id = None
+    property_obj = _landlord_portal_properties(request.user).filter(pk=property_id).first()
+    if property_obj is None or caretaker_id is None:
+        return _problem(404, "Assignment not found", "The property caretaker assignment is unavailable.", "assignment-not-found")
+    assignment = PropertyCaretakerAssignment.objects.filter(
+        property=property_obj,
+        caretaker_id=caretaker_id,
+        ended_at__isnull=True,
+    ).first()
+    if assignment is None:
+        return _problem(404, "Assignment not found", "The active caretaker assignment is unavailable.", "assignment-not-found")
+    assignment.ended_at = timezone.now()
+    assignment.ended_by = request.user
+    assignment.save(update_fields=["ended_at", "ended_by"])
+    property_obj.caretakers.remove(assignment.caretaker)
+    record_audit_event(
+        request,
+        "caretaker.unassigned",
+        "PropertyCaretakerAssignment",
+        old_values={"id": assignment.pk, "property_id": property_id, "caretaker_id": caretaker_id},
+        new_values=_caretaker_assignment_payload(assignment),
+    )
+    return JsonResponse({"success": True, "message": "Caretaker property access removed."})
+
+
+@require_GET
+def caretaker_invitation_context(request):
+    token = request.GET.get("token", "")
+    invitation = CaretakerInvitation.objects.filter(
+        token_hash=_activation_hash(token),
+    ).select_related("property").first()
+    if not token or invitation is None or not invitation.is_usable:
+        return _problem(400, "Invalid invitation", "The caretaker invitation is invalid, expired, or already used.", "invalid-invitation")
+    if get_user_model().objects.filter(email__iexact=invitation.email).exists():
+        return _problem(409, "Account exists", "This email already belongs to an account.", "caretaker-exists")
+    return JsonResponse(
+        {
+            "email": invitation.email,
+            "property_name": invitation.property.name,
+            "expires_at": invitation.expires_at.isoformat(),
+        }
+    )
+
+
+@require_POST
+def activate_caretaker(request):
+    body = _json_body(request)
+    if body is None:
+        return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
+    token = body.get("token")
+    name = body.get("name")
+    phone = body.get("phone")
+    password = body.get("password")
+    if not all(isinstance(value, str) for value in (token, name, phone, password)):
+        return _problem(400, "Invalid request", "token, name, phone, and password are required.", "invalid-request")
+    name = name.strip()
+    try:
+        phone = _normalize_ke_phone(phone)
+    except ValueError as exc:
+        return _problem(400, "Invalid phone", str(exc), "invalid-phone")
+    if not name or len(password) < 12:
+        return _problem(400, "Invalid registration", "A name and a password of at least 12 characters are required.", "invalid-registration")
+    try:
+        password_validation.validate_password(password)
+    except ValidationError as exc:
+        return _problem(400, "Invalid registration", "; ".join(exc.messages), "invalid-registration")
+    invitation = CaretakerInvitation.objects.filter(
+        token_hash=_activation_hash(token),
+    ).select_related("property").first()
+    if invitation is None or not invitation.is_usable:
+        return _problem(400, "Invalid invitation", "The caretaker invitation is invalid, expired, or already used.", "invalid-invitation")
+    user_model = get_user_model()
+    if user_model.objects.filter(Q(email__iexact=invitation.email) | Q(username__iexact=invitation.email)).exists():
+        return _problem(409, "Account exists", "This email already belongs to an account.", "caretaker-exists")
+    try:
+        with transaction.atomic():
+            invitation = CaretakerInvitation.objects.select_for_update().select_related(
+                "property"
+            ).get(pk=invitation.pk)
+            if not invitation.is_usable:
+                return _problem(400, "Invalid invitation", "The caretaker invitation is invalid, expired, or already used.", "invalid-invitation")
+            user = user_model.objects.create_user(
+                username=invitation.email,
+                email=invitation.email,
+                password=password,
+            )
+            group = Group.objects.get(name=CARETAKER_ROLE)
+            user.groups.add(group)
+            profile = UserProfile(user=user, name=name, phone=phone)
+            profile.full_clean()
+            profile.save()
+            profile.branches.add(invitation.property.branch)
+            PropertyCaretakerAssignment.objects.create(
+                property=invitation.property,
+                caretaker=user,
+                assigned_by=invitation.created_by,
+            )
+            invitation.property.caretakers.add(user)
+            invitation.used_by = user
+            invitation.used_at = timezone.now()
+            invitation.save(update_fields=["used_by", "used_at"])
+    except Group.DoesNotExist:
+        return _problem(503, "Registration unavailable", "The caretaker role is not configured.", "registration-unavailable")
+    except ValidationError as exc:
+        return _problem(400, "Invalid registration", "; ".join(exc.messages), "invalid-registration")
+    except IntegrityError:
+        return _problem(409, "Account exists", "The account or caretaker assignment already exists.", "account-exists")
+    login(request, user, backend="users.authentication.EmailOrPhoneBackend")
+    record_audit_event(
+        request,
+        "caretaker_invitation.accepted",
+        "CaretakerInvitation",
+        new_values={"id": invitation.pk, "user_id": user.pk, "property_id": invitation.property_id},
+        actor=user,
+    )
+    return JsonResponse({"user": _user_payload(user)}, status=201)
+
+
+@require_GET
+def caretaker_dashboard(request):
+    error = _caretaker_dashboard_error(request)
+    if error:
+        return error
+    properties = _accessible_properties(request.user).prefetch_related("caretaker_assignments")
+    units = Unit.objects.filter(property__in=properties).select_related("property", "floor")
+    readings = MeterReading.objects.filter(unit__in=units).select_related("unit", "submitted_by")[:20]
+    today = timezone.localdate()
+    period = today.replace(day=1)
+    active_tenancies = Tenancy.objects.filter(
+        unit__in=units,
+        status=Tenancy.STATUS_ACTIVE,
+    ).select_related("tenant")
+    tenancy_by_unit = {tenancy.unit_id: tenancy for tenancy in active_tenancies}
+    period_reading_units = set(
+        MeterReading.objects.filter(unit__in=units, period=period).values_list("unit_id", flat=True)
+    )
+    checklist_items = MoveInChecklistItem.objects.filter(
+        package__tenancy__unit__in=units,
+        status=MoveInChecklistItem.STATUS_PENDING,
+    ).select_related("package__tenancy", "package__tenancy__tenant")
+    maintenance_tickets = _accessible_maintenance_tickets(request.user)
+    unit_payloads = []
+    for unit in units:
+        tenancy = tenancy_by_unit.get(unit.pk)
+        unit_payloads.append(
+            {
+                **_unit_payload(unit),
+                "property_name": unit.property.name,
+                "floor_name": unit.floor.name if unit.floor else None,
+                "tenant": (
+                    {"id": tenancy.tenant_id, "name": tenancy.tenant.name}
+                    if tenancy
+                    else None
+                ),
+                "reading_submitted_for_period": unit.pk in period_reading_units,
+            }
+        )
+    return JsonResponse(
+        {
+            "period": period.isoformat(),
+            "summary": {
+                "properties": properties.count(),
+                "units": len(unit_payloads),
+                "occupied": sum(unit.status == Unit.STATUS_OCCUPIED for unit in units),
+                "notice_given": sum(unit.status == Unit.STATUS_NOTICE_GIVEN for unit in units),
+                "vacant": sum(unit.status == Unit.STATUS_VACANT for unit in units),
+                "maintenance": sum(unit.status == Unit.STATUS_MAINTENANCE for unit in units),
+                "readings_pending": len(unit_payloads) - len(period_reading_units),
+                "checklists_pending": checklist_items.count(),
+                "maintenance_tickets": maintenance_tickets.exclude(
+                    status=MaintenanceTicket.STATUS_CLOSED
+                ).count(),
+            },
+            "properties": [
+                {
+                    "id": property_obj.pk,
+                    "name": property_obj.name,
+                    "location": property_obj.location,
+                    "branch_id": property_obj.branch_id,
+                    "unit_count": sum(unit.property_id == property_obj.pk for unit in units),
+                }
+                for property_obj in properties
+            ],
+            "units": unit_payloads,
+            "readings": [_meter_reading_payload(reading) for reading in readings],
+            "checklists": [
+                {
+                    "id": item.pk,
+                    "tenancy_id": item.package.tenancy_id,
+                    "unit_id": item.package.tenancy.unit_id,
+                    "title": item.title,
+                    "status": item.status,
+                    "notes": item.notes,
+                }
+                for item in checklist_items
+            ],
+            "maintenance_tickets": [
+                _maintenance_ticket_payload(ticket, include_comments=False)
+                for ticket in maintenance_tickets[:20]
+            ],
+        }
+    )
+
+
+@require_POST
+def create_caretaker_meter_readings(request):
+    error = _caretaker_dashboard_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    readings_data = body.get("readings") if body else None
+    if not isinstance(readings_data, list) or not readings_data:
+        return _problem(400, "Invalid request", "readings must be a non-empty array.", "invalid-readings")
+    if len(readings_data) > 250:
+        return _problem(400, "Invalid request", "A maximum of 250 readings can be submitted at once.", "invalid-readings")
+    accessible_units = {
+        unit.pk: unit
+        for unit in Unit.objects.filter(property__in=_accessible_properties(request.user))
+    }
+    prepared = []
+    seen = set()
+    for item in readings_data:
+        if not isinstance(item, dict):
+            return _problem(400, "Invalid reading", "Each reading must be an object.", "invalid-reading")
+        try:
+            unit_id = int(item["unit_id"])
+            period = date.fromisoformat(str(item["period"]))
+            previous_value = Decimal(str(item["previous_value"]))
+            current_value = Decimal(str(item["current_value"]))
+        except (KeyError, InvalidOperation, TypeError, ValueError):
+            return _problem(400, "Invalid reading", "Each reading must include valid unit_id, period, and values.", "invalid-reading")
+        meter = str(item.get("meter") or "").strip()
+        key = (unit_id, meter, period)
+        if unit_id not in accessible_units:
+            return _problem(404, "Unit not found", "The unit is unavailable or outside your assignment scope.", "unit-not-found")
+        if not meter or key in seen:
+            return _problem(400, "Invalid reading", "Meter identifiers and readings must be unique in the submission.", "invalid-reading")
+        seen.add(key)
+        photo_metadata = item.get("photo_metadata") or {}
+        if not isinstance(photo_metadata, dict):
+            return _problem(400, "Invalid reading", "photo_metadata must be an object.", "invalid-reading")
+        prepared.append(
+            MeterReading(
+                unit=accessible_units[unit_id],
+                meter=meter,
+                period=period,
+                previous_value=previous_value,
+                current_value=current_value,
+                submitted_by=request.user,
+                photo_key=str(item.get("photo_key") or "").strip(),
+                photo_metadata=photo_metadata,
+            )
+        )
+    try:
+        with transaction.atomic():
+            for reading in prepared:
+                reading.full_clean()
+            MeterReading.objects.bulk_create(prepared)
+    except (ValidationError, IntegrityError) as error:
+        detail = error.message_dict if isinstance(error, ValidationError) else "A reading already exists for one of the submitted periods."
+        return _problem(400, "Invalid meter reading", str(detail), "invalid-meter-reading")
+    payload = [_meter_reading_payload(reading) for reading in prepared]
+    for reading in prepared:
+        record_audit_event(request, "meter_reading.created", "MeterReading", new_values=_meter_reading_payload(reading))
+    return JsonResponse({"readings": payload}, status=201)
 
 
 @require_GET
@@ -2189,7 +2942,7 @@ def get_property(request, property_id):
 
 @require_POST
 def create_property(request):
-    error = _property_access_error(request)
+    error = _caretaker_management_error(request)
     if error:
         return error
     body = _json_body(request)
@@ -2237,15 +2990,18 @@ def create_property(request):
         house_rules=body.get("house_rules") or {},
         photos=body.get("photos") or [],
     )
-    try:
-        property_obj.full_clean()
-        property_obj.save()
-    except ValidationError as error:
-        return _problem(400, "Invalid property", str(error.message_dict), "invalid-property")
     caretaker_ids = body.get("caretaker_ids") or []
-    caretakers = request.user.__class__.objects.filter(
+    if not isinstance(caretaker_ids, list):
+        return _problem(400, "Invalid caretakers", "caretaker_ids must be an array.", "invalid-caretakers")
+    try:
+        caretaker_ids = [int(value) for value in caretaker_ids]
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid caretakers", "caretaker_ids must contain integers.", "invalid-caretakers")
+    if len(caretaker_ids) != len(set(caretaker_ids)):
+        return _problem(400, "Invalid caretakers", "caretaker_ids must be unique.", "invalid-caretakers")
+    caretakers = get_user_model().objects.filter(
         pk__in=caretaker_ids,
-        groups__name="Caretaker",
+        groups__name=CARETAKER_ROLE,
         profile__branches=branch,
     ).distinct()
     if len(caretaker_ids) != caretakers.count():
@@ -2255,7 +3011,23 @@ def create_property(request):
             "Every caretaker must have the Caretaker role and access to the property branch.",
             "invalid-caretakers",
         )
-    property_obj.caretakers.set(caretakers)
+    try:
+        with transaction.atomic():
+            property_obj.full_clean()
+            property_obj.save()
+            property_obj.caretakers.set(caretakers)
+            PropertyCaretakerAssignment.objects.bulk_create(
+                [
+                    PropertyCaretakerAssignment(
+                        property=property_obj,
+                        caretaker=caretaker,
+                        assigned_by=request.user,
+                    )
+                    for caretaker in caretakers
+                ]
+            )
+    except ValidationError as error:
+        return _problem(400, "Invalid property", str(error.message_dict), "invalid-property")
     record_audit_event(
         request,
         "property.created",
@@ -2631,6 +3403,688 @@ def _tenancy_access_error(request):
     if error:
         return error
     return None
+
+
+def _maintenance_access_error(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not (_has_landlord_management_access(request.user) or _is_caretaker(request.user)):
+        return _problem(
+            403,
+            "Permission denied",
+            "You do not have access to maintenance tickets.",
+            "maintenance-access-denied",
+        )
+    return None
+
+
+def _accessible_maintenance_tickets(user):
+    return MaintenanceTicket.objects.filter(
+        property__in=_accessible_properties(user)
+    ).select_related("property", "unit", "reported_by", "assigned_to", "vendor").prefetch_related(
+        "comments__author"
+    )
+
+
+def _maintenance_ticket_payload(ticket, include_comments=True):
+    payload = {
+        "id": ticket.pk,
+        "property_id": ticket.property_id,
+        "property_name": ticket.property.name,
+        "unit_id": ticket.unit_id,
+        "unit_code": ticket.unit.code if ticket.unit else None,
+        "reported_by": ticket.reported_by_id,
+        "assigned_to": ticket.assigned_to_id,
+        "vendor": (
+            {
+                "id": ticket.vendor_id,
+                "name": ticket.vendor.name,
+                "trade": ticket.vendor.trade,
+                "phone": ticket.vendor.phone,
+            }
+            if ticket.vendor_id
+            else None
+        ),
+        "quotation_ids": list(ticket.quotations.order_by("pk").values_list("pk", flat=True)),
+        "title": ticket.title,
+        "description": ticket.description,
+        "category": ticket.category,
+        "priority": ticket.priority,
+        "status": ticket.status,
+        "photos": ticket.photos,
+        "resolution_notes": ticket.resolution_notes,
+        "created_at": ticket.created_at.isoformat(),
+        "updated_at": ticket.updated_at.isoformat(),
+        "completed_at": ticket.completed_at.isoformat() if ticket.completed_at else None,
+        "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
+    }
+    if include_comments:
+        payload["comments"] = [
+            {
+                "id": comment.pk,
+                "author": comment.author_id,
+                "body": comment.body,
+                "photos": comment.photos,
+                "created_at": comment.created_at.isoformat(),
+            }
+            for comment in ticket.comments.all()
+        ]
+    return payload
+
+
+def _maintenance_quotation_payload(quotation):
+    threshold = _maintenance_approval_threshold(quotation.ticket)
+    return {
+        "id": quotation.pk,
+        "ticket_id": quotation.ticket_id,
+        "vendor": {
+            "id": quotation.vendor_id,
+            "name": quotation.vendor.name,
+            "trade": quotation.vendor.trade,
+        },
+        "description": quotation.description,
+        "amount": str(quotation.amount),
+        "valid_until": quotation.valid_until.isoformat() if quotation.valid_until else None,
+        "status": quotation.status,
+        "approval_threshold": str(threshold),
+        "requires_landlord_approval": quotation.amount > threshold,
+        "submitted_by": quotation.submitted_by_id,
+        "approved_by": quotation.approved_by_id,
+        "approved_at": quotation.approved_at.isoformat() if quotation.approved_at else None,
+        "rejection_reason": quotation.rejection_reason,
+        "allocations": [
+            {
+                "id": allocation.pk,
+                "target": allocation.target,
+                "landlord_id": allocation.landlord_id,
+                "tenant_id": allocation.tenant_id,
+                "amount": str(allocation.amount),
+                "reason": allocation.reason,
+                "allocated_by": allocation.allocated_by_id,
+            }
+            for allocation in quotation.allocations.all()
+        ],
+    }
+
+
+def _maintenance_approval_threshold(ticket):
+    landlord = ticket.property.landlord
+    if landlord is None:
+        return Decimal("0.00")
+    agreement = (
+        landlord.management_agreements.filter(effective_from__lte=timezone.localdate())
+        .filter(models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=timezone.localdate()))
+        .order_by("-effective_from", "-id")
+        .first()
+    )
+    if agreement is None or not isinstance(agreement.terms, dict):
+        return Decimal("0.00")
+    value = agreement.terms.get(
+        "maintenance_approval_threshold",
+        agreement.terms.get("approval_threshold", 0),
+    )
+    try:
+        threshold = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0.00")
+    return max(threshold, Decimal("0.00"))
+
+
+def _quotation_access_error(request, ticket):
+    if not (_has_landlord_management_access(request.user) or _is_caretaker(request.user)):
+        return _problem(
+            403,
+            "Permission denied",
+            "You do not have access to maintenance quotations.",
+            "quotation-access-denied",
+        )
+    if _is_caretaker(request.user) and not _has_landlord_management_access(request.user):
+        if ticket.assigned_to_id != request.user.pk and ticket.reported_by_id != request.user.pk:
+            return _problem(
+                403,
+                "Permission denied",
+                "Only the assigned caretaker can manage this quotation.",
+                "quotation-access-denied",
+            )
+    return None
+
+
+@require_GET
+def list_maintenance_quotations(request, ticket_id):
+    error = _maintenance_access_error(request)
+    if error:
+        return error
+    ticket = _accessible_maintenance_tickets(request.user).filter(pk=ticket_id).first()
+    if ticket is None:
+        return _problem(404, "Ticket not found", "The maintenance ticket is unavailable.", "ticket-not-found")
+    access_error = _quotation_access_error(request, ticket)
+    if access_error:
+        return access_error
+    quotations = ticket.quotations.select_related("vendor", "submitted_by", "approved_by").prefetch_related("allocations")
+    return JsonResponse(
+        {
+            "approval_threshold": str(_maintenance_approval_threshold(ticket)),
+            "quotations": [_maintenance_quotation_payload(quotation) for quotation in quotations],
+        }
+    )
+
+
+@require_POST
+def create_maintenance_quotation(request, ticket_id):
+    error = _maintenance_access_error(request)
+    if error:
+        return error
+    ticket = _accessible_maintenance_tickets(request.user).filter(pk=ticket_id).first()
+    if ticket is None:
+        return _problem(404, "Ticket not found", "The maintenance ticket is unavailable.", "ticket-not-found")
+    access_error = _quotation_access_error(request, ticket)
+    if access_error:
+        return access_error
+    body = _json_body(request)
+    if body is None or not isinstance(body.get("description"), str) or not body["description"].strip():
+        return _problem(400, "Invalid quotation", "description is required.", "invalid-quotation")
+    try:
+        vendor = Vendor.objects.get(
+            pk=int(body["vendor_id"]),
+            branch=ticket.property.branch,
+            is_active=True,
+        )
+        amount = Decimal(str(body["amount"]))
+        valid_until = date.fromisoformat(str(body["valid_until"])) if body.get("valid_until") else None
+    except (KeyError, Vendor.DoesNotExist, InvalidOperation, TypeError, ValueError):
+        return _problem(400, "Invalid quotation", "vendor_id, positive amount, and valid_until are required.", "invalid-quotation")
+    quotation = MaintenanceQuotation(
+        ticket=ticket,
+        vendor=vendor,
+        description=body["description"].strip(),
+        amount=amount,
+        valid_until=valid_until,
+        status=MaintenanceQuotation.STATUS_SUBMITTED,
+        submitted_by=request.user,
+    )
+    try:
+        quotation.full_clean()
+        with transaction.atomic():
+            quotation.save()
+            if ticket.status == MaintenanceTicket.STATUS_ASSIGNED:
+                ticket.transition_to(MaintenanceTicket.STATUS_QUOTATION)
+                ticket.save(update_fields=["status", "updated_at"])
+    except (ValidationError, IntegrityError) as exc:
+        detail = exc.message_dict if isinstance(exc, ValidationError) else "The quotation could not be saved."
+        return _problem(400, "Invalid quotation", str(detail), "invalid-quotation")
+    record_audit_event(request, "maintenance_quotation.created", "MaintenanceQuotation", new_values=_maintenance_quotation_payload(quotation))
+    return JsonResponse({"quotation": _maintenance_quotation_payload(quotation)}, status=201)
+
+
+@require_POST
+def approve_maintenance_quotation(request, quotation_id):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    quotation = MaintenanceQuotation.objects.filter(
+        pk=quotation_id,
+        ticket__property__in=_accessible_properties(request.user),
+    ).select_related("ticket__property__landlord", "vendor").prefetch_related("allocations").first()
+    if quotation is None:
+        return _problem(404, "Quotation not found", "The quotation is unavailable.", "quotation-not-found")
+    threshold = _maintenance_approval_threshold(quotation.ticket)
+    if not _has_landlord_management_access(request.user):
+        if (
+            not _is_caretaker(request.user)
+            or quotation.ticket.assigned_to_id != request.user.pk
+            or quotation.amount > threshold
+        ):
+            return _problem(
+                403,
+                "Permission denied",
+                "Only authorized property staff can approve quotations above the agreement threshold.",
+                "quotation-approval-denied",
+            )
+    if quotation.status != MaintenanceQuotation.STATUS_SUBMITTED:
+        return _problem(400, "Invalid quotation", "Only submitted quotations can be approved.", "invalid-quotation")
+    body = _json_body(request) or {}
+    approved = body.get("approved", True)
+    if not isinstance(approved, bool):
+        return _problem(400, "Invalid quotation", "approved must be a boolean.", "invalid-quotation")
+    if not approved and not isinstance(body.get("rejection_reason"), str):
+        return _problem(400, "Invalid quotation", "A rejection_reason is required when rejecting.", "invalid-quotation")
+    old_status = quotation.status
+    quotation.approved_by = request.user if approved else None
+    quotation.approved_at = timezone.now() if approved else None
+    quotation.status = MaintenanceQuotation.STATUS_APPROVED if approved else MaintenanceQuotation.STATUS_REJECTED
+    quotation.rejection_reason = "" if approved else body["rejection_reason"].strip()
+    try:
+        quotation.full_clean()
+        with transaction.atomic():
+            quotation.save()
+            if approved and quotation.ticket.status == MaintenanceTicket.STATUS_QUOTATION:
+                quotation.ticket.transition_to(MaintenanceTicket.STATUS_IN_PROGRESS)
+                quotation.ticket.save(update_fields=["status", "updated_at"])
+    except ValidationError as exc:
+        return _problem(400, "Invalid quotation", str(exc.message_dict), "invalid-quotation")
+    record_audit_event(
+        request,
+        "maintenance_quotation.approved" if approved else "maintenance_quotation.rejected",
+        "MaintenanceQuotation",
+        old_values={"id": quotation.pk, "status": old_status},
+        new_values=_maintenance_quotation_payload(quotation),
+    )
+    return JsonResponse({"quotation": _maintenance_quotation_payload(quotation)})
+
+
+@require_POST
+def create_maintenance_cost_allocation(request, quotation_id):
+    error = _vendor_management_error(request)
+    if error:
+        return error
+    quotation = MaintenanceQuotation.objects.filter(
+        pk=quotation_id,
+        status=MaintenanceQuotation.STATUS_APPROVED,
+        ticket__property__in=_accessible_properties(request.user),
+    ).select_related("ticket__property__landlord", "ticket__unit").prefetch_related("allocations").first()
+    if quotation is None:
+        return _problem(404, "Quotation not found", "An approved quotation in your scope is required.", "quotation-not-found")
+    body = _json_body(request)
+    if body is None or body.get("target") not in dict(MaintenanceCostAllocation.TARGET_CHOICES):
+        return _problem(400, "Invalid allocation", "target must be landlord or tenant.", "invalid-allocation")
+    try:
+        amount = Decimal(str(body["amount"]))
+    except (KeyError, InvalidOperation, TypeError, ValueError):
+        return _problem(400, "Invalid allocation", "amount must be a positive number.", "invalid-allocation")
+    allocated = quotation.allocations.aggregate(total=models.Sum("amount"))["total"] or Decimal("0.00")
+    if amount <= 0 or allocated + amount > quotation.amount:
+        return _problem(400, "Invalid allocation", "Allocations cannot exceed the approved quotation amount.", "invalid-allocation")
+    landlord = tenant = None
+    if body["target"] == MaintenanceCostAllocation.TARGET_LANDLORD:
+        landlord = quotation.ticket.property.landlord
+        if landlord is None:
+            return _problem(400, "Invalid allocation", "The ticket property has no landlord.", "invalid-allocation")
+    else:
+        if quotation.ticket.unit is None:
+            return _problem(400, "Invalid allocation", "A tenant allocation requires a ticket unit.", "invalid-allocation")
+        tenancy = Tenancy.objects.filter(unit=quotation.ticket.unit, status=Tenancy.STATUS_ACTIVE).select_related("tenant").first()
+        if tenancy is None:
+            return _problem(400, "Invalid allocation", "The ticket unit has no active tenancy.", "invalid-allocation")
+        tenant = tenancy.tenant
+    allocation = MaintenanceCostAllocation(
+        quotation=quotation,
+        target=body["target"],
+        landlord=landlord,
+        tenant=tenant,
+        amount=amount,
+        reason=str(body.get("reason") or "").strip(),
+        allocated_by=request.user,
+    )
+    try:
+        allocation.full_clean()
+        allocation.save()
+    except (ValidationError, IntegrityError) as exc:
+        detail = exc.message_dict if isinstance(exc, ValidationError) else "The allocation could not be saved."
+        return _problem(400, "Invalid allocation", str(detail), "invalid-allocation")
+    record_audit_event(
+        request,
+        "maintenance_cost_allocation.created",
+        "MaintenanceCostAllocation",
+        new_values={
+            "id": allocation.pk,
+            "quotation_id": quotation.pk,
+            "target": allocation.target,
+            "amount": str(allocation.amount),
+        },
+    )
+    return JsonResponse(
+        {
+            "allocation": {
+                "id": allocation.pk,
+                "quotation_id": quotation.pk,
+                "target": allocation.target,
+                "landlord_id": allocation.landlord_id,
+                "tenant_id": allocation.tenant_id,
+                "amount": str(allocation.amount),
+                "reason": allocation.reason,
+            }
+        },
+        status=201,
+    )
+
+
+def _vendor_payload(vendor):
+    return {
+        "id": vendor.pk,
+        "branch_id": vendor.branch_id,
+        "name": vendor.name,
+        "trade": vendor.trade,
+        "phone": vendor.phone,
+        "email": vendor.email,
+        "mpesa_number": vendor.mpesa_number,
+        "rating": str(vendor.rating),
+        "notes": vendor.notes,
+        "is_active": vendor.is_active,
+        "created_at": vendor.created_at.isoformat(),
+        "updated_at": vendor.updated_at.isoformat(),
+    }
+
+
+def _vendor_management_error(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not _has_landlord_management_access(request.user):
+        return _problem(
+            403,
+            "Permission denied",
+            "Only authorized property staff can manage vendors.",
+            "vendor-management-denied",
+        )
+    return None
+
+
+def _accessible_vendors(user):
+    profile = getattr(user, "profile", None)
+    if profile is None or not _has_landlord_management_access(user):
+        return Vendor.objects.none()
+    return Vendor.objects.filter(branch__in=profile.accessible_branches())
+
+
+@require_GET
+def list_vendors(request):
+    error = _vendor_management_error(request)
+    if error:
+        return error
+    vendors = _accessible_vendors(request.user)
+    if request.GET.get("active") == "true":
+        vendors = vendors.filter(is_active=True)
+    return JsonResponse({"vendors": [_vendor_payload(vendor) for vendor in vendors]})
+
+
+@require_POST
+def create_vendor(request):
+    error = _vendor_management_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    required = ("branch_id", "name", "trade", "phone")
+    if body is None or any(
+        body.get(field) in (None, "") for field in required
+    ):
+        return _problem(400, "Invalid vendor", "branch_id, name, trade, and phone are required.", "invalid-vendor")
+    try:
+        branch_id = int(body["branch_id"])
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid vendor", "branch_id must be an integer.", "invalid-vendor")
+    branch = _accessible_branches(request.user).filter(pk=branch_id).first()
+    if branch is None:
+        return _problem(404, "Branch not found", "The branch is unavailable.", "branch-not-found")
+    try:
+        rating = Decimal(str(body.get("rating", "0")))
+    except (InvalidOperation, TypeError, ValueError):
+        return _problem(400, "Invalid vendor", "rating must be a number from 0 to 5.", "invalid-vendor")
+    vendor = Vendor(
+        branch=branch,
+        name=str(body["name"]).strip(),
+        trade=str(body["trade"]).strip(),
+        phone=str(body["phone"]).strip(),
+        email=str(body.get("email") or "").strip(),
+        mpesa_number=str(body.get("mpesa_number") or "").strip(),
+        rating=rating,
+        notes=str(body.get("notes") or "").strip(),
+    )
+    try:
+        vendor.full_clean()
+        vendor.save()
+    except (ValidationError, IntegrityError) as exc:
+        detail = exc.message_dict if isinstance(exc, ValidationError) else "A vendor with this phone already exists in the branch."
+        return _problem(400, "Invalid vendor", str(detail), "invalid-vendor")
+    record_audit_event(request, "vendor.created", "Vendor", new_values=_vendor_payload(vendor))
+    return JsonResponse({"vendor": _vendor_payload(vendor)}, status=201)
+
+
+@require_POST
+def update_vendor(request, vendor_id):
+    error = _vendor_management_error(request)
+    if error:
+        return error
+    vendor = _accessible_vendors(request.user).filter(pk=vendor_id).first()
+    if vendor is None:
+        return _problem(404, "Vendor not found", "The vendor is unavailable.", "vendor-not-found")
+    body = _json_body(request)
+    if body is None:
+        return _problem(400, "Invalid vendor", "A JSON object is required.", "invalid-vendor")
+    old_values = _vendor_payload(vendor)
+    for field in ("name", "trade", "phone", "email", "mpesa_number", "notes"):
+        if field in body:
+            setattr(vendor, field, str(body[field] or "").strip())
+    if "rating" in body:
+        try:
+            vendor.rating = Decimal(str(body["rating"]))
+        except (InvalidOperation, TypeError, ValueError):
+            return _problem(400, "Invalid vendor", "rating must be a number from 0 to 5.", "invalid-vendor")
+    if "is_active" in body:
+        if not isinstance(body["is_active"], bool):
+            return _problem(400, "Invalid vendor", "is_active must be a boolean.", "invalid-vendor")
+        vendor.is_active = body["is_active"]
+    try:
+        vendor.full_clean()
+        vendor.save()
+    except (ValidationError, IntegrityError) as exc:
+        detail = exc.message_dict if isinstance(exc, ValidationError) else "A vendor with this phone already exists in the branch."
+        return _problem(400, "Invalid vendor", str(detail), "invalid-vendor")
+    record_audit_event(
+        request,
+        "vendor.updated",
+        "Vendor",
+        old_values=old_values,
+        new_values=_vendor_payload(vendor),
+    )
+    return JsonResponse({"vendor": _vendor_payload(vendor)})
+
+
+def _maintenance_photos(body, field="photos"):
+    photos = body.get(field) or []
+    if not isinstance(photos, list) or len(photos) > 10 or any(not isinstance(item, dict) for item in photos):
+        raise ValueError(f"{field} must be an array of at most 10 photo metadata objects.")
+    for photo in photos:
+        if not str(photo.get("storage_key") or "").strip():
+            raise ValueError(f"Every {field} item requires a storage_key.")
+        content_type = photo.get("content_type")
+        if content_type is not None and content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise ValueError(f"{field} content_type must be JPEG, PNG, or WebP.")
+        size_bytes = photo.get("size_bytes")
+        if size_bytes is not None and (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or size_bytes > 10 * 1024 * 1024
+        ):
+            raise ValueError(f"{field} size_bytes must be an integer from 0 to 10 MB.")
+    return photos
+
+
+@require_GET
+def list_maintenance_tickets(request):
+    error = _maintenance_access_error(request)
+    if error:
+        return error
+    tickets = _accessible_maintenance_tickets(request.user)
+    status = request.GET.get("status")
+    if status:
+        if status not in dict(MaintenanceTicket.STATUS_CHOICES):
+            return _problem(400, "Invalid status", "The maintenance status is not supported.", "invalid-status")
+        tickets = tickets.filter(status=status)
+    return JsonResponse(
+        {"tickets": [_maintenance_ticket_payload(ticket) for ticket in tickets]}
+    )
+
+
+@require_POST
+def create_maintenance_ticket(request):
+    error = _maintenance_access_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    required = ("property_id", "title", "description", "category")
+    if body is None or any(not isinstance(body.get(field), str) or not body[field].strip() for field in required[1:]):
+        return _problem(400, "Invalid ticket", "property_id, title, description, and category are required.", "invalid-ticket")
+    try:
+        property_id = int(body["property_id"])
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid ticket", "property_id must be an integer.", "invalid-ticket")
+    property_obj = _accessible_properties(request.user).filter(pk=property_id).first()
+    if property_obj is None:
+        return _problem(404, "Property not found", "The property is unavailable or outside your access scope.", "property-not-found")
+    unit = None
+    vendor = None
+    if body.get("unit_id") is not None:
+        try:
+            unit = Unit.objects.filter(pk=int(body["unit_id"]), property=property_obj).first()
+        except (TypeError, ValueError):
+            unit = None
+        if unit is None:
+            return _problem(400, "Invalid ticket", "The unit must belong to the selected property.", "invalid-ticket")
+    if body.get("vendor_id") is not None:
+        try:
+            vendor = Vendor.objects.filter(
+                pk=int(body["vendor_id"]),
+                branch=property_obj.branch,
+                is_active=True,
+            ).first()
+        except (TypeError, ValueError):
+            vendor = None
+        if vendor is None:
+            return _problem(400, "Invalid vendor", "The vendor must be active and belong to the property branch.", "invalid-vendor")
+    try:
+        photos = _maintenance_photos(body)
+    except ValueError as exc:
+        return _problem(400, "Invalid ticket", str(exc), "invalid-ticket")
+    priority = body.get("priority", MaintenanceTicket.PRIORITY_NORMAL)
+    category = body["category"].strip()
+    if category not in dict(MaintenanceTicket.CATEGORY_CHOICES) or priority not in dict(MaintenanceTicket.PRIORITY_CHOICES):
+        return _problem(400, "Invalid ticket", "The category or priority is not supported.", "invalid-ticket")
+    ticket = MaintenanceTicket(
+        property=property_obj,
+        unit=unit,
+        reported_by=request.user,
+        title=body["title"].strip(),
+        description=body["description"].strip(),
+        category=category,
+        priority=priority,
+        vendor=vendor,
+        photos=photos,
+    )
+    try:
+        ticket.full_clean()
+        ticket.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid ticket", str(exc.message_dict), "invalid-ticket")
+    record_audit_event(request, "maintenance_ticket.created", "MaintenanceTicket", new_values=_maintenance_ticket_payload(ticket, False))
+    return JsonResponse({"ticket": _maintenance_ticket_payload(ticket)}, status=201)
+
+
+@require_POST
+def update_maintenance_ticket_status(request, ticket_id):
+    error = _maintenance_access_error(request)
+    if error:
+        return error
+    ticket = _accessible_maintenance_tickets(request.user).filter(pk=ticket_id).first()
+    if ticket is None:
+        return _problem(404, "Ticket not found", "The maintenance ticket is unavailable.", "ticket-not-found")
+    body = _json_body(request)
+    new_status = body.get("status") if body else None
+    if not isinstance(new_status, str):
+        return _problem(400, "Invalid status", "status is required.", "invalid-status")
+    caretaker_self_assignment = (
+        _is_caretaker(request.user)
+        and new_status == MaintenanceTicket.STATUS_ASSIGNED
+        and str(body.get("assigned_to")) == str(request.user.pk)
+    )
+    if (
+        not _has_landlord_management_access(request.user)
+        and ticket.assigned_to_id != request.user.pk
+        and not caretaker_self_assignment
+    ):
+        return _problem(403, "Permission denied", "Only the assigned caretaker or authorized staff can update this ticket.", "ticket-update-denied")
+    old_status = ticket.status
+    if body.get("assigned_to") is not None:
+        try:
+            assignee = get_user_model().objects.filter(
+                pk=int(body["assigned_to"]),
+                is_active=True,
+                groups__name=CARETAKER_ROLE,
+                profile__branches=ticket.property.branch,
+            ).first()
+        except (TypeError, ValueError):
+            assignee = None
+        if assignee is None:
+            return _problem(400, "Invalid assignee", "The assignee must be an active caretaker in the property branch.", "invalid-assignee")
+        ticket.assigned_to = assignee
+    if body.get("vendor_id") is not None:
+        try:
+            vendor = Vendor.objects.filter(
+                pk=int(body["vendor_id"]),
+                branch=ticket.property.branch,
+                is_active=True,
+            ).first()
+        except (TypeError, ValueError):
+            vendor = None
+        if vendor is None:
+            return _problem(400, "Invalid vendor", "The vendor must be active and belong to the property branch.", "invalid-vendor")
+        ticket.vendor = vendor
+    try:
+        ticket.transition_to(new_status)
+        ticket.full_clean()
+        ticket.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid status transition", str(exc.message_dict), "invalid-status-transition")
+    record_audit_event(
+        request,
+        "maintenance_ticket.status_changed",
+        "MaintenanceTicket",
+        old_values={"id": ticket.pk, "status": old_status},
+        new_values={"id": ticket.pk, "status": ticket.status, "assigned_to": ticket.assigned_to_id},
+    )
+    return JsonResponse({"ticket": _maintenance_ticket_payload(ticket)})
+
+
+@require_POST
+def add_maintenance_ticket_comment(request, ticket_id):
+    error = _maintenance_access_error(request)
+    if error:
+        return error
+    ticket = _accessible_maintenance_tickets(request.user).filter(pk=ticket_id).first()
+    if ticket is None:
+        return _problem(404, "Ticket not found", "The maintenance ticket is unavailable.", "ticket-not-found")
+    body = _json_body(request)
+    if body is None or not isinstance(body.get("body"), str) or not body["body"].strip():
+        return _problem(400, "Invalid comment", "A non-empty comment body is required.", "invalid-comment")
+    try:
+        photos = _maintenance_photos(body)
+        comment = MaintenanceTicketComment(
+            ticket=ticket,
+            author=request.user,
+            body=body["body"].strip(),
+            photos=photos,
+        )
+        comment.full_clean()
+        comment.save()
+    except (ValidationError, ValueError) as exc:
+        detail = exc.message_dict if isinstance(exc, ValidationError) else str(exc)
+        return _problem(400, "Invalid comment", str(detail), "invalid-comment")
+    record_audit_event(
+        request,
+        "maintenance_ticket.comment_added",
+        "MaintenanceTicketComment",
+        new_values={"id": comment.pk, "ticket_id": ticket.pk},
+    )
+    return JsonResponse(
+        {
+            "comment": {
+                "id": comment.pk,
+                "author": comment.author_id,
+                "body": comment.body,
+                "photos": comment.photos,
+                "created_at": comment.created_at.isoformat(),
+            }
+        },
+        status=201,
+    )
 
 
 @require_GET
@@ -3143,69 +4597,273 @@ def issue_tenant_activation(request, tenancy_id):
     ).select_related("tenant").first()
     if tenancy is None:
         return _problem(404, "Tenancy not found", "The active tenancy is unavailable.", "tenancy-not-found")
+    return _issue_tenant_activation_challenge(request, tenancy)
+
+
+def _issue_tenant_activation_challenge(request, tenancy):
     token = secrets.token_urlsafe(32)
-    challenge = TenantActivationChallenge.objects.create(
-        tenant=tenancy.tenant,
-        token_hash=_activation_hash(token),
-        expires_at=timezone.now() + timedelta(hours=24),
-    )
+    activation_code = secrets.token_urlsafe(9).replace("-", "").replace("_", "").upper()
+    now = timezone.now()
+    with transaction.atomic():
+        TenantActivationChallenge.objects.filter(
+            tenant=tenancy.tenant,
+            unit=tenancy.unit,
+            used_at__isnull=True,
+        ).update(used_at=now)
+        challenge = TenantActivationChallenge.objects.create(
+            tenant=tenancy.tenant,
+            unit=tenancy.unit,
+            token_hash=_activation_hash(token),
+            code_hash=_activation_hash(activation_code),
+            expires_at=now + timedelta(hours=48),
+        )
     record_audit_event(
         request,
         "tenant_activation.issued",
         "TenantActivationChallenge",
-        new_values={"id": challenge.pk, "tenant_id": tenancy.tenant_id, "expires_at": challenge.expires_at.isoformat()},
+        new_values={
+            "id": challenge.pk,
+            "tenant_id": tenancy.tenant_id,
+            "tenancy_id": tenancy.pk,
+            "expires_at": challenge.expires_at.isoformat(),
+        },
     )
     return JsonResponse(
         {
             "activation_token": token,
+            "activation_code": activation_code,
             "expires_at": challenge.expires_at.isoformat(),
             "tenant_id": tenancy.tenant_id,
+            "unit_code": tenancy.unit.code,
         },
         status=201,
     )
 
 
 @require_POST
+def issue_unit_tenant_activation(request, unit_id):
+    error = _property_access_error(request)
+    if error:
+        return error
+    tenancy = Tenancy.objects.filter(
+        unit_id=unit_id,
+        unit__property__in=_accessible_properties(request.user),
+        status=Tenancy.STATUS_ACTIVE,
+    ).select_related("tenant", "unit").first()
+    if tenancy is None:
+        return _problem(404, "Active tenancy not found", "No active tenancy is available for this unit.", "active-tenancy-not-found")
+    return _issue_tenant_activation_challenge(request, tenancy)
+
+
+@require_GET
+def list_tenant_activation_challenges(request):
+    error = _property_access_error(request)
+    if error:
+        return error
+    challenges = TenantActivationChallenge.objects.filter(
+        unit__property__in=_accessible_properties(request.user),
+        used_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).select_related("tenant", "unit").order_by("expires_at")
+    return JsonResponse(
+        {
+            "codes": [
+                {
+                    "id": item.pk,
+                    "unitCode": item.unit.code,
+                    "code": None,
+                    "expiresAt": item.expires_at.isoformat(),
+                    "tenantName": item.tenant.name,
+                    "tenantEmail": item.tenant.email or "",
+                    "tenantStatus": "pending",
+                }
+                for item in challenges
+                if Tenancy.objects.filter(
+                    tenant_id=item.tenant_id,
+                    unit_id=item.unit_id,
+                    status=Tenancy.STATUS_ACTIVE,
+                ).exists()
+            ]
+        }
+    )
+
+
+def _usable_tenant_challenge(challenge):
+    return (
+        challenge is not None
+        and challenge.is_usable
+        and challenge.unit_id is not None
+        and Tenancy.objects.filter(
+            tenant_id=challenge.tenant_id,
+            unit_id=challenge.unit_id,
+            status=Tenancy.STATUS_ACTIVE,
+        ).exists()
+    )
+
+
+def _tenant_activation_context_payload(challenge):
+    tenant = challenge.tenant
+    return {
+        "tenant_id": tenant.pk,
+        "full_name": tenant.name,
+        "email": tenant.email or "",
+        "unit_code": challenge.unit.code,
+        "property_name": challenge.unit.property.name,
+        "expires_at": challenge.expires_at.isoformat(),
+    }
+
+
+@require_GET
+def tenant_activation_context(request):
+    token = request.GET.get("token", "")
+    challenge = TenantActivationChallenge.objects.filter(
+        token_hash=_activation_hash(token),
+    ).select_related("tenant", "unit__property").first()
+    if not token or not _usable_tenant_challenge(challenge):
+        return _problem(400, "Invalid activation link", "The activation link is invalid, expired, or already used.", "invalid-activation")
+    return JsonResponse(_tenant_activation_context_payload(challenge))
+
+
+@require_POST
+def verify_tenant_activation_code(request):
+    body = _json_body(request)
+    code = body.get("code") if body else None
+    unit_code = body.get("unit_code") if body else None
+    if not isinstance(code, str) or not code.strip():
+        return _problem(400, "Invalid request", "An activation code is required.", "invalid-request")
+    challenge = TenantActivationChallenge.objects.filter(
+        code_hash=_activation_hash(code.strip().upper()),
+    ).select_related("tenant", "unit__property").first()
+    if isinstance(unit_code, str) and unit_code.strip():
+        if challenge is None or challenge.unit.code.casefold() != unit_code.strip().casefold():
+            challenge = None
+    if not _usable_tenant_challenge(challenge):
+        return _problem(400, "Invalid activation code", "The activation code is invalid, expired, or already used.", "invalid-activation")
+    return JsonResponse(_tenant_activation_context_payload(challenge))
+
+
+@require_POST
 def activate_tenant(request):
     body = _json_body(request)
-    if body is None or not isinstance(body.get("token"), str) or not isinstance(body.get("password"), str):
-        return _problem(400, "Invalid request", "token and password are required.", "invalid-request")
-    token = body["token"]
-    challenge = TenantActivationChallenge.objects.select_related("tenant").filter(
-        token_hash=_activation_hash(token)
-    ).first()
-    if challenge is None or not challenge.is_usable:
-        return _problem(400, "Invalid activation link", "The activation link is invalid, expired, or already used.", "invalid-activation")
+    if body is None or not isinstance(body.get("password"), str):
+        return _problem(400, "Invalid request", "password and an activation token or code are required.", "invalid-request")
+    token = body.get("token")
+    code = body.get("code")
+    if not isinstance(token, str) and not isinstance(code, str):
+        return _problem(400, "Invalid request", "password and an activation token or code are required.", "invalid-request")
     password = body["password"]
     if len(password) < 12:
         return _problem(400, "Invalid password", "Password must contain at least 12 characters.", "invalid-password")
+    try:
+        password_validation.validate_password(password)
+    except ValidationError as exc:
+        return _problem(400, "Invalid password", "; ".join(exc.messages), "invalid-password")
+    full_name = body.get("full_name")
+    phone = body.get("phone")
+    email = body.get("email")
+    if full_name is not None and (not isinstance(full_name, str) or not full_name.strip()):
+        return _problem(400, "Invalid request", "full_name must be a non-empty string.", "invalid-request")
+    if phone is not None and not isinstance(phone, str):
+        return _problem(400, "Invalid request", "phone must be a string.", "invalid-request")
+    if email is not None and not isinstance(email, str):
+        return _problem(400, "Invalid request", "email must be a string.", "invalid-request")
+    if isinstance(email, str) and email.strip():
+        email = email.strip().lower()
+        try:
+            validate_email(email)
+        except ValidationError:
+            return _problem(400, "Invalid request", "email must be a valid email address.", "invalid-request")
+    else:
+        email = ""
+    try:
+        normalized_phone = _normalize_ke_phone(phone) if phone else None
+    except ValueError as exc:
+        return _problem(400, "Invalid phone", str(exc), "invalid-phone")
     user_model = get_user_model()
-    with transaction.atomic():
-        tenant = challenge.tenant
-        user = tenant.portal_user
-        if user is None:
-            username = tenant.email or tenant.phone
-            user = user_model.objects.create_user(
-                username=username,
-                email=tenant.email,
-                password=password,
-            )
-            UserProfile.objects.create(user=user, name=tenant.name, phone=tenant.phone)
-            user.groups.add(Group.objects.get(name="Tenant (portal)"))
-            tenant.portal_user = user
-            tenant.save(update_fields=["portal_user", "updated_at"])
-        else:
-            user.set_password(password)
-            user.save(update_fields=["password"])
-        challenge.used_at = timezone.now()
-        challenge.save(update_fields=["used_at"])
+    challenge_filter = (
+        {"token_hash": _activation_hash(token)}
+        if isinstance(token, str)
+        else {"code_hash": _activation_hash(code.strip().upper())}
+    )
+    try:
+        with transaction.atomic():
+            challenge = TenantActivationChallenge.objects.select_for_update(
+                of=("self",)
+            ).select_related("tenant", "unit").filter(**challenge_filter).first()
+            if not _usable_tenant_challenge(challenge):
+                return _problem(400, "Invalid activation", "The activation link or code is invalid, expired, or already used.", "invalid-activation")
+            unit_code = body.get("unit_code")
+            if isinstance(unit_code, str) and unit_code.strip() and (
+                challenge.unit.code.casefold() != unit_code.strip().casefold()
+            ):
+                return _problem(400, "Invalid activation", "The activation code does not match this unit.", "invalid-activation")
+            tenant = challenge.tenant
+            if email and tenant.email and email.casefold() != tenant.email.casefold():
+                return _problem(403, "Email mismatch", "The activation code is not assigned to this email address.", "email-mismatch")
+            tenant_changed = False
+            if email and not tenant.email:
+                tenant.email = email
+                tenant_changed = True
+            if normalized_phone and tenant.phone != normalized_phone:
+                tenant.phone = normalized_phone
+                tenant_changed = True
+            if tenant_changed:
+                tenant.save(update_fields=["email", "phone", "updated_at"])
+            user = tenant.portal_user
+            if user is None:
+                username = tenant.email.strip().lower() or tenant.phone
+                if user_model.objects.filter(
+                    Q(username__iexact=username)
+                    | (Q(email__iexact=username) if tenant.email else Q(pk__isnull=True))
+                ).exists():
+                    return _problem(409, "Account exists", "A user account already exists for this tenant.", "account-exists")
+                user = user_model.objects.create_user(
+                    username=username,
+                    email=tenant.email.strip().lower(),
+                    password=password,
+                    is_active=True,
+                )
+                profile = UserProfile(user=user, name=(full_name or tenant.name).strip(), phone=normalized_phone or tenant.phone)
+                profile.full_clean()
+                profile.save()
+                profile.branches.add(tenant.branch)
+                tenant.portal_user = user
+                tenant.save(update_fields=["portal_user", "updated_at"])
+            else:
+                if not user.groups.filter(name=TENANT_PORTAL_ROLE).exists():
+                    return _problem(409, "Account conflict", "This tenant record is linked to a non-tenant portal account.", "account-conflict")
+                profile = UserProfile.objects.filter(user=user).first()
+                if profile is None:
+                    profile = UserProfile(user=user, name=(full_name or tenant.name).strip(), phone=normalized_phone or tenant.phone)
+                else:
+                    profile.name = (full_name or profile.name).strip()
+                    profile.phone = normalized_phone or profile.phone
+                profile.full_clean()
+                profile.save()
+                profile.branches.add(tenant.branch)
+                user.set_password(password)
+                user.is_active = True
+                if not user.email and tenant.email:
+                    user.email = tenant.email
+                user.save(update_fields=["password", "is_active", "email"])
+            user.groups.add(Group.objects.get(name=TENANT_PORTAL_ROLE))
+            challenge.used_at = timezone.now()
+            challenge.save(update_fields=["used_at"])
+    except Group.DoesNotExist:
+        return _problem(503, "Activation unavailable", "The tenant portal role is not configured.", "role-unavailable")
+    except ValidationError as exc:
+        return _problem(400, "Invalid activation", "; ".join(exc.messages), "invalid-activation")
+    except IntegrityError:
+        return _problem(409, "Account conflict", "The tenant account could not be created because its email or phone is already in use.", "account-conflict")
+    login(request, user, backend="users.authentication.EmailOrPhoneBackend")
     record_audit_event(
         request,
         "tenant_activation.completed",
         "TenantActivationChallenge",
         new_values={"id": challenge.pk, "tenant_id": tenant.pk, "user_id": user.pk},
+        actor=user,
     )
-    return JsonResponse({"activated": True, "tenant_id": tenant.pk})
+    return JsonResponse({"activated": True, "tenant_id": tenant.pk, "user": _user_payload(user)})
 
 
 @require_POST
@@ -3932,3 +5590,637 @@ def create_tenant_document(request, tenant_id):
         },
         status=201,
     )
+
+
+def _inspection_payload(inspection, include_private_token=True):
+    payload = {
+        "id": inspection.pk,
+        "property_id": inspection.property_id,
+        "unit_id": inspection.unit_id,
+        "title": inspection.title,
+        "inspection_type": inspection.inspection_type,
+        "scheduled_for": inspection.scheduled_for.isoformat(),
+        "responsible_staff_id": inspection.responsible_staff_id,
+        "created_by_id": inspection.created_by_id,
+        "status": inspection.status,
+        "checklist": inspection.checklist,
+        "photos": inspection.photos,
+        "findings": inspection.findings,
+        "recommendations": inspection.recommendations,
+        "completed_at": inspection.completed_at.isoformat() if inspection.completed_at else None,
+        "shared_at": inspection.shared_at.isoformat() if inspection.shared_at else None,
+    }
+    if include_private_token:
+        payload["share_token"] = str(inspection.share_token) if inspection.shared_at else None
+    return payload
+
+
+def _inspection_access_error(request, property_obj=None):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not (_has_landlord_management_access(request.user) or _is_caretaker(request.user)):
+        return _problem(
+            403,
+            "Permission denied",
+            "Only authorized property staff and assigned caretakers can manage inspections.",
+            "inspection-access-denied",
+        )
+    if property_obj is not None and property_obj not in _accessible_properties(request.user):
+        return _problem(403, "Permission denied", "The property is outside your scope.", "inspection-access-denied")
+    return None
+
+
+def _accessible_inspections(user):
+    return PropertyInspection.objects.filter(property__in=_accessible_properties(user))
+
+
+def _inspection_checklist(value):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("checklist must be an array.")
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not item["title"].strip():
+            raise ValueError("Each checklist item requires a title.")
+    return value
+
+
+def _inspection_photos(value):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("photos must be an array.")
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("storage_key"), str) or not item["storage_key"].strip():
+            raise ValueError("Each photo requires a storage_key.")
+    return value
+
+
+@require_GET
+def list_inspections(request):
+    error = _inspection_access_error(request)
+    if error:
+        return error
+    inspections = _accessible_inspections(request.user).select_related(
+        "property", "unit", "responsible_staff", "created_by"
+    )
+    if request.GET.get("property_id"):
+        try:
+            inspections = inspections.filter(property_id=int(request.GET["property_id"]))
+        except ValueError:
+            return _problem(400, "Invalid property", "property_id must be an integer.", "invalid-property")
+    if request.GET.get("status"):
+        inspections = inspections.filter(status=request.GET["status"])
+    return JsonResponse({"inspections": [_inspection_payload(item) for item in inspections]})
+
+
+@require_POST
+def create_inspection(request):
+    error = _inspection_access_error(request)
+    if error:
+        return error
+    body = _json_body(request) or {}
+    try:
+        property_obj = Property.objects.get(pk=int(body["property_id"]))
+        if property_obj not in _accessible_properties(request.user):
+            return _problem(403, "Permission denied", "The property is outside your scope.", "inspection-access-denied")
+        unit = Unit.objects.filter(pk=int(body["unit_id"]), property=property_obj).first() if body.get("unit_id") else None
+        if body.get("unit_id") and unit is None:
+            raise ValueError("unit_id must identify a unit in the property.")
+        responsible_staff = get_user_model().objects.get(pk=int(body["responsible_staff_id"]))
+        if not isinstance(body.get("title"), str) or not body["title"].strip():
+            raise ValueError("title is required.")
+        if not isinstance(body.get("inspection_type"), str) or not body["inspection_type"].strip():
+            raise ValueError("inspection_type is required.")
+        scheduled_for = datetime.fromisoformat(str(body["scheduled_for"]).replace("Z", "+00:00"))
+        if timezone.is_naive(scheduled_for):
+            scheduled_for = timezone.make_aware(scheduled_for)
+        checklist = _inspection_checklist(body.get("checklist"))
+        photos = _inspection_photos(body.get("photos"))
+    except (KeyError, TypeError, ValueError, Property.DoesNotExist, get_user_model().DoesNotExist):
+        return _problem(
+            400,
+            "Invalid inspection",
+            "property_id, title, inspection_type, scheduled_for, and responsible_staff_id are required.",
+            "invalid-inspection",
+        )
+    responsible_in_branch = UserProfile.objects.filter(
+        user=responsible_staff,
+        branches=property_obj.branch,
+    ).exists()
+    responsible_caretaker_assignment = PropertyCaretakerAssignment.objects.filter(
+        property=property_obj,
+        caretaker=responsible_staff,
+        ended_at__isnull=True,
+    ).exists()
+    if not responsible_in_branch or (
+        _is_caretaker(responsible_staff) and not responsible_caretaker_assignment
+    ):
+        return _problem(
+            400,
+            "Invalid inspection",
+            "Responsible staff must belong to the property branch; caretakers must be assigned to the property.",
+            "invalid-inspection",
+        )
+    inspection = PropertyInspection(
+        property=property_obj,
+        unit=unit,
+        title=body["title"].strip(),
+        inspection_type=body["inspection_type"].strip(),
+        scheduled_for=scheduled_for,
+        responsible_staff=responsible_staff,
+        created_by=request.user,
+        checklist=checklist,
+        photos=photos,
+    )
+    try:
+        inspection.full_clean()
+        inspection.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid inspection", str(exc.message_dict), "invalid-inspection")
+    record_audit_event(
+        request,
+        "property_inspection.created",
+        "PropertyInspection",
+        new_values=_inspection_payload(inspection),
+    )
+    return JsonResponse({"inspection": _inspection_payload(inspection)}, status=201)
+
+
+@require_POST
+def complete_inspection(request, inspection_id):
+    error = _inspection_access_error(request)
+    if error:
+        return error
+    inspection = _accessible_inspections(request.user).filter(pk=inspection_id).first()
+    if inspection is None:
+        return _problem(404, "Inspection not found", "The inspection is unavailable.", "inspection-not-found")
+    if inspection.status == PropertyInspection.STATUS_CANCELLED:
+        return _problem(400, "Invalid inspection", "Cancelled inspections cannot be completed.", "invalid-inspection")
+    if not _has_landlord_management_access(request.user) and inspection.responsible_staff_id != request.user.pk:
+        return _problem(403, "Permission denied", "Only the responsible caretaker can complete this inspection.", "inspection-access-denied")
+    body = _json_body(request) or {}
+    try:
+        checklist = _inspection_checklist(body.get("checklist", inspection.checklist))
+        photos = _inspection_photos(body.get("photos", inspection.photos))
+    except ValueError as exc:
+        return _problem(400, "Invalid inspection", str(exc), "invalid-inspection")
+    inspection.checklist = checklist
+    inspection.photos = photos
+    inspection.findings = str(body.get("findings", inspection.findings)).strip()
+    inspection.recommendations = str(body.get("recommendations", inspection.recommendations)).strip()
+    inspection.status = PropertyInspection.STATUS_COMPLETED
+    inspection.completed_at = timezone.now()
+    try:
+        inspection.full_clean()
+        inspection.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid inspection", str(exc.message_dict), "invalid-inspection")
+    record_audit_event(
+        request,
+        "property_inspection.completed",
+        "PropertyInspection",
+        new_values=_inspection_payload(inspection),
+    )
+    return JsonResponse({"inspection": _inspection_payload(inspection)})
+
+
+@require_POST
+def share_inspection_report(request, inspection_id):
+    error = _inspection_access_error(request)
+    if error:
+        return error
+    inspection = _accessible_inspections(request.user).filter(pk=inspection_id).first()
+    if inspection is None:
+        return _problem(404, "Inspection not found", "The inspection is unavailable.", "inspection-not-found")
+    if inspection.status != PropertyInspection.STATUS_COMPLETED:
+        return _problem(400, "Invalid inspection", "Only completed inspections can be shared.", "invalid-inspection")
+    if inspection.shared_at is None:
+        inspection.shared_at = timezone.now()
+        inspection.save(update_fields=["shared_at", "updated_at"])
+        record_audit_event(
+            request,
+            "property_inspection.report_shared",
+            "PropertyInspection",
+            new_values={"id": inspection.pk, "shared_at": inspection.shared_at.isoformat()},
+        )
+    return JsonResponse({"report": _inspection_payload(inspection)})
+
+
+@require_GET
+def get_inspection_report(request, inspection_id):
+    error = _inspection_access_error(request)
+    if error:
+        return error
+    inspection = _accessible_inspections(request.user).filter(pk=inspection_id).first()
+    if inspection is None:
+        return _problem(404, "Inspection not found", "The inspection is unavailable.", "inspection-not-found")
+    if inspection.status != PropertyInspection.STATUS_COMPLETED:
+        return _problem(404, "Report not found", "A report is available after completion.", "report-not-found")
+    return JsonResponse({"report": _inspection_payload(inspection)})
+
+
+@require_GET
+def get_shared_inspection_report(request, share_token):
+    inspection = PropertyInspection.objects.filter(
+        share_token=share_token,
+        status=PropertyInspection.STATUS_COMPLETED,
+        shared_at__isnull=False,
+    ).first()
+    if inspection is None:
+        return _problem(404, "Report not found", "The shared inspection report is unavailable.", "report-not-found")
+    return JsonResponse({"report": _inspection_payload(inspection, include_private_token=False)})
+
+
+def _property_expense_threshold(expense):
+    landlord = expense.property.landlord
+    if landlord is None:
+        return Decimal("0.00")
+    agreement = (
+        landlord.management_agreements.filter(effective_from__lte=timezone.localdate())
+        .filter(models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=timezone.localdate()))
+        .order_by("-effective_from", "-id")
+        .first()
+    )
+    if agreement is None or not isinstance(agreement.terms, dict):
+        return Decimal("0.00")
+    value = agreement.terms.get(
+        "expense_approval_threshold",
+        agreement.terms.get("approval_threshold", 0),
+    )
+    try:
+        return max(Decimal(str(value)), Decimal("0.00"))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0.00")
+
+
+def _property_expense_payload(expense):
+    threshold = _property_expense_threshold(expense)
+    return {
+        "id": expense.pk,
+        "property_id": expense.property_id,
+        "vendor_id": expense.vendor_id,
+        "category": expense.category,
+        "description": expense.description,
+        "amount": str(expense.amount),
+        "recurrence": expense.recurrence,
+        "effective_from": expense.effective_from.isoformat(),
+        "effective_to": expense.effective_to.isoformat() if expense.effective_to else None,
+        "next_due_date": expense.next_due_date.isoformat() if expense.next_due_date else None,
+        "submitted_by": expense.submitted_by_id,
+        "approved_by": expense.approved_by_id,
+        "approved_at": expense.approved_at.isoformat() if expense.approved_at else None,
+        "status": expense.status,
+        "rejection_reason": expense.rejection_reason or None,
+        "approval_threshold": str(threshold),
+        "requires_landlord_approval": expense.amount > threshold,
+    }
+
+
+def _property_expense_access_error(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not (_has_landlord_management_access(request.user) or _is_caretaker(request.user)):
+        return _problem(
+            403,
+            "Permission denied",
+            "Only authorized property staff and assigned caretakers can manage expenses.",
+            "expense-access-denied",
+        )
+    return None
+
+
+def _accessible_property_expenses(user):
+    return PropertyExpense.objects.filter(
+        property__in=_accessible_properties(user)
+    ).select_related("property", "property__landlord", "vendor", "submitted_by", "approved_by")
+
+
+@require_GET
+def list_property_expenses(request):
+    error = _property_expense_access_error(request)
+    if error:
+        return error
+    expenses = _accessible_property_expenses(request.user)
+    if request.GET.get("property_id"):
+        try:
+            expenses = expenses.filter(property_id=int(request.GET["property_id"]))
+        except ValueError:
+            return _problem(400, "Invalid property", "property_id must be an integer.", "invalid-property")
+    if request.GET.get("status"):
+        expenses = expenses.filter(status=request.GET["status"])
+    return JsonResponse({"expenses": [_property_expense_payload(expense) for expense in expenses]})
+
+
+@require_POST
+def create_property_expense(request):
+    error = _property_expense_access_error(request)
+    if error:
+        return error
+    body = _json_body(request) or {}
+    try:
+        property_obj = Property.objects.get(pk=int(body["property_id"]))
+        if not _accessible_properties(request.user).filter(pk=property_obj.pk).exists():
+            return _problem(403, "Permission denied", "The property is outside your scope.", "expense-access-denied")
+        if not isinstance(body.get("category"), str) or not body["category"].strip():
+            raise ValueError("category is required.")
+        if not isinstance(body.get("description"), str) or not body["description"].strip():
+            raise ValueError("description is required.")
+        amount = Decimal(str(body["amount"]))
+        recurrence = str(body.get("recurrence", PropertyExpense.RECURRENCE_ONE_OFF))
+        effective_from = date.fromisoformat(str(body["effective_from"]))
+        effective_to = date.fromisoformat(str(body["effective_to"])) if body.get("effective_to") else None
+        next_due_date = date.fromisoformat(str(body["next_due_date"])) if body.get("next_due_date") else None
+        vendor = (
+            Vendor.objects.filter(
+                pk=int(body["vendor_id"]),
+                branch=property_obj.branch,
+                is_active=True,
+            ).first()
+            if body.get("vendor_id")
+            else None
+        )
+        if body.get("vendor_id") and vendor is None:
+            raise ValueError("vendor_id must identify an active vendor in the property branch.")
+    except (KeyError, TypeError, ValueError, InvalidOperation, Property.DoesNotExist):
+        return _problem(
+            400,
+            "Invalid expense",
+            "property_id, category, description, amount, and effective_from are required.",
+            "invalid-expense",
+        )
+    if _is_caretaker(request.user) and not PropertyCaretakerAssignment.objects.filter(
+        property=property_obj,
+        caretaker=request.user,
+        ended_at__isnull=True,
+    ).exists():
+        return _problem(403, "Permission denied", "You are not assigned to this property.", "expense-access-denied")
+    expense = PropertyExpense(
+        property=property_obj,
+        vendor=vendor,
+        category=body["category"].strip(),
+        description=body["description"].strip(),
+        amount=amount,
+        recurrence=recurrence,
+        effective_from=effective_from,
+        effective_to=effective_to,
+        next_due_date=next_due_date,
+        submitted_by=request.user,
+    )
+    try:
+        expense.full_clean()
+        expense.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid expense", str(exc.message_dict), "invalid-expense")
+    record_audit_event(
+        request,
+        "property_expense.submitted",
+        "PropertyExpense",
+        new_values=_property_expense_payload(expense),
+    )
+    return JsonResponse({"expense": _property_expense_payload(expense)}, status=201)
+
+
+@require_POST
+def approve_property_expense(request, expense_id):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    expense = _accessible_property_expenses(request.user).filter(pk=expense_id).first()
+    if expense is None:
+        return _problem(404, "Expense not found", "The property expense is unavailable.", "expense-not-found")
+    if expense.status != PropertyExpense.STATUS_SUBMITTED:
+        return _problem(400, "Invalid expense", "Only submitted expenses can be approved or rejected.", "invalid-expense")
+    if expense.submitted_by_id == request.user.pk:
+        return _problem(403, "Permission denied", "The submitter cannot approve the same expense.", "expense-approval-denied")
+    threshold = _property_expense_threshold(expense)
+    if not _has_landlord_management_access(request.user):
+        if (
+            not _is_caretaker(request.user)
+            or expense.amount > threshold
+            or not PropertyCaretakerAssignment.objects.filter(
+                property=expense.property,
+                caretaker=request.user,
+                ended_at__isnull=True,
+            ).exists()
+        ):
+            return _problem(
+                403,
+                "Permission denied",
+                "Only authorized property staff can approve expenses above the agreement threshold.",
+                "expense-approval-denied",
+            )
+    body = _json_body(request) or {}
+    approved = body.get("approved", True)
+    if not isinstance(approved, bool):
+        return _problem(400, "Invalid expense", "approved must be a boolean.", "invalid-expense")
+    rejection_reason = body.get("rejection_reason")
+    if not approved and (not isinstance(rejection_reason, str) or not rejection_reason.strip()):
+        return _problem(400, "Invalid expense", "A rejection_reason is required when rejecting.", "invalid-expense")
+    old_status = expense.status
+    expense.status = PropertyExpense.STATUS_APPROVED if approved else PropertyExpense.STATUS_REJECTED
+    expense.approved_by = request.user if approved else None
+    expense.approved_at = timezone.now() if approved else None
+    expense.rejection_reason = "" if approved else rejection_reason.strip()
+    try:
+        expense.full_clean()
+        expense.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid expense", str(exc.message_dict), "invalid-expense")
+    record_audit_event(
+        request,
+        "property_expense.approved" if approved else "property_expense.rejected",
+        "PropertyExpense",
+        old_values={"id": expense.pk, "status": old_status},
+        new_values=_property_expense_payload(expense),
+    )
+    return JsonResponse({"expense": _property_expense_payload(expense)})
+
+
+def _announcement_payload(announcement, include_management_fields=True):
+    payload = {
+        "id": announcement.pk,
+        "branch_id": announcement.branch_id,
+        "property_id": announcement.property_id,
+        "title": announcement.title,
+        "body": announcement.body,
+        "publish_at": announcement.publish_at.isoformat() if announcement.publish_at else None,
+        "expires_at": announcement.expires_at.isoformat() if announcement.expires_at else None,
+        "status": announcement.status,
+    }
+    if include_management_fields:
+        payload.update(
+            {
+                "created_by": announcement.created_by_id,
+                "published_by": announcement.published_by_id,
+                "created_at": announcement.created_at.isoformat(),
+                "updated_at": announcement.updated_at.isoformat(),
+            }
+        )
+    return payload
+
+
+def _announcement_management_error(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    if not _has_landlord_management_access(request.user):
+        return _problem(
+            403,
+            "Permission denied",
+            "Only authorized property-management staff can manage announcements.",
+            "announcement-access-denied",
+        )
+    return None
+
+
+def _tenant_record_for_user(user):
+    if not user.is_authenticated or not user.groups.filter(name=TENANT_PORTAL_ROLE).exists():
+        return None
+    return Tenant.objects.filter(portal_user=user).first()
+
+
+@require_GET
+def list_announcements(request):
+    if not request.user.is_authenticated:
+        return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
+    now = timezone.now()
+    tenant = _tenant_record_for_user(request.user)
+    if tenant is not None:
+        active_property_ids = Tenancy.objects.filter(
+            tenant=tenant,
+            status=Tenancy.STATUS_ACTIVE,
+        ).values("unit__property_id")
+        announcements = Announcement.objects.filter(
+            branch=tenant.branch,
+            status=Announcement.STATUS_PUBLISHED,
+            publish_at__lte=now,
+        ).filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=now)
+        ).filter(
+            models.Q(property__isnull=True) | models.Q(property_id__in=active_property_ids)
+        )
+        return JsonResponse(
+            {
+                "announcements": [
+                    _announcement_payload(announcement, include_management_fields=False)
+                    for announcement in announcements
+                ]
+            }
+        )
+    access_error = _announcement_management_error(request)
+    if access_error:
+        return access_error
+    announcements = Announcement.objects.filter(
+        branch__in=_accessible_branches(request.user)
+    ).select_related("created_by", "published_by")
+    if request.GET.get("property_id"):
+        try:
+            announcements = announcements.filter(property_id=int(request.GET["property_id"]))
+        except ValueError:
+            return _problem(400, "Invalid property", "property_id must be an integer.", "invalid-property")
+    if request.GET.get("status"):
+        announcements = announcements.filter(status=request.GET["status"])
+    return JsonResponse({"announcements": [_announcement_payload(item) for item in announcements]})
+
+
+@require_POST
+def create_announcement(request):
+    error = _announcement_management_error(request)
+    if error:
+        return error
+    body = _json_body(request) or {}
+    try:
+        branch = Branch.objects.get(pk=int(body["branch_id"]))
+        if not _accessible_branches(request.user).filter(pk=branch.pk).exists():
+            return _problem(403, "Permission denied", "The branch is outside your scope.", "announcement-access-denied")
+        property_obj = (
+            Property.objects.filter(pk=int(body["property_id"]), branch=branch).first()
+            if body.get("property_id")
+            else None
+        )
+        if body.get("property_id") and property_obj is None:
+            raise ValueError("property_id must identify a property in the branch.")
+        if not isinstance(body.get("title"), str) or not body["title"].strip():
+            raise ValueError("title is required.")
+        if not isinstance(body.get("body"), str) or not body["body"].strip():
+            raise ValueError("body is required.")
+        publish_at = (
+            datetime.fromisoformat(str(body["publish_at"]).replace("Z", "+00:00"))
+            if body.get("publish_at")
+            else None
+        )
+        expires_at = (
+            datetime.fromisoformat(str(body["expires_at"]).replace("Z", "+00:00"))
+            if body.get("expires_at")
+            else None
+        )
+        if publish_at and timezone.is_naive(publish_at):
+            publish_at = timezone.make_aware(publish_at)
+        if expires_at and timezone.is_naive(expires_at):
+            expires_at = timezone.make_aware(expires_at)
+    except (KeyError, TypeError, ValueError, Branch.DoesNotExist):
+        return _problem(
+            400,
+            "Invalid announcement",
+            "branch_id, title, and body are required; dates must be valid ISO values.",
+            "invalid-announcement",
+        )
+    announcement = Announcement(
+        branch=branch,
+        property=property_obj,
+        title=body["title"].strip(),
+        body=body["body"].strip(),
+        publish_at=publish_at,
+        expires_at=expires_at,
+        created_by=request.user,
+    )
+    try:
+        announcement.full_clean()
+        announcement.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid announcement", str(exc.message_dict), "invalid-announcement")
+    record_audit_event(
+        request,
+        "announcement.created",
+        "Announcement",
+        new_values=_announcement_payload(announcement),
+    )
+    return JsonResponse({"announcement": _announcement_payload(announcement)}, status=201)
+
+
+@require_POST
+def publish_announcement(request, announcement_id):
+    error = _announcement_management_error(request)
+    if error:
+        return error
+    announcement = Announcement.objects.filter(
+        pk=announcement_id,
+        branch__in=_accessible_branches(request.user),
+    ).first()
+    if announcement is None:
+        return _problem(404, "Announcement not found", "The announcement is unavailable.", "announcement-not-found")
+    if announcement.status == Announcement.STATUS_ARCHIVED:
+        return _problem(400, "Invalid announcement", "Archived announcements cannot be published.", "invalid-announcement")
+    body = _json_body(request) or {}
+    publish_at = announcement.publish_at or timezone.now()
+    if body.get("publish_at"):
+        try:
+            publish_at = datetime.fromisoformat(str(body["publish_at"]).replace("Z", "+00:00"))
+            if timezone.is_naive(publish_at):
+                publish_at = timezone.make_aware(publish_at)
+        except (TypeError, ValueError):
+            return _problem(400, "Invalid announcement", "publish_at must be a valid ISO date-time.", "invalid-announcement")
+    announcement.publish_at = publish_at
+    announcement.status = Announcement.STATUS_PUBLISHED
+    announcement.published_by = request.user
+    try:
+        announcement.full_clean()
+        announcement.save()
+    except ValidationError as exc:
+        return _problem(400, "Invalid announcement", str(exc.message_dict), "invalid-announcement")
+    record_audit_event(
+        request,
+        "announcement.published",
+        "Announcement",
+        new_values=_announcement_payload(announcement),
+    )
+    return JsonResponse({"announcement": _announcement_payload(announcement)})

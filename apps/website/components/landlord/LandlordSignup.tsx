@@ -7,7 +7,6 @@ import {
   Building2, Eye, EyeOff, Lock, Mail, Phone, User,
   ShieldCheck, CheckCircle2, ArrowRight,
 } from 'lucide-react';
-import { createClient } from '../../lib/supabase/client';
 
 type Field = 'fullName' | 'propertyName' | 'email' | 'phone' | 'password' | 'confirmPassword';
 
@@ -66,12 +65,6 @@ export default function LandlordSignup() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to create account.');
-      const supabase = createClient();
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: form.email,
-        password: form.password,
-      });
-      if (signInError) throw new Error(signInError.message);
       router.push('/landlord/welcome');
       router.refresh();
     } catch (err: any) {

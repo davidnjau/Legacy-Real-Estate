@@ -4,7 +4,6 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutDashboard, Home, FileText, Wallet, Wrench, LogOut, Users, FolderUp } from 'lucide-react';
-import { createClient } from '../../lib/supabase/client';
 
 const navItems = [
   { name: 'Dashboard',        href: '/landlord/dashboard',  icon: LayoutDashboard, tourId: 'nav-dashboard' },
@@ -21,8 +20,11 @@ export function Sidebar({ userRole = 'landlord' }: { userRole?: string }) {
   const router = useRouter();
 
   const handleLogout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
+    const csrf = await fetch('/api/auth/csrf').then((response) => response.json());
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrf.csrfToken || '' },
+    });
     router.push('/login');
     router.refresh();
   };

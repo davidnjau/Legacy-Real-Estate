@@ -5,6 +5,10 @@ does not add business workflows or permissions beyond the approved SRS.
 
 ## Sign-in
 
+- The Next.js website proxies browser authentication requests to these Django
+  endpoints, so the browser receives the Django `sessionid` and `csrftoken`
+  cookies without exposing backend credentials or maintaining a second portal
+  session.
 - Users sign in with either their email address or Kenyan mobile number; a
   phone-only user may leave email blank.
 - Store mobile numbers in international format without a leading plus, using
@@ -23,6 +27,22 @@ does not add business workflows or permissions beyond the approved SRS.
 - `POST /api/v1/auth/mfa/verify` accepts `challenge_id` and `code`.
 - `GET /api/v1/auth/me` returns the current user's role names and accessible
   branches. `POST /api/v1/auth/logout` ends the session.
+- Public landlord registration at `POST /api/v1/auth/register-landlord`
+  creates the Django user, landlord record, initial property, and session in
+  one transaction. Each landlord record is linked to its portal user.
+- Caretaker invitations are scoped to properties owned by the authenticated
+  landlord portal account. Invitation tokens are stored only as SHA-256
+  hashes, expire after 48 hours, and are consumed once when the caretaker
+  account and durable property assignment are created. The invitation API
+  returns the raw activation link only when it is created or regenerated;
+  email delivery is not configured by this flow, so the landlord must share
+  the link securely.
+- Tenant activation can be issued only for an active tenancy. The API returns
+  a one-time URL token and a one-time activation code; only their hashes are
+  stored. Either credential can activate the tenant account, after which the
+  active challenge is consumed and the Django session is established.
+  Activation credentials expire after 48 hours and are invalidated when a new
+  credential is issued for the same tenant and unit.
 - The SMS provider is supplied by `AUTH_SMS_BACKEND`. The development-only
   console backend is selected when `DEBUG=1`; it refuses to send when debug
   mode is disabled. Production has no fallback provider and fails closed until

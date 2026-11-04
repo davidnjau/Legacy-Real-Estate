@@ -24,6 +24,18 @@ tags:
     description: Branches accessible to the authenticated user.
   - name: Properties
     description: Branch-scoped properties and units.
+  - name: Caretakers
+    description: Caretaker accounts and property assignments.
+  - name: Maintenance
+    description: Property maintenance tickets, lifecycle updates, and comments.
+  - name: Inspections
+    description: Scheduled property inspections and landlord-shareable reports.
+  - name: Expenses
+    description: Recurring and one-off property expenses with approval workflows.
+  - name: Announcements
+    description: Branch and property notices for management staff and tenants.
+  - name: Vendors
+    description: Branch-scoped maintenance vendor and fundi records.
   - name: Tenancies
     description: Branch-scoped tenancy records and terms.
   - name: Billing
@@ -213,6 +225,195 @@ paths:
                     type: string
                     const: ok
         "401":
+          $ref: "#/components/responses/Problem"
+  /auth/register-landlord:
+    post:
+      operationId: registerLandlordPortal
+      summary: Register a landlord portal account
+      description: Creates the Django account, landlord record, initial property, and session transactionally.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, email, phone, password, property_name]
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                password:
+                  type: string
+                  format: password
+                  minLength: 12
+                property_name:
+                  type: string
+      responses:
+        "201":
+          description: Landlord account and initial property created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /caretaker-invitations:
+    get:
+      operationId: listCaretakerInvitations
+      summary: List caretaker invitations and assignments
+      description: Returns invitations and active caretaker assignments limited to properties owned by the current landlord account.
+      tags:
+        - Caretakers
+      parameters:
+        - name: property_id
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Invitations and active caretaker assignments for owned properties
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createCaretakerInvitation
+      summary: Create a caretaker invitation
+      description: Returns a raw one-time activation token; only its hash is stored.
+      tags:
+        - Caretakers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [property_id, email]
+              properties:
+                property_id:
+                  type: integer
+                email:
+                  type: string
+                  format: email
+      responses:
+        "201":
+          description: Invitation created and activation token returned
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /caretaker-invitations/verify:
+    get:
+      operationId: verifyCaretakerInvitation
+      summary: Resolve a caretaker invitation
+      description: Validates an unexpired, unused invitation token and returns its email and property context.
+      tags:
+        - Caretakers
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invitation email and property context
+        "400":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /caretaker-invitations/complete:
+    post:
+      operationId: activateCaretakerInvitation
+      summary: Create and activate a caretaker account
+      description: Consumes an invitation and transactionally creates the caretaker account and property assignment.
+      tags:
+        - Caretakers
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token, name, phone, password]
+              properties:
+                token:
+                  type: string
+                name:
+                  type: string
+                phone:
+                  type: string
+                password:
+                  type: string
+                  format: password
+                  minLength: 12
+      responses:
+        "201":
+          description: Caretaker account and property assignment created; session established
+        "400":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /caretaker-invitations/{invitation_id}/resend:
+    post:
+      operationId: resendCaretakerInvitation
+      summary: Regenerate a caretaker activation token
+      description: Invalidates the previous link and returns a replacement token with a new 48-hour expiry.
+      tags:
+        - Caretakers
+      parameters:
+        - name: invitation_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: New one-time activation token returned
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /caretaker-invitations/revoke:
+    post:
+      operationId: revokeCaretakerPropertyAccess
+      summary: End a caretaker's assignment to a property
+      description: Ends the active assignment without deleting the caretaker account or its other assignments.
+      tags:
+        - Caretakers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [property_id, caretaker_id]
+              properties:
+                property_id:
+                  type: integer
+                caretaker_id:
+                  type: integer
+      responses:
+        "200":
+          description: Caretaker property assignment ended
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
           $ref: "#/components/responses/Problem"
   /branches:
     get:
@@ -501,6 +702,422 @@ paths:
         "201":
           description: Block created
         "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /caretakers/create:
+    post:
+      operationId: createCaretaker
+      summary: Create a caretaker account
+      tags:
+        - Caretakers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaretakerInput"
+      responses:
+        "201":
+          description: Caretaker account created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /caretaker/dashboard:
+    get:
+      operationId: getCaretakerDashboard
+      summary: Get the caretaker dashboard
+      description: Returns assigned properties, unit status, pending readings, and pending move-in checklist items for the authenticated caretaker.
+      tags:
+        - Caretakers
+      responses:
+        "200":
+          description: Caretaker dashboard
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /caretaker/meter-readings:
+    post:
+      operationId: createCaretakerMeterReadings
+      summary: Record caretaker meter readings
+      description: Atomically records up to 250 meter readings for units assigned to the authenticated caretaker.
+      tags:
+        - Caretakers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [readings]
+              properties:
+                readings:
+                  type: array
+                  minItems: 1
+                  maxItems: 250
+                  items:
+                    $ref: "#/components/schemas/CaretakerMeterReadingInput"
+      responses:
+        "201":
+          description: Meter readings recorded
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-tickets:
+    get:
+      operationId: listMaintenanceTickets
+      summary: List accessible maintenance tickets
+      description: Returns maintenance tickets within the authenticated user's property scope.
+      tags:
+        - Maintenance
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [open, assigned, quotation, awaiting_landlord_approval, in_progress, completed, closed]
+      responses:
+        "200":
+          description: Maintenance tickets
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /vendors:
+    get:
+      operationId: listVendors
+      summary: List vendors
+      description: Returns vendors in branches accessible to authorized property staff.
+      tags:
+        - Vendors
+      parameters:
+        - name: active
+          in: query
+          required: false
+          schema: {type: boolean}
+      responses:
+        "200":
+          description: Vendors
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /vendors/create:
+    post:
+      operationId: createVendor
+      summary: Create a vendor
+      description: Creates a branch-scoped vendor or fundi record.
+      tags:
+        - Vendors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VendorInput"
+      responses:
+        "201":
+          description: Vendor created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /vendors/{vendor_id}:
+    post:
+      operationId: updateVendor
+      summary: Update a vendor
+      description: Updates vendor contact, trade, rating, notes, or active status.
+      tags:
+        - Vendors
+      parameters:
+        - name: vendor_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VendorUpdate"
+      responses:
+        "200":
+          description: Vendor updated
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-tickets/{ticket_id}/quotations:
+    get:
+      operationId: listMaintenanceQuotations
+      summary: List ticket quotations
+      description: Returns quotations and the active landlord approval threshold for an accessible maintenance ticket.
+      tags:
+        - Maintenance
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Ticket quotations
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-tickets/{ticket_id}/quotations/create:
+    post:
+      operationId: createMaintenanceQuotation
+      summary: Submit a maintenance quotation
+      description: Submits a vendor quotation for an accessible ticket.
+      tags:
+        - Maintenance
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MaintenanceQuotationInput"
+      responses:
+        "201":
+          description: Quotation submitted
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-quotations/{quotation_id}/approval:
+    post:
+      operationId: approveMaintenanceQuotation
+      summary: Approve or reject a maintenance quotation
+      description: Applies agreement threshold authorization and records the approver or rejection reason.
+      tags:
+        - Maintenance
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approved: {type: boolean, default: true}
+                rejection_reason: {type: string}
+      responses:
+        "200":
+          description: Quotation decision recorded
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-quotations/{quotation_id}/allocations/create:
+    post:
+      operationId: createMaintenanceCostAllocation
+      summary: Allocate approved maintenance cost
+      description: Allocates part of an approved quotation to the property landlord or active tenant.
+      tags:
+        - Maintenance
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MaintenanceCostAllocationInput"
+      responses:
+        "201":
+          description: Cost allocation created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-tickets/create:
+    post:
+      operationId: createMaintenanceTicket
+      summary: Create a maintenance ticket
+      description: Creates a ticket for an accessible property or unit.
+      tags:
+        - Maintenance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MaintenanceTicketInput"
+      responses:
+        "201":
+          description: Maintenance ticket created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-tickets/{ticket_id}/status:
+    post:
+      operationId: updateMaintenanceTicketStatus
+      summary: Update a maintenance ticket status
+      description: Advances a ticket through the SRS maintenance lifecycle and optionally assigns a caretaker.
+      tags:
+        - Maintenance
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [open, assigned, quotation, awaiting_landlord_approval, in_progress, completed, closed]
+                assigned_to: {type: integer}
+      responses:
+        "200":
+          description: Maintenance ticket updated
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /maintenance-tickets/{ticket_id}/comments:
+    post:
+      operationId: addMaintenanceTicketComment
+      summary: Add a maintenance ticket comment
+      description: Adds an auditable operational comment and optional photo metadata to an accessible ticket.
+      tags:
+        - Maintenance
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: {type: string}
+                photos:
+                  type: array
+                  items: {type: object}
+      responses:
+        "201":
+          description: Comment added
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /properties/{property_id}/caretakers:
+    get:
+      operationId: listPropertyCaretakerAssignments
+      summary: List caretaker assignments
+      tags:
+        - Caretakers
+      parameters:
+        - name: property_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Caretaker assignments
+        "404":
+          $ref: "#/components/responses/Problem"
+  /properties/{property_id}/caretakers/assign:
+    post:
+      operationId: assignPropertyCaretaker
+      summary: Assign a caretaker to a property
+      tags:
+        - Caretakers
+      parameters:
+        - name: property_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [caretaker_id]
+              properties:
+                caretaker_id: {type: integer}
+      responses:
+        "201":
+          description: Caretaker assigned
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /properties/{property_id}/caretakers/{caretaker_id}/end:
+    post:
+      operationId: endPropertyCaretakerAssignment
+      summary: End a caretaker assignment
+      tags:
+        - Caretakers
+      parameters:
+        - name: property_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: caretaker_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Assignment ended
+        "403":
           $ref: "#/components/responses/Problem"
         "404":
           $ref: "#/components/responses/Problem"
@@ -1724,6 +2341,82 @@ paths:
           description: Activation token issued
         "404":
           $ref: "#/components/responses/Problem"
+  /units/{unit_id}/tenant-activation:
+    post:
+      operationId: issueUnitTenantActivation
+      summary: Issue a tenant activation link or code for an active tenancy
+      description: Issues a one-time activation token and code only when the caller can access the unit's active tenancy.
+      tags:
+        - Tenancies
+      parameters:
+        - name: unit_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: One-time activation token and code returned
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenant-activation:
+    get:
+      operationId: listTenantActivations
+      summary: List pending tenant activation records
+      description: Lists expiry and tenant context without disclosing previously issued raw codes.
+      tags:
+        - Tenancies
+      responses:
+        "200":
+          description: Pending activation records
+        "401":
+          $ref: "#/components/responses/Problem"
+  /tenant-activation/context:
+    get:
+      operationId: getTenantActivationContext
+      summary: Resolve a tenant activation link
+      description: Validates an unexpired token and returns the tenant and unit context without consuming the token.
+      tags:
+        - Authentication
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tenant and unit context
+        "400":
+          $ref: "#/components/responses/Problem"
+  /tenant-activation/verify:
+    post:
+      operationId: verifyTenantActivationCode
+      summary: Verify a tenant activation code
+      description: Validates an unexpired code and optional unit code without consuming the activation challenge.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                unit_code:
+                  type: string
+      responses:
+        "200":
+          description: Tenant and unit context
+        "400":
+          $ref: "#/components/responses/Problem"
   /tenant-activation/complete:
     post:
       operationId: activateTenant
@@ -1737,9 +2430,23 @@ paths:
           application/json:
             schema:
               type: object
-              required: [token, password]
+              required: [password]
+              anyOf:
+                - required: [token]
+                - required: [code]
               properties:
                 token:
+                  type: string
+                code:
+                  type: string
+                unit_code:
+                  type: string
+                full_name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
                   type: string
                 password:
                   type: string
@@ -1748,6 +2455,8 @@ paths:
         "200":
           description: Tenant activated
         "400":
+          $ref: "#/components/responses/Problem"
+        "409":
           $ref: "#/components/responses/Problem"
   /tenants/create:
     post:
@@ -1817,6 +2526,275 @@ paths:
         "201":
           description: Document metadata created
         "400":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /inspections:
+    get:
+      operationId: listInspections
+      summary: List scheduled inspections
+      description: Returns inspections within the authenticated user's property scope.
+      tags:
+        - Inspections
+      parameters:
+        - name: property_id
+          in: query
+          schema: {type: integer}
+        - name: status
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: Inspection list
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /inspections/create:
+    post:
+      operationId: createInspection
+      summary: Schedule an inspection
+      description: Schedules a property inspection with responsible staff, checklist, and photo metadata.
+      tags:
+        - Inspections
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InspectionInput"
+      responses:
+        "201":
+          description: Inspection scheduled
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /inspections/{inspection_id}/complete:
+    post:
+      operationId: completeInspection
+      summary: Complete an inspection
+      description: Records checklist results, photo metadata, findings, and recommendations.
+      tags:
+        - Inspections
+      parameters:
+        - name: inspection_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InspectionCompletionInput"
+      responses:
+        "200":
+          description: Inspection completed
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /inspections/{inspection_id}/share:
+    post:
+      operationId: shareInspectionReport
+      summary: Share an inspection report
+      description: Enables an opaque share token for a completed inspection report.
+      tags:
+        - Inspections
+      parameters:
+        - name: inspection_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Report sharing enabled
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /inspections/{inspection_id}/report:
+    get:
+      operationId: getInspectionReport
+      summary: Get an inspection report
+      description: Returns a completed report for an inspection within the user's property scope.
+      tags:
+        - Inspections
+      parameters:
+        - name: inspection_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Inspection report
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /inspection-reports/{share_token}:
+    get:
+      operationId: getSharedInspectionReport
+      summary: Get a shared inspection report
+      description: Returns a completed inspection report using its opaque share token.
+      security: []
+      tags:
+        - Inspections
+      parameters:
+        - name: share_token
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Shared inspection report
+        "404":
+          $ref: "#/components/responses/Problem"
+  /property-expenses:
+    get:
+      operationId: listPropertyExpenses
+      summary: List property expenses
+      description: Returns submitted, approved, and rejected expenses within the authenticated user's property scope.
+      tags:
+        - Expenses
+      parameters:
+        - name: property_id
+          in: query
+          schema: {type: integer}
+        - name: status
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: Property expense list
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /property-expenses/create:
+    post:
+      operationId: createPropertyExpense
+      summary: Submit a property expense
+      description: Records a one-off or recurring expense with an effective period and optional vendor.
+      tags:
+        - Expenses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PropertyExpenseInput"
+      responses:
+        "201":
+          description: Property expense submitted
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /property-expenses/{expense_id}/approval:
+    post:
+      operationId: approvePropertyExpense
+      summary: Approve or reject a property expense
+      description: Applies the management-agreement expense threshold and records the approval actor or rejection reason.
+      tags:
+        - Expenses
+      parameters:
+        - name: expense_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approved: {type: boolean, default: true}
+                rejection_reason: {type: string}
+      responses:
+        "200":
+          description: Expense decision recorded
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /announcements:
+    get:
+      operationId: listAnnouncements
+      summary: List announcements
+      description: Returns management announcements in scope or published notices relevant to the authenticated tenant.
+      tags:
+        - Announcements
+      parameters:
+        - name: property_id
+          in: query
+          schema: {type: integer}
+        - name: status
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: Announcement list
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /announcements/create:
+    post:
+      operationId: createAnnouncement
+      summary: Create an announcement
+      description: Creates a draft branch-wide or property-specific notice.
+      tags:
+        - Announcements
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnouncementInput"
+      responses:
+        "201":
+          description: Announcement created
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /announcements/{announcement_id}/publish:
+    post:
+      operationId: publishAnnouncement
+      summary: Publish an announcement
+      description: Publishes a draft notice immediately or at the supplied publication time.
+      tags:
+        - Announcements
+      parameters:
+        - name: announcement_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                publish_at: {type: string, format: date-time}
+      responses:
+        "200":
+          description: Announcement published
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
           $ref: "#/components/responses/Problem"
         "404":
           $ref: "#/components/responses/Problem"
@@ -1897,10 +2875,165 @@ components:
               type: array
               items:
                 type: object
+            caretaker_ids:
+              type: array
+              items:
+                type: integer
+            caretakers:
+              type: array
+              items:
+                $ref: "#/components/schemas/Caretaker"
             documents:
               type: array
               items:
                 type: object
+    CaretakerInput:
+      type: object
+      required: [email, name, password, branch_ids]
+      properties:
+        email: {type: string, format: email}
+        name: {type: string}
+        phone: {type: string}
+        password: {type: string, format: password, minLength: 12}
+        branch_ids:
+          type: array
+          minItems: 1
+          items: {type: integer}
+    Caretaker:
+      type: object
+      required: [id, email, name, phone, branch_ids, is_active]
+      properties:
+        id: {type: integer}
+        email: {type: string, format: email}
+        name: {type: string}
+        phone: {type: string}
+        is_active: {type: boolean}
+        branch_ids:
+          type: array
+          items: {type: integer}
+    CaretakerMeterReadingInput:
+      type: object
+      required: [unit_id, meter, period, previous_value, current_value]
+      properties:
+        unit_id: {type: integer}
+        meter: {type: string}
+        period: {type: string, format: date}
+        previous_value: {type: number, minimum: 0}
+        current_value: {type: number, minimum: 0}
+        photo_key: {type: string}
+        photo_metadata: {type: object}
+    MaintenanceTicketInput:
+      type: object
+      required: [property_id, title, description, category]
+      properties:
+        property_id: {type: integer}
+        unit_id: {type: integer}
+        title: {type: string}
+        description: {type: string}
+        category:
+          type: string
+          enum: [plumbing, electrical, structural, security, other]
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          default: normal
+        photos:
+          type: array
+          items: {type: object}
+        vendor_id: {type: integer}
+    VendorInput:
+      type: object
+      required: [branch_id, name, trade, phone]
+      properties:
+        branch_id: {type: integer}
+        name: {type: string}
+        trade: {type: string}
+        phone: {type: string}
+        email: {type: string, format: email}
+        mpesa_number: {type: string}
+        rating: {type: number, minimum: 0, maximum: 5}
+        notes: {type: string}
+    VendorUpdate:
+      type: object
+      properties:
+        name: {type: string}
+        trade: {type: string}
+        phone: {type: string}
+        email: {type: string, format: email}
+        mpesa_number: {type: string}
+        rating: {type: number, minimum: 0, maximum: 5}
+        notes: {type: string}
+        is_active: {type: boolean}
+    MaintenanceQuotationInput:
+      type: object
+      required: [vendor_id, description, amount]
+      properties:
+        vendor_id: {type: integer}
+        description: {type: string}
+        amount: {type: number, exclusiveMinimum: 0}
+        valid_until: {type: string, format: date}
+    MaintenanceCostAllocationInput:
+      type: object
+      required: [target, amount]
+      properties:
+        target:
+          type: string
+          enum: [landlord, tenant]
+        amount: {type: number, exclusiveMinimum: 0}
+        reason: {type: string}
+    InspectionInput:
+      type: object
+      required: [property_id, title, inspection_type, scheduled_for, responsible_staff_id]
+      properties:
+        property_id: {type: integer}
+        unit_id: {type: integer, nullable: true}
+        title: {type: string}
+        inspection_type: {type: string}
+        scheduled_for: {type: string, format: date-time}
+        responsible_staff_id: {type: integer}
+        checklist:
+          type: array
+          items: {type: object}
+        photos:
+          type: array
+          items: {type: object}
+    InspectionCompletionInput:
+      type: object
+      properties:
+        checklist:
+          type: array
+          items: {type: object}
+        photos:
+          type: array
+          items: {type: object}
+        findings: {type: string}
+        recommendations: {type: string}
+    PropertyExpenseInput:
+      type: object
+      required: [property_id, category, description, amount, effective_from]
+      properties:
+        property_id: {type: integer}
+        vendor_id: {type: integer, nullable: true}
+        category: {type: string}
+        description: {type: string}
+        amount: {type: number, exclusiveMinimum: 0}
+        recurrence:
+          type: string
+          enum: [one_off, monthly, quarterly, annual]
+          default: one_off
+        effective_from: {type: string, format: date}
+        effective_to: {type: string, format: date, nullable: true}
+        next_due_date: {type: string, format: date, nullable: true}
+    AnnouncementInput:
+      type: object
+      required: [branch_id, title, body]
+      properties:
+        branch_id: {type: integer}
+        property_id: {type: integer, nullable: true}
+        title: {type: string}
+        body: {type: string}
+        publish_at: {type: string, format: date-time, nullable: true}
+        expires_at: {type: string, format: date-time, nullable: true}
     UnitInput:
       type: object
       required: [property_id, code, unit_type]

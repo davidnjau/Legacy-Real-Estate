@@ -16,6 +16,117 @@ Each property can reference a landlord from the same branch and can include:
 - document metadata, including a storage key, document type, and arbitrary
   metadata.
 
+Caretaker accounts and property assignments are managed by authorized property
+staff through:
+
+- `POST /api/v1/caretakers/create`
+- `GET /api/v1/properties/{property_id}/caretakers`
+- `POST /api/v1/properties/{property_id}/caretakers/assign`
+- `POST /api/v1/properties/{property_id}/caretakers/{caretaker_id}/end`
+
+Caretaker creation requires an email, display name, password of at least 12
+characters, and one or more accessible branches. Assignment requires an active
+user with the `Caretaker` role and access to the property's branch. Assignments
+retain their start and end timestamps and are audited; ending an assignment
+also removes the legacy property caretaker relation. Caretakers can only view
+properties with an active assignment.
+
+The caretaker dashboard is available through `GET /api/v1/caretaker/dashboard`.
+It returns assigned properties, unit status counts, the current month's reading
+status, recent readings, and pending move-in checklist items. Maintenance
+tickets in the caretaker's property scope are included as well.
+
+Caretakers can submit readings in one atomic mobile-friendly request through
+`POST /api/v1/caretaker/meter-readings`. The request accepts 1–250 readings,
+validates that every unit is currently assigned to the caretaker, rejects
+duplicate meter-period entries, and records an audit event for each reading.
+
+Maintenance tickets are managed through:
+
+- `GET /api/v1/maintenance-tickets`
+- `POST /api/v1/maintenance-tickets/create`
+- `POST /api/v1/maintenance-tickets/{ticket_id}/status`
+- `POST /api/v1/maintenance-tickets/{ticket_id}/comments`
+
+Tickets support category, priority, photo metadata, auditable comments, and the
+SRS lifecycle from `open` through `closed`. Caretakers can create tickets and
+update tickets assigned to them; authorized property staff can manage tickets
+within their branch scope. Tenant self-service submission is intentionally
+handled by the later W4 tenant-maintenance workflow.
+
+The vendor/fundi registry is managed by authorized property staff through:
+
+- `GET /api/v1/vendors`
+- `POST /api/v1/vendors/create`
+- `POST /api/v1/vendors/{vendor_id}`
+
+Vendor records are branch-scoped and store trade, phone, M-Pesa number, email,
+rating, notes, and active status. Tickets can reference an active vendor from
+the same property branch. Vendor records are retained when deactivated so
+future quotation and expense workflows can preserve historical references.
+
+Maintenance quotations and cost allocations are managed through:
+
+- `GET /api/v1/maintenance-tickets/{ticket_id}/quotations`
+- `POST /api/v1/maintenance-tickets/{ticket_id}/quotations/create`
+- `POST /api/v1/maintenance-quotations/{quotation_id}/approval`
+- `POST /api/v1/maintenance-quotations/{quotation_id}/allocations/create`
+
+Quotation approval thresholds are read from the active landlord management
+agreement's `terms.maintenance_approval_threshold` value (with
+`terms.approval_threshold` accepted as a compatibility alias). Quotations above
+the threshold require authorized property staff approval; assigned caretakers
+may approve quotations at or below the threshold. Approved quotations can be
+allocated to the property landlord or the active tenant, and allocations cannot
+exceed the approved quotation amount.
+
+Inspections and landlord-shareable reports are managed through:
+
+- `GET /api/v1/inspections`
+- `POST /api/v1/inspections/create`
+- `POST /api/v1/inspections/{inspection_id}/complete`
+- `POST /api/v1/inspections/{inspection_id}/share`
+- `GET /api/v1/inspections/{inspection_id}/report`
+- `GET /api/v1/inspection-reports/{share_token}`
+
+An inspection records its property or unit, schedule, inspection type,
+responsible staff member, checklist results, photo metadata, findings, and
+recommendations. Assigned caretakers can complete inspections in their
+property scope; authorized management staff can manage all inspections in
+their accessible branches. Only completed reports can be shared. Sharing
+enables an opaque UUID token, while the public report response excludes that
+token and other management-only metadata. Inspection creation, completion, and
+sharing are audited.
+
+Property expenses are managed through:
+
+- `GET /api/v1/property-expenses`
+- `POST /api/v1/property-expenses/create`
+- `POST /api/v1/property-expenses/{expense_id}/approval`
+
+Expenses may be one-off, monthly, quarterly, or annual. Each record stores its
+category, amount, effective period, next due date for recurring expenses, and
+optional active vendor. The active landlord management agreement controls the
+`terms.expense_approval_threshold` value, with `terms.approval_threshold`
+accepted as a compatibility alias. Expenses above that threshold require
+authorized property-management approval. The submitter cannot approve the same
+expense, and approval or rejection records the actor, timestamp, and reason.
+Expense submission and decisions are audited; remittance calculation remains a
+later workflow.
+
+Announcements and the tenant notice board are managed through:
+
+- `GET /api/v1/announcements`
+- `POST /api/v1/announcements/create`
+- `POST /api/v1/announcements/{announcement_id}/publish`
+
+Authorized property-management staff can create branch-wide or
+property-specific draft notices and publish them immediately or for a future
+time. Notices may have an expiry time. Tenant portal users receive only
+currently published, non-expired notices for their branch and active tenancy
+property; draft, archived, and unrelated property notices are excluded.
+Creation and publication are audited.
+
 Document endpoints store metadata and a storage key only. They do not upload
 binary content yet. Binary uploads and signed object-storage URLs will be added
 when the agreed MinIO/S3 integration is brought into scope.

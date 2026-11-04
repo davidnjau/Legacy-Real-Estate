@@ -2,44 +2,40 @@
 
 import { useEffect, useState } from 'react';
 import { UserPlus, Trash2, CheckCircle, Clock, Shield, RefreshCw, Mail } from 'lucide-react';
-import { createClient } from '../../../lib/supabase/client';
 import { Pagination } from '../../../components/ui/Pagination';
 
 type Invite = {
-  id: string;
+  id: number;
   email: string | null;
   expires_at: string;
   status: string;
   used_at: string | null;
+  property_id: number;
+  property_name: string;
 };
 
 type Caretaker = {
-  id: string;
+  id: number;
   full_name: string;
   email: string;
   phone: string;
   created_at: string;
+  property_id: number;
+  property_name: string;
 };
 
-type PropertyStaff = {
-  id: string;
-  full_name: string;
-  email: string | null;
-  phone: string | null;
-  staff_role: string;
-  created_at: string;
-};
+type PropertyOption = { id: number; name: string };
 
 export default function StaffPage() {
   const [invites, setInvites] = useState<Invite[]>([]);
   const [caretakers, setCaretakers] = useState<Caretaker[]>([]);
-  const [propertyStaff, setPropertyStaff] = useState<PropertyStaff[]>([]);
+  const [properties, setProperties] = useState<PropertyOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
-  const [addingStaff, setAddingStaff] = useState(false);
-  const [staffForm, setStaffForm] = useState({ fullName: '', email: '', phone: '', staffRole: 'Watchman' });
   const [userId, setUserId] = useState<string | null>(null);
+  const [selectedPropertyId, setSelectedPropertyId] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
+  const [activationLink, setActivationLink] = useState('');
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
   // Pagination states
@@ -53,28 +49,38 @@ export default function StaffPage() {
   };
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user?.id) {
-        setUserId(data.user.id);
-        void loadData();
-      }
-    });
+    void fetch('/api/auth/me')
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload.user?.id) {
+          throw new Error(payload.error || 'Sign in as a landlord to manage caretakers.');
+        }
+        setUserId(String(payload.user.id));
+        await loadData();
+      })
+      .catch((error: unknown) => {
+        showToast('error', error instanceof Error ? error.message : 'Unable to verify your account.');
+        setLoading(false);
+      });
   }, []);
+
+  useEffect(() => {
+    if (userId && selectedPropertyId) void loadData();
+  }, [selectedPropertyId]);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [invitesResponse, staffResponse] = await Promise.all([
-        fetch('/api/auth/caretaker-invite'),
-        fetch('/api/property-staff'),
-      ]);
-      const [inviteData, staffData] = await Promise.all([invitesResponse.json(), staffResponse.json()]);
+      const query = selectedPropertyId ? `?propertyId=${encodeURIComponent(selectedPropertyId)}` : '';
+      const invitesResponse = await fetch(`/api/auth/caretaker-invite${query}`);
+      const inviteData = await invitesResponse.json();
       if (!invitesResponse.ok) throw new Error(inviteData.error || 'Unable to load caretaker data.');
-      if (!staffResponse.ok) throw new Error(staffData.error || 'Unable to load other staff.');
       setInvites(inviteData.invites || []);
       setCaretakers(inviteData.caretakers || []);
-      setPropertyStaff(staffData.staff || []);
+      setProperties(inviteData.properties || []);
+      if (!selectedPropertyId && inviteData.properties?.length) {
+        setSelectedPropertyId(String(inviteData.properties[0].id));
+      }
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : 'Unable to load staff data.');
     } finally {
@@ -84,6 +90,10 @@ export default function StaffPage() {
 
   const handleGenerate = async () => {
     if (!userId) return;
+    if (!selectedPropertyId) {
+      showToast('error', 'Select a property before inviting a caretaker.');
+      return;
+    }
     if (!inviteEmail.trim()) {
       showToast('error', 'Enter the caretaker’s email address.');
       return;
@@ -93,11 +103,12 @@ export default function StaffPage() {
       const res = await fetch('/api/auth/caretaker-invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: inviteEmail }),
+        body: JSON.stringify({ email: inviteEmail, propertyId: Number(selectedPropertyId) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      showToast('success', `Activation email sent to ${data.email}.`);
+      setActivationLink(`${window.location.origin}/caretaker-signup?token=${encodeURIComponent(data.activation_token)}`);
+      showToast('success', `Invitation link created for ${inviteEmail}. Copy and share it with the caretaker.`);
       setInviteEmail('');
       await loadData();
     } catch (err: any) {
@@ -107,45 +118,7 @@ export default function StaffPage() {
     }
   };
 
-  const handleAddStaff = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setAddingStaff(true);
-    try {
-      const res = await fetch('/api/property-staff', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(staffForm),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setStaffForm({ fullName: '', email: '', phone: '', staffRole: 'Watchman' });
-      showToast('success', `${data.staff.full_name} added to the property staff roster.`);
-      await loadData();
-    } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to add staff member.');
-    } finally {
-      setAddingStaff(false);
-    }
-  };
-
-  const handleRemoveStaff = async (staff: PropertyStaff) => {
-    if (!window.confirm(`Remove ${staff.full_name} from this property’s staff roster?`)) return;
-    try {
-      const res = await fetch('/api/property-staff', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ staffId: staff.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      showToast('success', `${staff.full_name} removed.`);
-      await loadData();
-    } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Failed to remove staff member.');
-    }
-  };
-
-  const handleResend = async (inviteId: string) => {
+  const handleResend = async (inviteId: number) => {
     if (!userId) return;
     try {
       const res = await fetch('/api/auth/caretaker-invite', {
@@ -155,20 +128,21 @@ export default function StaffPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      showToast('success', data.message);
+      setActivationLink(`${window.location.origin}/caretaker-signup?token=${encodeURIComponent(data.activation_token)}`);
+      showToast('success', 'A new activation link is ready to copy and share.');
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : 'Failed to resend activation email.');
     }
   };
 
-  const handleRemoveCaretaker = async (caretakerId: string, name: string) => {
+  const handleRemoveCaretaker = async (caretakerId: number, propertyId: number, name: string) => {
     if (!userId) return;
     if (!window.confirm(`Remove ${name}'s caretaker access to this property? Their account will remain available for other properties.`)) return;
     try {
       const res = await fetch('/api/auth/caretaker-invite', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ caretakerId, landlordId: userId }),
+        body: JSON.stringify({ caretakerId, propertyId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -182,6 +156,7 @@ export default function StaffPage() {
   const statusBadge = (status: string) => {
     if (status === 'active') return 'bg-emerald-100 text-emerald-700';
     if (status === 'used') return 'bg-blue-100 text-blue-700';
+    if (status === 'expired' || status === 'revoked') return 'bg-red-100 text-red-700';
     return 'bg-slate-100 text-slate-500';
   };
 
@@ -200,9 +175,20 @@ export default function StaffPage() {
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Staff & Caretakers</h1>
-          <p className="text-slate-500 mt-1">Manage your caretaker team and send secure activation links.</p>
+          <p className="text-slate-500 mt-1">Manage property access and create secure caretaker activation links.</p>
         </div>
         <form onSubmit={(event) => { event.preventDefault(); void handleGenerate(); }} className="flex items-center gap-2">
+          <select
+            value={selectedPropertyId}
+            onChange={(event) => setSelectedPropertyId(event.target.value)}
+            required
+            aria-label="Property to invite caretaker to"
+            className="border border-slate-300 rounded-xl px-3 py-2.5 text-sm"
+          >
+            {properties.map((property) => (
+              <option key={property.id} value={property.id}>{property.name}</option>
+            ))}
+          </select>
           <input
             type="email"
             value={inviteEmail}
@@ -217,18 +203,41 @@ export default function StaffPage() {
             disabled={generating}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold transition-colors disabled:opacity-60"
           >
-            <UserPlus size={18} /> {generating ? 'Sending...' : 'Invite caretaker'}
+            <UserPlus size={18} /> {generating ? 'Creating...' : 'Invite caretaker'}
           </button>
         </form>
       </div>
+
+      {activationLink && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+          <p className="font-semibold text-emerald-900">Share this one-time activation link with the caretaker</p>
+          <div className="mt-2 flex gap-2">
+            <input
+              readOnly
+              value={activationLink}
+              aria-label="Caretaker activation link"
+              className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-slate-700"
+            />
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard.writeText(activationLink)}
+              className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Copy link
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-emerald-800">The link expires in 48 hours and is shown only when created or regenerated.</p>
+        </div>
+      )}
 
       {/* How it works */}
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-sm text-slate-600 space-y-2">
         <p className="font-bold text-slate-800">How to add a caretaker:</p>
         <ol className="list-decimal list-inside space-y-1">
-          <li>Enter the caretaker’s email address and send the invitation.</li>
+          <li>Select the property, enter the caretaker’s email address, and create an invitation link.</li>
           <li>They follow the secure activation link to set their name, phone number, and password.</li>
           <li>Invitations expire after <strong>48 hours</strong>.</li>
+          <li>Copy and share the generated link securely; it is not emailed automatically.</li>
         </ol>
       </div>
 
@@ -260,9 +269,9 @@ export default function StaffPage() {
                     <td className="p-4 text-slate-400 text-xs">{new Date(c.created_at).toLocaleDateString('en-KE', { month: 'short', day: 'numeric', year: 'numeric' })}</td>
                     <td className="p-4 text-right">
                       <button
-                        onClick={() => handleRemoveCaretaker(c.id, c.full_name)}
+                        onClick={() => handleRemoveCaretaker(c.id, c.property_id, c.full_name)}
                         className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg border border-red-200 transition-colors"
-                        title="Remove caretaker"
+                        title={`Remove caretaker from ${c.property_name}`}
                       >
                         <Trash2 size={16} />
                       </button>
@@ -282,41 +291,11 @@ export default function StaffPage() {
         </div>
       </div>
 
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-xl font-bold text-slate-800">Other Property Staff</h2>
-          <p className="text-sm text-slate-500 mt-1">Record watchmen and other on-site staff here. These are roster entries, not portal accounts.</p>
-        </div>
-        <form onSubmit={handleAddStaff} className="grid grid-cols-1 md:grid-cols-5 gap-3 bg-white p-4 rounded-xl border border-slate-200">
-          <input required value={staffForm.fullName} onChange={(event) => setStaffForm({ ...staffForm, fullName: event.target.value })} placeholder="Full name" aria-label="Staff full name" className="border border-slate-300 rounded-lg px-3 py-2 text-sm" />
-          <select value={staffForm.staffRole} onChange={(event) => setStaffForm({ ...staffForm, staffRole: event.target.value })} aria-label="Staff role" className="border border-slate-300 rounded-lg px-3 py-2 text-sm">
-            <option>Watchman</option><option>Cleaner</option><option>Maintenance technician</option><option>Other</option>
-          </select>
-          <input type="email" value={staffForm.email} onChange={(event) => setStaffForm({ ...staffForm, email: event.target.value })} placeholder="Email (optional)" aria-label="Staff email" className="border border-slate-300 rounded-lg px-3 py-2 text-sm" />
-          <input type="tel" value={staffForm.phone} onChange={(event) => setStaffForm({ ...staffForm, phone: event.target.value })} placeholder="Phone (required if no email)" aria-label="Staff phone" className="border border-slate-300 rounded-lg px-3 py-2 text-sm" />
-          <button disabled={addingStaff} className="inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-lg px-3 py-2 font-semibold text-sm">
-            <UserPlus size={16} /> {addingStaff ? 'Adding…' : 'Add to roster'}
-          </button>
-        </form>
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          {propertyStaff.length === 0 ? (
-            <p className="p-6 text-center text-slate-400">No other staff members have been added.</p>
-          ) : (
-            <table className="w-full text-sm text-left">
-              <thead className="bg-slate-50 border-b border-slate-200"><tr>
-                <th className="p-4 font-medium text-slate-500">Name</th><th className="p-4 font-medium text-slate-500">Role</th><th className="p-4 font-medium text-slate-500">Contact</th><th className="p-4 text-right font-medium text-slate-500">Action</th>
-              </tr></thead>
-              <tbody className="divide-y divide-slate-100">
-                {propertyStaff.map((staff) => <tr key={staff.id}>
-                  <td className="p-4 font-semibold text-slate-900">{staff.full_name}</td>
-                  <td className="p-4 text-slate-600">{staff.staff_role}</td>
-                  <td className="p-4 text-slate-600">{[staff.email, staff.phone].filter(Boolean).join(' · ')}</td>
-                  <td className="p-4 text-right"><button onClick={() => void handleRemoveStaff(staff)} className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg border border-red-200" aria-label={`Remove ${staff.full_name}`}><Trash2 size={16} /></button></td>
-                </tr>)}
-              </tbody>
-            </table>
-          )}
-        </div>
+      <section className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-5">
+        <h2 className="text-xl font-bold text-slate-800">Other Property Staff</h2>
+        <p className="text-sm text-slate-600">
+          The watchman and on-site staff roster remains on a separate property-data workflow and is not available during this account migration. Caretaker portal access above is managed through Django.
+        </p>
       </section>
 
       {/* Caretaker invitation history */}
@@ -357,9 +336,9 @@ export default function StaffPage() {
                         <button
                           onClick={() => void handleResend(inv.id)}
                           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-slate-600 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors"
-                          title="Resend activation email"
+                          title="Regenerate activation link"
                         >
-                          <Mail size={15} /> Resend
+                          <Mail size={15} /> Regenerate link
                         </button>
                       )}
                     </td>

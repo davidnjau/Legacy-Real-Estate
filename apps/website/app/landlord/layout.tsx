@@ -1,24 +1,20 @@
 import { Sidebar } from '../../components/landlord/Sidebar';
-import { createClient } from '../../lib/supabase/server';
+import { getDjangoUser, hasDjangoRole } from '../../lib/django-auth';
+import { redirect } from 'next/navigation';
 import { Suspense } from 'react';
 import TourController from '../../components/landlord/TourController';
 
 export default async function LandlordLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  let role = 'landlord';
-  if (user) {
-    const { data } = await supabase.from('users').select('role').eq('id', user.id).maybeSingle();
-    if (data?.role) {
-      role = data.role;
-    }
+  const user = await getDjangoUser();
+  if (!user) redirect('/login');
+  if (!hasDjangoRole(user, 'Landlord (portal)') && !hasDjangoRole(user, 'Landlord')) {
+    redirect(hasDjangoRole(user, 'Caretaker') ? '/caretaker/dashboard' : '/tenant/dashboard');
   }
 
   return (
     <div className="flex h-screen bg-slate-50">
       {/* Sidebar Navigation */}
-      <Sidebar userRole={role} />
+      <Sidebar userRole={user.roles.join(', ')} />
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto">

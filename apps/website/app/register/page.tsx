@@ -18,8 +18,6 @@ function passwordStrength(p: string): number {
   if (/[^A-Za-z\d]/.test(p)) score++;
   return score;
 }
-import { createClient } from '../../lib/supabase/client';
-
 export default function RegisterPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
@@ -50,8 +48,8 @@ export default function RegisterPage() {
       return;
     }
 
-    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/.test(formData.password)) {
-      setError('Password must be at least 8 characters and include uppercase, lowercase, number, and special character.');
+    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{12,}$/.test(formData.password)) {
+      setError('Password must be at least 12 characters and include uppercase, lowercase, number, and special character.');
       setIsLoading(false);
       return;
     }
@@ -71,13 +69,10 @@ export default function RegisterPage() {
         return;
       }
 
-      const supabase = createClient();
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email: formData.email, password: formData.password });
-      if (signInError) throw new Error(signInError.message);
       router.push('/tenant/dashboard');
       router.refresh();
-    } catch (err) {
-      setError('Something went wrong while registering the tenant.');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Something went wrong while registering the tenant.');
     } finally {
       setIsLoading(false);
     }
