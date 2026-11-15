@@ -1,4 +1,4 @@
-FROM php:8.3-cli AS vendor
+FROM php:8.5-cli AS vendor
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev libzip-dev \
@@ -10,7 +10,7 @@ WORKDIR /app
 COPY composer.json composer.lock ./
 RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist --no-progress --optimize-autoloader
 
-FROM php:8.3-cli AS runtime
+FROM php:8.5-cli AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev libzip-dev \
