@@ -1,0 +1,42 @@
+name: Seed staging demo data
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_seed:
+        description: Create the WhatsApp demo dataset on staging (idempotent)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    if: inputs.confirm_seed
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Configure SSH
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$HOME/.ssh/staging"
+          chmod 600 "$HOME/.ssh/staging"
+          ssh-keyscan -H "$STAGING_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Run seed command
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          SEED_PORTAL_PASSWORD: ${{ secrets.STAGING_SEED_PORTAL_PASSWORD }}
+        run: |
+          ssh -i "$HOME/.ssh/staging" "$STAGING_USER@$STAGING_HOST" \
+            "cd /srv/legacy-real-estate/release && \
+             docker compose --env-file /srv/legacy-real-estate/.env \
+               -f tools/staging/docker-compose.yml exec -T core \
+               python manage.py seed_whatsapp_demo \
+               --portal-password '$SEED_PORTAL_PASSWORD'"
