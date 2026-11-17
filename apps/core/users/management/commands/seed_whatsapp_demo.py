@@ -45,6 +45,16 @@ STAFF_ACCOUNTS = (
     ("demo-caretaker@legacyhomes.live", "Demo Caretaker", CARETAKER_ROLE, "254700000014"),
 )
 
+# (email, name, national id, phone, unit code, invoice number, invoice total)
+EXTRA_TENANTS = (
+    ("kimani.demo@legacyhomes.live", "Kimani Kimani", "20456721", "254704173241",
+     "B5", "INV-DEMO-0002", "22000.00"),
+    ("brian.demo@legacyhomes.live", "Brian Demo", "31782245", "254790541516",
+     "B6", "INV-DEMO-0003", "15500.00"),
+    ("pekim.demo@legacyhomes.live", "Pekim Demo", "28901134", "254797933409",
+     "B7", "INV-DEMO-0004", "30000.00"),
+)
+
 
 class Command(BaseCommand):
     help = "Create demo data for testing the WhatsApp flows (idempotent)."
@@ -183,13 +193,90 @@ class Command(BaseCommand):
             if role_name == CARETAKER_ROLE:
                 property_obj.caretakers.add(user)
 
+        tester_lines = []
+        for email, name, id_number, phone, unit_code, invoice_number, total in EXTRA_TENANTS:
+            user = portal_user(email, tenant_group)
+            extra_unit, _ = Unit.objects.get_or_create(
+                property=property_obj,
+                code=unit_code,
+                defaults={"unit_type": "1 Bedroom", "status": Unit.STATUS_OCCUPIED},
+            )
+            extra_tenant, _ = Tenant.objects.get_or_create(
+                branch=branch,
+                national_id_or_passport=id_number,
+                defaults={
+                    "tenant_type": Tenant.INDIVIDUAL,
+                    "name": name,
+                    "phone": phone,
+                    "email": email,
+                    "portal_user": user,
+                },
+            )
+            extra_tenancy, _ = Tenancy.objects.get_or_create(
+                unit=extra_unit,
+                tenant=extra_tenant,
+                defaults={
+                    "tenancy_type": Tenancy.TYPE_MONTH_TO_MONTH,
+                    "start_date": today - timedelta(days=90),
+                    "status": Tenancy.STATUS_ACTIVE,
+                },
+            )
+            Invoice.objects.get_or_create(
+                number=invoice_number,
+                defaults={
+                    "tenancy": extra_tenancy,
+                    "branch": branch,
+                    "period_start": today.replace(day=1),
+                    "period_end": today,
+                    "due_date": today + timedelta(days=5),
+                    "total": Decimal(total),
+                    "status": Invoice.STATUS_ISSUED,
+                },
+            )
+            tester_lines.append(
+                f"  Tester: {name} — ID {id_number}, phone {phone}, "
+                f"unit {unit_code}, {invoice_number} KES {total}, portal {email}"
+            )
+
+        # Kimani is also a landlord, exercising the multi-role chooser.
+        kimani_user = user_model.objects.get(username="kimani.demo@legacyhomes.live")
+        kimani_user.groups.add(landlord_group)
+        kimani_landlord, _ = Landlord.objects.get_or_create(
+            branch=branch,
+            id_or_registration_number="KIM-556677",
+            defaults={
+                "name": "Kimani Kimani",
+                "phone": "254704173241",
+                "portal_user": kimani_user,
+            },
+        )
+        villas, _ = Property.objects.get_or_create(
+            branch=branch,
+            name="Legacy Villas",
+            defaults={
+                "landlord": kimani_landlord,
+                "property_type": "Apartment",
+                "location": "Nakuru",
+            },
+        )
+        Unit.objects.get_or_create(
+            property=villas,
+            code="V1",
+            defaults={"unit_type": "3 Bedroom", "status": Unit.STATUS_VACANT},
+        )
+
         # Re-running the seed always unblocks the demo phones, so a failed
         # verification experiment never stalls staging testing for 24 hours.
-        unlocked = WhatsAppContact.objects.filter(
-            wa_id__in=[options["tenant_phone"], options["landlord_phone"]]
-        ).update(failed_verifications=0, locked_until=None)
+        demo_phones = [options["tenant_phone"], options["landlord_phone"]] + [
+            row[3] for row in EXTRA_TENANTS
+        ]
+        unlocked = WhatsAppContact.objects.filter(wa_id__in=demo_phones).update(
+            failed_verifications=0, locked_until=None
+        )
         if unlocked:
             self.stdout.write(f"  Cleared verification locks on {unlocked} demo contact(s).")
+        for line in tester_lines:
+            self.stdout.write(line)
 
         self.stdout.write(self.style.SUCCESS(
             "Demo data ready:\n"
