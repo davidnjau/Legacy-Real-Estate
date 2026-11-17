@@ -124,6 +124,7 @@ from users.object_storage import (
 from users.move_in import confirmed_invoice_amount, sync_move_in_occupancy
 from users.legacy_imports import import_legacy_data
 from users.sms import queue_template_sms
+from users.whatsapp import queue_template_whatsapp_if_enabled
 from users.roles import (
     AGENCY_STAFF_ROLE_NAMES,
     BRANCH_MANAGER_ROLE,
@@ -2630,6 +2631,15 @@ def _ensure_payment_receipt(payment):
             "balance_after": _payment_balance_after(payment),
         },
     )
+    if created:
+        queue_template_whatsapp_if_enabled(
+            payment.tenant.phone,
+            "payment_receipt",
+            {
+                "amount": f"{payment.amount:,.2f}",
+                "reference": payment.reference or receipt.number,
+            },
+        )
     return receipt
 
 
