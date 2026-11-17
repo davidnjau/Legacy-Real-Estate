@@ -25,9 +25,24 @@ from users.models import (
     Tenancy,
     Tenant,
     Unit,
+    UserProfile,
     Vendor,
 )
-from users.roles import LANDLORD_PORTAL_ROLE, TENANT_PORTAL_ROLE
+from users.roles import (
+    BRANCH_MANAGER_ROLE,
+    CARETAKER_ROLE,
+    LANDLORD_PORTAL_ROLE,
+    SUPER_ADMIN_ROLE,
+    TENANT_PORTAL_ROLE,
+)
+
+STAFF_ACCOUNTS = (
+    ("demo-director@legacyhomes.live", "Demo Director", SUPER_ADMIN_ROLE, "254700000010"),
+    ("demo-manager@legacyhomes.live", "Demo Branch Manager", BRANCH_MANAGER_ROLE, "254700000011"),
+    ("demo-accountant@legacyhomes.live", "Demo Accountant", "Accountant", "254700000012"),
+    ("demo-officer@legacyhomes.live", "Demo Property Officer", "Property Officer / Agent", "254700000013"),
+    ("demo-caretaker@legacyhomes.live", "Demo Caretaker", CARETAKER_ROLE, "254700000014"),
+)
 
 
 class Command(BaseCommand):
@@ -156,6 +171,17 @@ class Command(BaseCommand):
             },
         )
 
+        for email, name, role_name, phone in STAFF_ACCOUNTS:
+            group, _ = Group.objects.get_or_create(name=role_name)
+            user = portal_user(email, group)
+            profile, _ = UserProfile.objects.get_or_create(
+                user=user,
+                defaults={"name": name, "phone": phone},
+            )
+            profile.branches.add(branch)
+            if role_name == CARETAKER_ROLE:
+                property_obj.caretakers.add(user)
+
         self.stdout.write(self.style.SUCCESS(
             "Demo data ready:\n"
             f"  Tenant: {tenant.name} — ID {tenant.national_id_or_passport}, "
@@ -163,5 +189,6 @@ class Command(BaseCommand):
             f"  Invoice: {invoice.number} KES {invoice.total} ({invoice.status})\n"
             f"  Landlord: {landlord.name} — ID {landlord.id_or_registration_number}, "
             f"phone {landlord.phone}, portal demo-landlord@legacyhomes.live\n"
-            f"  Quotation pending approval on ticket #{ticket.pk}"
+            f"  Quotation pending approval on ticket #{ticket.pk}\n"
+            f"  Staff: " + ", ".join(email for email, *_ in STAFF_ACCOUNTS)
         ))
