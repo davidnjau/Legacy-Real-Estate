@@ -12906,6 +12906,35 @@ class WhatsAppBotTests(TestCase):
             ).exists()
         )
 
+    def test_cancel_abandons_draft_ticket_and_returns_to_menu(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("44")
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001144",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="t_issue")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cat_plumbing")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Cancel")
+            )
+
+        state.refresh_from_db()
+        self.assertEqual(state.state.get("flow"), "menu")
+        self.assertFalse(MaintenanceTicket.objects.filter(unit=tenancy.unit).exists())
+        self.assertEqual(post.call_args.args[0]["type"], "interactive")
+
 
 @override_settings(
     WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
