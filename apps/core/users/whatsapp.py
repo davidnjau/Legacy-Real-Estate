@@ -46,14 +46,14 @@ WHATSAPP_TEMPLATES = {
         },
     },
     "invoice_reminder": {
-        "meta_name": "invoice_reminder",
+        "meta_name": "rent_balance_reminder",
         "params": {
             "amount": "{amount}",
             "agency_name": "{agency_name}",
         },
     },
     "maintenance_ticket_completed_tenant": {
-        "meta_name": "maintenance_completed",
+        "meta_name": "maintenance_request_completed",
         "params": {
             "property_name": "{property_name}",
             "unit_label": "{unit_label}",
