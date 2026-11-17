@@ -170,6 +170,13 @@ jobs:
             *'"listings"'*) ;;
             *) echo "Public listings endpoint did not return JSON." >&2; exit 1 ;;
           esac
+          director_portal_status=$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' \
+            https://staging.legacyhomes.live/admin/dashboard)
+          if [ "$director_portal_status" != "307" ]; then
+            echo "Unauthenticated Director portal should redirect to the website login; got HTTP $director_portal_status." >&2
+            exit 1
+          fi
           mailpit_status=$(curl --silent --show-error --output /dev/null \
             --write-out '%{http_code}' \
             https://staging.legacyhomes.live/mailpit/)

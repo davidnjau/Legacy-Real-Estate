@@ -14,6 +14,11 @@
         reverse_proxy core:8000
     }
 
+    @director_portal path /admin/dashboard* /admin/staff* /admin/audit* /admin/financials* /admin/properties* /admin/settings*
+    handle @director_portal {
+        reverse_proxy website:3000
+    }
+
     handle /admin/* {
         reverse_proxy core:8000
     }
