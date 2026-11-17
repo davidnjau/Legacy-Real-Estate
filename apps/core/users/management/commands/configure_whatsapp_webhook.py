@@ -46,6 +46,9 @@ class Command(BaseCommand):
         )
         if not callback_url.startswith("https://"):
             raise CommandError("The webhook callback URL must use HTTPS.")
+        if settings.WHATSAPP_WEBHOOK_TOKEN and "token=" not in callback_url:
+            separator = "&" if "?" in callback_url else "?"
+            callback_url += f"{separator}token={settings.WHATSAPP_WEBHOOK_TOKEN}"
 
         request = Request(
             "https://graph.facebook.com/"

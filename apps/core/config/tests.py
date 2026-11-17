@@ -12698,6 +12698,33 @@ class WhatsAppDeliveryTests(TestCase):
             ).exists()
         )
 
+    @override_settings(
+        WHATSAPP_APP_SECRET="",
+        WHATSAPP_WEBHOOK_TOKEN="cap-token-123",
+        DEBUG=False,
+    )
+    def test_whatsapp_webhook_accepts_capability_token_without_app_secret(self):
+        body = json.dumps({"entry": []}).encode("utf-8")
+
+        rejected = self.client.post(
+            "/api/v1/whatsapp/webhook", body, content_type="application/json"
+        )
+        self.assertEqual(rejected.status_code, 403)
+
+        wrong = self.client.post(
+            "/api/v1/whatsapp/webhook?token=wrong",
+            body,
+            content_type="application/json",
+        )
+        self.assertEqual(wrong.status_code, 403)
+
+        accepted = self.client.post(
+            "/api/v1/whatsapp/webhook?token=cap-token-123",
+            body,
+            content_type="application/json",
+        )
+        self.assertEqual(accepted.status_code, 200)
+
 
 @override_settings(WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend")
 class WhatsAppBotTests(TestCase):

@@ -388,18 +388,29 @@ def dispatch_next_whatsapp_delivery(*, now=None, max_attempts=5):
 
 
 def _signature_is_valid(request):
+    """Authenticate an inbound webhook delivery.
+
+    Preferred: Meta's X-Hub-Signature-256 HMAC, when the owning app's secret
+    is available. Fallback (app owned by a third party, e.g. an onboarding
+    provider): a capability token embedded in the registered callback URL —
+    only Meta ever receives the full URL, so possession of the token
+    authenticates the delivery. With neither configured, only DEBUG accepts.
+    """
     app_secret = settings.WHATSAPP_APP_SECRET
-    if not app_secret:
-        return settings.DEBUG
-    header = request.headers.get("X-Hub-Signature-256", "")
-    if not header.startswith("sha256="):
-        return False
-    expected = hmac.new(
-        app_secret.encode("utf-8"),
-        request.body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(header.removeprefix("sha256="), expected)
+    if app_secret:
+        header = request.headers.get("X-Hub-Signature-256", "")
+        if not header.startswith("sha256="):
+            return False
+        expected = hmac.new(
+            app_secret.encode("utf-8"),
+            request.body,
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(header.removeprefix("sha256="), expected)
+    webhook_token = settings.WHATSAPP_WEBHOOK_TOKEN
+    if webhook_token:
+        return hmac.compare_digest(request.GET.get("token", ""), webhook_token)
+    return settings.DEBUG
 
 
 def _apply_status_event(status_event):
