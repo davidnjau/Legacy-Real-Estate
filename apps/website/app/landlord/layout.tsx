@@ -1,32 +1,44 @@
-import { Sidebar } from '../../components/landlord/Sidebar';
-import { getDjangoUser, hasDjangoRole } from '../../lib/django-auth';
 import { redirect } from 'next/navigation';
-import { Suspense } from 'react';
-import TourController from '../../components/landlord/TourController';
+import { Sidebar } from '../../components/landlord/Sidebar';
+import { getAuthenticatedDjangoUser, hasDjangoRole } from '../../lib/django-auth';
+import { PrototypeHeader } from '../../components/prototype/PrototypeHeader';
 
 export default async function LandlordLayout({ children }: { children: React.ReactNode }) {
-  const user = await getDjangoUser();
-  if (!user) redirect('/login');
-  if (!hasDjangoRole(user, 'Landlord (portal)') && !hasDjangoRole(user, 'Landlord')) {
-    redirect(hasDjangoRole(user, 'Caretaker') ? '/caretaker/dashboard' : '/tenant/dashboard');
+  const user = await getAuthenticatedDjangoUser();
+  const canManageLandlordWorkflows = user && [
+    'Super Admin (Director)',
+    'Branch Manager',
+    'Accountant',
+    'Property Officer / Agent',
+  ].some((role) => hasDjangoRole(user, role));
+
+  if (
+    !user ||
+    (!hasDjangoRole(user, 'Landlord (portal)') &&
+      !hasDjangoRole(user, 'Landlord') &&
+      !canManageLandlordWorkflows)
+  ) {
+    redirect('/login');
   }
 
   return (
-    <div className="flex h-screen bg-slate-50">
-      {/* Sidebar Navigation */}
-      <Sidebar userRole={user.roles.join(', ')} />
-
-      {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-8 max-w-7xl mx-auto">
-          {children}
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-50 print:block print:h-auto print:overflow-visible">
+      <div className="print:hidden">
+        <PrototypeHeader activeRole="landlord" user={user} />
+      </div>
+      <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
+        {/* Sidebar Navigation */}
+        <div className="print:hidden">
+          <Sidebar />
         </div>
-      </main>
 
-      {/* Spotlight Tour — reads ?tour=true from URL, must be inside Suspense for useSearchParams */}
-      <Suspense fallback={null}>
-        <TourController />
-      </Suspense>
+        {/* Main Content Area */}
+        <main className="flex-1 overflow-y-auto print:overflow-visible">
+          <div className="mx-auto max-w-7xl p-8 print:max-w-none print:p-0">
+            {children}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

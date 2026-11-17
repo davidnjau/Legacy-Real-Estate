@@ -1,5 +1,5 @@
-import BillingWizard from '../../landlord/billing/page';
+import { redirect } from 'next/navigation';
 
 export default function CaretakerBillingPage() {
-  return <BillingWizard canEditPaymentInstructions={false} />;
+  redirect('/caretaker/dashboard');
 }

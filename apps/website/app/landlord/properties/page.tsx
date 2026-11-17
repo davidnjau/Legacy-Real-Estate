@@ -1,244 +1,380 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Building2, Plus, Save, Check, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Building2, RefreshCw, MapPin, Layers, Phone, ClipboardCheck } from 'lucide-react';
 
-type RecurringCharge = { id?: string; name: string; amount: string | number; is_active?: boolean };
-type Property = {
-  id: string;
+type PropertyUnit = {
+  id: number;
+  code: string;
+  unit_type: string;
+  monthly_rent: string | null;
+  status: string;
+  tenant_name: string | null;
+  balance: string;
+};
+
+type InspectionReport = {
+  id: number;
+  title: string;
+  inspection_type: string;
+  scheduled_for: string;
+  completed_at: string | null;
+  unit_code: string | null;
+  responsible_staff: string;
+  checklist: { title: string; completed?: boolean; notes?: string }[];
+  findings: string;
+  recommendations: string;
+  photos: { index: number; caption: string; content_type: string }[];
+};
+
+type PropertyRecord = {
+  id: number;
+  branch_id: number;
+  branch_name: string;
   name: string;
+  property_type: string;
+  location: string;
   address: string | null;
-  currency_code: string;
-  timezone: string;
-  default_rent: number;
-  security_deposit: number;
-  water_deposit: number;
-  default_garbage_charge: number;
-  default_water_rate: number;
-  rent_due_day: number;
-  billing_mode: 'metered_water' | 'fixed_utilities';
-  recurringCharges: RecurringCharge[];
+  expected_unit_count?: number | null;
+  management_agreement: {
+    commission_model: string;
+    commission_rate: string | null;
+    fixed_fee: string | null;
+    payout_day: number | null;
+  } | null;
+  caretakers: { id: number; name: string; phone: string; email: string }[];
+  units: PropertyUnit[];
+  inspection_reports: InspectionReport[];
 };
 
-type PropertyForm = Omit<Property, 'id' | 'recurringCharges'> & { recurringCharges: RecurringCharge[] };
+const currency = new Intl.NumberFormat('en-KE', {
+  style: 'currency',
+  currency: 'KES',
+  maximumFractionDigits: 2,
+});
 
-const emptyForm: PropertyForm = {
-  name: '', address: '', currency_code: 'KES', timezone: 'Africa/Nairobi',
-  default_rent: 0, security_deposit: 0, water_deposit: 0,
-  default_garbage_charge: 0, default_water_rate: 0, rent_due_day: 10,
-  billing_mode: 'metered_water', recurringCharges: [],
-};
+function money(value: string | null) {
+  return value === null ? 'Not set' : currency.format(Number(value));
+}
 
 export default function PropertiesPage() {
-  const [properties, setProperties] = useState<Property[]>([]);
-  const [activePropertyId, setActivePropertyId] = useState('');
-  const [form, setForm] = useState<PropertyForm>(emptyForm);
-  const [isCreating, setIsCreating] = useState(false);
+  const [properties, setProperties] = useState<PropertyRecord[]>([]);
+  const [selectedPropertyId, setSelectedPropertyId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
 
-  const loadProperties = async () => {
+  const loadProperties = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
+    setError('');
     try {
-      const response = await fetch('/api/landlord/properties');
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to load properties.');
-      const items: Property[] = data.properties || [];
-      setProperties(items);
-      const selected = data.activePropertyId || items[0]?.id || '';
-      setActivePropertyId(selected);
-      const active = items.find((property) => property.id === selected);
-      setForm(active ? formFromProperty(active) : emptyForm);
-      setIsCreating(false);
-    } catch (loadError: any) {
-      setError(loadError.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { loadProperties(); }, []);
-
-  const chooseProperty = async (propertyId: string) => {
-    setError('');
-    const response = await fetch('/api/landlord/properties', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activePropertyId: propertyId }),
-    });
-    const data = await response.json();
-    if (!response.ok) { setError(data.error || 'Unable to switch property.'); return; }
-    setActivePropertyId(propertyId);
-    const selected = properties.find((property) => property.id === propertyId);
-    if (selected) setForm(formFromProperty(selected));
-    setIsCreating(false);
-    setNotice('Active property changed.');
-  };
-
-  const addProperty = () => {
-    setForm(emptyForm);
-    setIsCreating(true);
-    setError('');
-    setNotice('');
-  };
-
-  const updateField = (key: keyof PropertyForm, value: string | number) => {
-    setForm((current) => ({ ...current, [key]: value }));
-  };
-
-  const addRecurringCharge = () => setForm((current) => ({
-    ...current,
-    recurringCharges: [...current.recurringCharges, { name: '', amount: 0, is_active: true }],
-  }));
-
-  const updateRecurringCharge = (index: number, key: 'name' | 'amount', value: string | number) => {
-    setForm((current) => ({
-      ...current,
-      recurringCharges: current.recurringCharges.map((charge, chargeIndex) => chargeIndex === index ? { ...charge, [key]: value } : charge),
-    }));
-  };
-
-  const removeRecurringCharge = (index: number) => setForm((current) => ({
-    ...current,
-    recurringCharges: current.recurringCharges.filter((_, chargeIndex) => chargeIndex !== index),
-  }));
-
-  const saveProperty = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setNotice('');
-    const payload = {
-      name: form.name,
-      address: form.address,
-      currencyCode: form.currency_code,
-      timezone: form.timezone,
-      defaultRent: Number(form.default_rent),
-      securityDeposit: Number(form.security_deposit),
-      waterDeposit: Number(form.water_deposit),
-      garbageCharge: Number(form.default_garbage_charge),
-      waterRate: Number(form.default_water_rate),
-      rentDueDay: Number(form.rent_due_day),
-      billingMode: form.billing_mode,
-      recurringCharges: form.recurringCharges.map((charge) => ({ name: charge.name, amount: Number(charge.amount), isActive: charge.is_active !== false })),
-    };
-
-    try {
-      const response = await fetch('/api/landlord/properties', {
-        method: isCreating ? 'POST' : 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isCreating ? payload : { ...payload, propertyId: activePropertyId }),
+      const response = await fetch('/api/landlord/property-records', {
+        cache: 'no-store',
+        signal,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to save property.');
-      const propertyId = data.property?.id || activePropertyId;
-      if (isCreating && propertyId) {
-        const activateResponse = await fetch('/api/landlord/properties', {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ activePropertyId: propertyId }),
-        });
-        const activateData = await activateResponse.json();
-        if (!activateResponse.ok) throw new Error(activateData.error || 'Property saved but could not be selected.');
+      const payload = (await response.json()) as {
+        properties?: PropertyRecord[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || 'Unable to load your properties.');
       }
-      await loadProperties();
-      setNotice(isCreating ? 'Property created and selected.' : 'Property settings saved.');
-    } catch (saveError: any) {
-      setError(saveError.message);
+      if (!Array.isArray(payload.properties)) {
+        throw new Error('The property response was incomplete.');
+      }
+      setProperties(payload.properties);
+      setSelectedPropertyId((current) =>
+        payload.properties?.some((property) => property.id === current)
+          ? current
+          : payload.properties?.[0]?.id ?? null,
+      );
+    } catch (loadError) {
+      if (loadError instanceof Error && loadError.name === 'AbortError') return;
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load your properties.');
     } finally {
-      setSaving(false);
+      if (!signal?.aborted) setLoading(false);
     }
-  };
+  }, []);
 
-  if (loading) return <div className="p-8 text-sm text-slate-500">Loading properties…</div>;
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadProperties(controller.signal);
+    return () => controller.abort();
+  }, [loadProperties]);
+
+  const selectedProperty =
+    properties.find((property) => property.id === selectedPropertyId) ?? null;
 
   return (
-    <div className="max-w-5xl space-y-7">
+    <div className="max-w-6xl space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs uppercase font-bold text-emerald-700">Workspace</p>
-          <h1 className="mt-1 text-3xl font-bold text-slate-900">Properties</h1>
-          <p className="mt-1 text-sm text-slate-500">Set the defaults and billing behavior for each rental property.</p>
+          <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Portfolio</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">My Properties</h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Properties linked to your landlord account.
+          </p>
         </div>
-        <button type="button" onClick={addProperty} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"><Plus size={17} /> Add property</button>
+        <button
+          type="button"
+          onClick={() => void loadProperties()}
+          disabled={loading}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
       </header>
 
-      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-      {notice && <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</div>}
+      {error && (
+        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          Could not load property data: {error}
+        </p>
+      )}
 
-      <div className="flex flex-wrap gap-2 border-b border-slate-200">
-        {properties.map((property) => <button key={property.id} type="button" onClick={() => chooseProperty(property.id)} className={`border-b-2 px-3 py-2 text-sm font-semibold ${activePropertyId === property.id && !isCreating ? 'border-emerald-600 text-emerald-800' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
-          {property.name}{activePropertyId === property.id && !isCreating ? ' · Active' : ''}
-        </button>)}
-        {isCreating && <span className="border-b-2 border-emerald-600 px-3 py-2 text-sm font-semibold text-emerald-800">New property</span>}
-        {properties.length === 0 && !isCreating && <p className="py-3 text-sm text-slate-500">No properties yet. Add one to start configuring your workspace.</p>}
-      </div>
+      {/* Property Cards Grid */}
+      {loading ? (
+        <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600">
+          Loading properties…
+        </p>
+      ) : properties.length === 0 && !error ? (
+        <p className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600">
+          No properties are linked to this landlord account.
+        </p>
+      ) : properties.length > 0 ? (
+        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {properties.map((prop) => (
+            <button
+              key={prop.id}
+              type="button"
+              onClick={() => setSelectedPropertyId(prop.id)}
+              aria-pressed={selectedPropertyId === prop.id}
+              className={`rounded-2xl border bg-white p-5 text-left shadow-xs transition hover:shadow-sm ${
+                selectedPropertyId === prop.id
+                  ? 'border-emerald-500 ring-2 ring-emerald-100'
+                  : 'border-slate-200'
+              }`}
+            >
+              <div className="flex items-start justify-between">
+                <span className="rounded-xl bg-emerald-50 p-2.5 text-emerald-700">
+                  <Building2 size={22} />
+                </span>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-bold text-slate-700">
+                  {prop.branch_name}
+                </span>
+              </div>
 
-      {(activePropertyId || isCreating) && (
-        <form onSubmit={saveProperty} className="space-y-6">
-          <section className="grid gap-4 sm:grid-cols-2 rounded-xl border border-slate-200 bg-white p-5">
-            <Field label="Property name"><input required maxLength={120} value={form.name} onChange={(event) => updateField('name', event.target.value)} className={inputClass} placeholder="e.g. Riverside Court" /></Field>
-            <Field label="Address"><input value={form.address || ''} onChange={(event) => updateField('address', event.target.value)} className={inputClass} /></Field>
-            <Field label="Currency"><input required maxLength={3} value={form.currency_code} onChange={(event) => updateField('currency_code', event.target.value.toUpperCase())} className={inputClass} /></Field>
-            <Field label="Timezone"><input required value={form.timezone} onChange={(event) => updateField('timezone', event.target.value)} className={inputClass} /></Field>
-          </section>
+              <h2 className="mt-4 text-base font-bold text-slate-900">{prop.name}</h2>
+              <p className="mt-0.5 text-xs text-slate-500">{prop.property_type}</p>
 
-          <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-            <div><h2 className="font-semibold text-slate-900">Default charges</h2><p className="text-xs text-slate-500 mt-1">Use these values as defaults when adding units; each unit can have its own amount.</p></div>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <NumberField label="Monthly rent" value={form.default_rent} onChange={(value) => updateField('default_rent', value)} currency={form.currency_code} />
-              <NumberField label="Security deposit" value={form.security_deposit} onChange={(value) => updateField('security_deposit', value)} currency={form.currency_code} />
-              <NumberField label="Water deposit" value={form.water_deposit} onChange={(value) => updateField('water_deposit', value)} currency={form.currency_code} />
-              <NumberField label="Garbage charge" value={form.default_garbage_charge} onChange={(value) => updateField('default_garbage_charge', value)} currency={form.currency_code} />
-              <NumberField label="Water rate per unit" value={form.default_water_rate} onChange={(value) => updateField('default_water_rate', value)} currency={form.currency_code} />
-              <Field label="Rent due day"><input type="number" min={1} max={28} value={form.rent_due_day} onChange={(event) => updateField('rent_due_day', Number(event.target.value))} className={inputClass} /></Field>
+              <div className="mt-4 space-y-2 border-t border-slate-100 pt-3 text-xs text-slate-600">
+                <div className="flex items-center gap-2">
+                  <MapPin size={14} className="text-slate-400" />
+                  <span>{prop.location}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Layers size={14} className="text-slate-400" />
+                  <span>
+                    {prop.expected_unit_count == null
+                      ? 'Expected unit count not set'
+                      : `${prop.expected_unit_count} expected units`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Building2 size={14} className="text-slate-400" />
+                  <span>{prop.units.length} lettable units</span>
+                </div>
+              </div>
+            </button>
+          ))}
+        </section>
+      ) : null}
+
+      {selectedProperty && (
+        <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs sm:p-6">
+          <div className="border-b border-slate-100 pb-4">
+            <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Property details</p>
+            <h2 className="mt-1 text-xl font-bold text-slate-900">{selectedProperty.name}</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              {selectedProperty.address || selectedProperty.location} · {selectedProperty.branch_name}
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <h3 className="text-sm font-bold text-slate-900">Management agreement</h3>
+              {selectedProperty.management_agreement ? (
+                <div className="mt-2 space-y-1 text-sm text-slate-600">
+                  <p>
+                    Commission:{' '}
+                    {selectedProperty.management_agreement.commission_model === 'percentage'
+                      ? `${selectedProperty.management_agreement.commission_rate ?? 'Not set'}%`
+                      : `Fixed fee ${money(selectedProperty.management_agreement.fixed_fee)}`}
+                  </p>
+                  <p>
+                    Payout day: {selectedProperty.management_agreement.payout_day ?? 'Not set'}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Agreement is landlord-level and may cover more than this property.
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-slate-500">No current management agreement is linked.</p>
+              )}
+            </article>
+
+            <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <h3 className="text-sm font-bold text-slate-900">Assigned caretakers</h3>
+              {selectedProperty.caretakers.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-500">No active caretaker assignment.</p>
+              ) : (
+                <ul className="mt-2 space-y-2">
+                  {selectedProperty.caretakers.map((caretaker) => (
+                    <li key={caretaker.id} className="text-sm text-slate-700">
+                      <span className="font-semibold">{caretaker.name || caretaker.email}</span>
+                      {caretaker.phone && (
+                        <a
+                          href={`tel:${caretaker.phone}`}
+                          className="ml-2 inline-flex items-center gap-1 text-emerald-800 hover:underline"
+                        >
+                          <Phone size={13} aria-hidden="true" /> {caretaker.phone}
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </article>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <div className="border-b border-slate-100 bg-slate-50 p-4">
+              <h3 className="text-sm font-bold text-slate-900">Units &amp; current balances</h3>
             </div>
-          </section>
+            {selectedProperty.units.length === 0 ? (
+              <p className="p-4 text-sm text-slate-500">No lettable units are recorded for this property.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th scope="col" className="px-4 py-3">Unit</th>
+                      <th scope="col" className="px-4 py-3">Type</th>
+                      <th scope="col" className="px-4 py-3">Tenant</th>
+                      <th scope="col" className="px-4 py-3">Status</th>
+                      <th scope="col" className="px-4 py-3">Monthly rent</th>
+                      <th scope="col" className="px-4 py-3">Current balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {selectedProperty.units.map((unit) => (
+                      <tr key={unit.id}>
+                        <th scope="row" className="px-4 py-3 text-left font-semibold text-slate-900">
+                          {unit.code}
+                        </th>
+                        <td className="px-4 py-3">{unit.unit_type}</td>
+                        <td className="px-4 py-3">{unit.tenant_name || '—'}</td>
+                        <td className="px-4 py-3">{unit.status}</td>
+                        <td className="whitespace-nowrap px-4 py-3">{money(unit.monthly_rent)}</td>
+                        <td className="whitespace-nowrap px-4 py-3">{money(unit.balance)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
-          <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-            <div><h2 className="font-semibold text-slate-900">Water billing</h2><p className="text-xs text-slate-500 mt-1">Choose whether invoices wait for meter readings or use a fixed monthly charge.</p></div>
-            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
-              <button type="button" onClick={() => updateField('billing_mode', 'metered_water')} className={`rounded-md px-3 py-2 text-sm font-semibold ${form.billing_mode === 'metered_water' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'}`}>Metered water</button>
-              <button type="button" onClick={() => updateField('billing_mode', 'fixed_utilities')} className={`rounded-md px-3 py-2 text-sm font-semibold ${form.billing_mode === 'fixed_utilities' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'}`}>Fixed utilities</button>
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <div className="border-b border-slate-100 bg-slate-50 p-4">
+              <h3 className="text-sm font-bold text-slate-900">Shared inspection reports</h3>
             </div>
-            {form.recurringCharges.length > 0 && <div className="space-y-2">{form.recurringCharges.map((charge, index) => <div key={charge.id || index} className="grid grid-cols-[1fr_9rem_auto] gap-2">
-              <input aria-label="Recurring utility name" value={charge.name} onChange={(event) => updateRecurringCharge(index, 'name', event.target.value)} className={inputClass} placeholder="e.g. Internet" />
-              <input aria-label="Recurring utility amount" type="number" min={0} value={charge.amount} onChange={(event) => updateRecurringCharge(index, 'amount', event.target.value)} className={inputClass} />
-              <button type="button" onClick={() => removeRecurringCharge(index)} className="p-2 text-slate-500 hover:text-red-700" title="Remove charge"><Trash2 size={17} /></button>
-            </div>)}</div>}
-            <button type="button" onClick={addRecurringCharge} className="text-sm font-semibold text-emerald-700 hover:text-emerald-900">+ Add recurring utility</button>
-          </section>
+            {selectedProperty.inspection_reports.length === 0 ? (
+              <p className="p-4 text-sm text-slate-500">No completed inspection reports have been shared.</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {selectedProperty.inspection_reports.map((report) => (
+                  <article key={report.id} className="space-y-2 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <h4 className="font-semibold text-slate-900">{report.title}</h4>
+                        <p className="text-xs text-slate-500">
+                          {report.inspection_type}
+                          {report.unit_code ? ` · Unit ${report.unit_code}` : ' · Common areas'}
+                          {report.completed_at ? ` · Completed ${new Date(report.completed_at).toLocaleDateString('en-KE')}` : ''}
+                        </p>
+                      </div>
+                      <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                        <ClipboardCheck size={14} aria-hidden="true" /> {report.responsible_staff}
+                      </span>
+                    </div>
+                    {report.checklist.length > 0 && (
+                      <ul className="list-inside list-disc text-sm text-slate-600">
+                        {report.checklist.map((item, index) => (
+                          <li key={`${report.id}-${index}`}>
+                            {item.title}{item.notes ? ` — ${item.notes}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {report.findings && <p className="text-sm text-slate-700"><strong>Findings:</strong> {report.findings}</p>}
+                    {report.recommendations && <p className="text-sm text-slate-700"><strong>Recommendations:</strong> {report.recommendations}</p>}
+                    {report.photos.length > 0 && (
+                      <div className="flex flex-wrap gap-3">
+                        {report.photos.map((photo) => (
+                          <a
+                            key={`${report.id}-${photo.index}`}
+                            href={`/api/landlord/inspections/${report.id}/photos/${photo.index}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-sm font-semibold text-emerald-800 hover:underline"
+                          >
+                            View photo{photo.caption ? `: ${photo.caption}` : ''}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
-          <div className="flex justify-end"><button type="submit" disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"><Save size={16} />{saving ? 'Saving…' : isCreating ? 'Create property' : 'Save property settings'}</button></div>
-        </form>
+      {/* Property Summary Table */}
+      {properties.length > 0 && (
+        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <div className="border-b border-slate-100 p-4">
+            <h2 className="text-sm font-bold text-slate-900">Portfolio Register</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-xs">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-5 py-3 text-left font-semibold uppercase tracking-wider text-slate-600">Property</th>
+                  <th className="px-5 py-3 text-left font-semibold uppercase tracking-wider text-slate-600">Branch</th>
+                  <th className="px-5 py-3 text-left font-semibold uppercase tracking-wider text-slate-600">Type</th>
+                  <th className="px-5 py-3 text-left font-semibold uppercase tracking-wider text-slate-600">Location</th>
+                  <th className="px-5 py-3 text-right font-semibold uppercase tracking-wider text-slate-600">Expected Units</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {properties.map((property) => (
+                  <tr key={property.id} className="hover:bg-slate-50/50">
+                    <th scope="row" className="px-5 py-3.5 text-left font-bold text-slate-900">{property.name}</th>
+                    <td className="px-5 py-3.5 text-slate-600">{property.branch_name}</td>
+                    <td className="px-5 py-3.5 text-slate-600">{property.property_type}</td>
+                    <td className="px-5 py-3.5 text-slate-600">{property.location}</td>
+                    <td className="px-5 py-3.5 text-right font-bold text-slate-900">
+                      {property.expected_unit_count ?? 'Not set'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );
-}
-
-const inputClass = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100';
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="block text-sm font-medium text-slate-700">{label}{children}</label>;
-}
-
-function NumberField({ label, value, onChange, currency }: { label: string; value: number; onChange: (value: number) => void; currency: string }) {
-  return <Field label={`${label} (${currency})`}><input type="number" min={0} step="0.01" value={value} onChange={(event) => onChange(Number(event.target.value))} className={inputClass} /></Field>;
-}
-
-function formFromProperty(property: Property): PropertyForm {
-  return {
-    name: property.name,
-    address: property.address,
-    currency_code: property.currency_code,
-    timezone: property.timezone,
-    default_rent: property.default_rent,
-    security_deposit: property.security_deposit,
-    water_deposit: property.water_deposit,
-    default_garbage_charge: property.default_garbage_charge,
-    default_water_rate: property.default_water_rate,
-    rent_due_day: property.rent_due_day,
-    billing_mode: property.billing_mode,
-    recurringCharges: (property.recurringCharges || []).map((charge) => ({ ...charge, amount: Number(charge.amount) })),
-  };
 }

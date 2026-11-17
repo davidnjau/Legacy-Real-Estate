@@ -1,397 +1,341 @@
+import Link from 'next/link';
+import ListingSearch from '../components/landing/ListingSearch';
 import {
-  ArrowDown,
   ArrowRight,
   BadgeCheck,
-  BarChart3,
   Building2,
-  CheckCircle2,
+  Check,
   ChevronRight,
-  ClipboardCheck,
-  CloudCog,
-  Container,
-  Database,
-  FileCheck2,
-  GitBranch,
+  CircleDollarSign,
+  ClipboardList,
+  House,
   KeyRound,
-  Layers3,
-  LockKeyhole,
-  MessageSquareText,
-  Network,
-  Presentation,
-  ReceiptText,
-  Rocket,
+  MapPin,
   ShieldCheck,
-  Smartphone,
-  TestTube2,
+  Sparkles,
   Users,
-  WalletCards,
   Wrench,
 } from 'lucide-react';
 
-type StatusTone = 'done' | 'next' | 'pending' | 'info';
-
-type Workstream = {
-  id: string;
-  title: string;
-  summary: string;
-  details: string;
-};
-
-const foundationWork: Workstream[] = [
+const roles = [
   {
-    id: 'W0',
-    title: 'Scope, architecture, and delivery foundations',
-    summary: 'The project is structured as a Django and Next.js monorepo with a versioned API contract.',
-    details:
-      'Authentication, MFA foundations, roles, branch-scoped access, immutable audit logging, local PostgreSQL/Redis/MinIO/Mailpit services, quality checks, and the domain dictionary are in place.',
+    name: 'Property owners',
+    eyebrow: 'OWNER PORTAL',
+    description: 'See your portfolio, occupancy, rent performance, expenses and property activity in one clear view.',
+    icon: Building2,
+    tone: 'emerald',
+    features: ['Portfolio overview', 'Property and unit records', 'Rental performance'],
   },
   {
-    id: 'W1',
-    title: 'Rental master data and tenancy foundations',
-    summary: 'The platform can represent the agency, branches, landlords, properties, units, tenants, charges, reservations, and tenancy records.',
-    details:
-      'Records are effective-dated where history matters, access is enforced server-side, move-in workflows are supported, and the property structure is ready for operations and billing.',
-  },
-];
-
-const billingWork: Workstream[] = [
-  {
-    id: 'W2-01 to W2-05',
-    title: 'Invoices, charges, utilities, and monthly billing',
-    summary: 'Invoices have branch-sequential numbers, immutable issued records, line items, recurring charges, meter-based water charges, and carried balances.',
-    details:
-      'Monthly invoice generation is idempotent, includes configured utilities, validates meter readings, and avoids duplicate billing for the same tenancy and period.',
+    name: 'Residents',
+    eyebrow: 'RESIDENT PORTAL',
+    description: 'Keep your rental account close at hand, from invoices and payments to property updates.',
+    icon: House,
+    tone: 'blue',
+    features: ['Bills and payment history', 'Property updates', 'Home and account details'],
   },
   {
-    id: 'W2-06 to W2-08',
-    title: 'Arrears, payment plans, and payment intake',
-    summary: 'Arrears ageing, penalties, manager-approved waivers, demand letters, instalment plans, and M-Pesa callback processing are implemented.',
-    details:
-      'Callback payloads are persisted before processing, duplicate transactions are safe to retry, and payment-plan balances, missed instalments, and completion states are tracked.',
-  },
-  {
-    id: 'W2-09 to W2-11',
-    title: 'Allocation, credits, and receipts',
-    summary: 'Payments allocate transactionally to the oldest outstanding invoices, with overpayments carried as tenant credit.',
-    details:
-      'Unmatched payments are queued for staff review, suggestions remain advisory, matched payments receive immutable receipts, and receipt data is downloadable.',
-  },
-  {
-    id: 'W2-12 to W2-15',
-    title: 'Reconciliation, offline payments, deposits, and reporting',
-    summary: 'Bank CSV/XLSX imports, manual matching, cash and cheque handling, refundable deposits, top-ups, and daily reconciliation views are available.',
-    details:
-      'Finance actions are authorized and audited. Reports compare received, matched, unmatched, reversed, and allocated totals by date and payment channel.',
+    name: 'Caretakers',
+    eyebrow: 'PROPERTY TEAM',
+    description: 'Access assigned properties, daily tasks and on-site operations from a mobile-friendly workspace.',
+    icon: KeyRound,
+    tone: 'blue',
+    features: ['Assigned properties', 'Daily task list', 'On-site operations'],
   },
 ];
 
-const nextWork: Workstream[] = [
+const capabilities = [
   {
-    id: 'W3',
-    title: 'Property operations',
-    summary: 'The next planned wave connects the trusted records to day-to-day property work.',
-    details:
-      'The proposed scope includes maintenance requests, caretaker work queues, quotations, approvals, vendors, expenses, water-reading operations, notifications, and operational dashboards.',
+    icon: Building2,
+    title: 'Know your portfolio',
+    description: 'Keep properties, units, ownership and occupancy information together in a dependable workspace.',
   },
   {
-    id: 'W4',
-    title: 'Role-based portals and polished product UI',
-    summary: 'Later tasks will turn the platform capabilities into focused experiences for each audience.',
-    details:
-      'The landlord portal will focus on oversight, the caretaker portal on assigned work, and the tenant portal on bills, payments, maintenance requests, notices, and communication.',
+    icon: CircleDollarSign,
+    title: 'Bring rental finances into focus',
+    description: 'Follow invoices, collections, balances and deposits with records designed for accountability.',
+  },
+  {
+    icon: Wrench,
+    title: 'Coordinate property operations',
+    description: 'Give teams a clear place to organize maintenance, resident needs and day-to-day property work.',
   },
 ];
 
-const toneClasses: Record<StatusTone, string> = {
-  done: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
-  next: 'bg-blue-50 text-blue-800 ring-blue-200',
-  pending: 'bg-amber-50 text-amber-900 ring-amber-200',
-  info: 'bg-slate-100 text-slate-700 ring-slate-200',
-};
-
-function WorkCard({
-  work,
-  tone = 'done',
-}: {
-  work: Workstream;
-  tone?: StatusTone;
-}) {
+function ProductPreview() {
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-      <div className="flex items-start justify-between gap-4">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#10251f] text-[10px] font-bold text-white">
-          {work.id}
-        </span>
-        <span className={`rounded-full px-3 py-1 text-[10px] font-bold ring-1 ${toneClasses[tone]}`}>
-          {tone === 'done' ? 'Implemented' : tone === 'pending' ? 'PM approval' : 'Next'}
-        </span>
+    <div className="relative mx-auto w-full max-w-[540px]">
+      <div className="absolute -inset-6 rounded-[2.5rem] bg-emerald-300/10 blur-2xl" />
+      <div className="relative overflow-hidden rounded-[1.7rem] border border-white/15 bg-[#f7faf8] p-3 shadow-2xl shadow-black/30 sm:p-4">
+        <div className="flex items-center justify-between border-b border-slate-200 px-2 pb-3">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-8 place-items-center rounded-lg bg-[#123b2c] text-emerald-200">
+              <Building2 size={17} />
+            </span>
+            <div>
+              <p className="text-[11px] font-bold text-slate-900">Portfolio overview</p>
+              <p className="text-[9px] text-slate-500">Owner workspace</p>
+            </div>
+          </div>
+          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[9px] font-semibold text-emerald-800">
+            Product preview
+          </span>
+        </div>
+
+        <div className="p-2 pt-4 sm:p-3">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-medium text-slate-500">Good morning</p>
+              <p className="mt-1 text-lg font-semibold tracking-tight text-slate-950 sm:text-xl">Your properties, at a glance.</p>
+            </div>
+            <span className="mb-1 inline-flex items-center gap-1 text-[9px] font-semibold text-slate-500">
+              <MapPin size={11} /> Kenya
+            </span>
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {[
+              ['Properties', 'Portfolio'],
+              ['Occupancy', 'At a glance'],
+              ['Collections', 'By period'],
+            ].map(([label, detail], index) => (
+              <div key={label} className="rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-[9px] font-medium text-slate-500">{label}</p>
+                <div className="mt-2 flex items-center gap-1.5">
+                  <span className={`size-2 rounded-full ${index === 0 ? 'bg-emerald-500' : index === 1 ? 'bg-blue-500' : 'bg-amber-400'}`} />
+                  <p className="text-[10px] font-semibold text-slate-800">{detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-semibold text-slate-800">Property activity</p>
+                <span className="text-[9px] text-slate-400">Overview</span>
+              </div>
+              <div className="mt-4 flex h-20 items-end gap-2 border-b border-slate-100 px-1">
+                {[35, 55, 42, 75, 58, 88, 66, 96, 72, 83, 61, 93].map((height, index) => (
+                  <span
+                    key={`${height}-${index}`}
+                    className={`flex-1 rounded-t-sm ${index > 8 ? 'bg-emerald-700' : 'bg-emerald-200'}`}
+                    style={{ height: `${height}%` }}
+                  />
+                ))}
+              </div>
+              <div className="mt-2 flex justify-between text-[8px] text-slate-400">
+                <span>Portfolio records</span><span>Illustrative preview</span>
+              </div>
+            </div>
+            <div className="rounded-xl bg-[#123b2c] p-3 text-white">
+              <div className="flex size-8 items-center justify-center rounded-lg bg-white/10 text-emerald-200">
+                <ShieldCheck size={16} />
+              </div>
+              <p className="mt-4 text-[10px] font-semibold">One connected workspace</p>
+              <p className="mt-1 text-[9px] leading-4 text-emerald-50/70">
+                Role-aware access for owners, residents and property teams.
+              </p>
+              <div className="mt-3 flex items-center gap-1 text-[9px] font-medium text-emerald-200">
+                <BadgeCheck size={12} /> Built for clarity
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+            <span className="grid size-7 place-items-center rounded-lg bg-amber-50 text-amber-700"><ClipboardList size={15} /></span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[9px] font-semibold text-slate-800">Property operations</p>
+              <p className="mt-0.5 truncate text-[8px] text-slate-500">Records, finance and service workflows, brought together.</p>
+            </div>
+            <ChevronRight size={14} className="text-slate-400" />
+          </div>
+        </div>
       </div>
-      <h3 className="mt-5 text-lg font-semibold tracking-tight">{work.title}</h3>
-      <p className="mt-3 text-sm font-medium leading-6 text-slate-800">{work.summary}</p>
-      <p className="mt-3 text-sm leading-6 text-slate-600">{work.details}</p>
-    </article>
-  );
-}
-
-function Capability({ icon: Icon, title, text }: { icon: typeof Building2; title: string; text: string }) {
-  return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-5">
-      <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-emerald-900">
-        <Icon size={20} aria-hidden="true" />
-      </span>
-      <h3 className="mt-4 font-semibold">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-600">{text}</p>
-    </article>
+      <div className="absolute -bottom-5 -left-4 hidden items-center gap-2 rounded-xl border border-white/10 bg-white px-4 py-3 text-xs font-semibold text-slate-800 shadow-xl sm:flex">
+        <Sparkles size={15} className="text-emerald-700" /> Thoughtful property management
+      </div>
+    </div>
   );
 }
 
 export default function LandingPage() {
   return (
     <main className="min-h-screen bg-[#f7f8f6] text-slate-950">
-      <header className="border-b border-slate-200/80 bg-white">
-        <nav
-          aria-label="Presentation navigation"
-          className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 sm:px-8"
-        >
-          <a href="#top" className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-xl bg-emerald-900 text-white">
-              <Building2 size={21} aria-hidden="true" />
+      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur">
+        <nav aria-label="Main navigation" className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 sm:px-8">
+          <Link href="/" className="flex items-center gap-3" aria-label="Legacy Real Estate home">
+            <span className="grid size-10 place-items-center rounded-xl bg-[#123b2c] text-emerald-200">
+              <Building2 size={21} />
             </span>
             <span>
               <span className="block text-sm font-bold tracking-tight">LEGACY REAL ESTATE</span>
-              <span className="block text-xs text-slate-500">Platform progress presentation</span>
+              <span className="block text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">Property, in good hands</span>
             </span>
-          </a>
-          <a
-            href="#status"
-            className="hidden items-center gap-2 rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-emerald-800 hover:text-emerald-900 sm:inline-flex"
+          </Link>
+          <div className="hidden items-center gap-8 md:flex">
+            <a href="#platform" className="text-sm font-medium text-slate-600 transition hover:text-emerald-900">Platform</a>
+            <a href="#portals" className="text-sm font-medium text-slate-600 transition hover:text-emerald-900">Who we serve</a>
+            <a href="#approach" className="text-sm font-medium text-slate-600 transition hover:text-emerald-900">Our approach</a>
+          </div>
+          <Link
+            href="/login"
+            className="inline-flex items-center gap-2 rounded-xl bg-[#123b2c] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-950 shadow-xs"
           >
-            See project status <ArrowDown size={15} aria-hidden="true" />
-          </a>
+            <span>Sign in</span>
+            <ArrowRight size={15} />
+          </Link>
         </nav>
       </header>
 
-      <section id="top" className="relative isolate overflow-hidden bg-[#10251f] text-white">
-        <div className="pointer-events-none absolute -right-32 -top-40 size-[34rem] rounded-full border border-emerald-200/10" />
-        <div className="pointer-events-none absolute -right-8 -top-16 size-[25rem] rounded-full border border-emerald-200/10" />
-        <div className="relative mx-auto grid max-w-7xl gap-12 px-5 py-20 sm:px-8 sm:py-28 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:py-32">
+      <section id="top" className="relative isolate overflow-hidden bg-[#102820] text-white">
+        <div className="pointer-events-none absolute -right-36 -top-40 size-[36rem] rounded-full border border-emerald-100/10" />
+        <div className="pointer-events-none absolute -right-12 -top-20 size-[26rem] rounded-full border border-emerald-100/10" />
+        <div className="pointer-events-none absolute -bottom-64 -left-32 size-[34rem] rounded-full bg-emerald-500/10 blur-3xl" />
+        <div className="relative mx-auto grid max-w-7xl items-center gap-16 px-5 py-16 sm:px-8 sm:py-20 lg:grid-cols-[1fr_0.95fr] lg:gap-10 lg:py-24">
           <div>
-            <p className="mb-6 inline-flex items-center gap-2 rounded-full border border-emerald-300/25 bg-emerald-200/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.16em] text-emerald-200">
-              <span className="size-2 rounded-full bg-emerald-300" />
-              W0-W2 complete · awaiting PM green light
+            <p className="mb-6 inline-flex items-center gap-2 rounded-full border border-emerald-200/20 bg-white/5 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-200 sm:text-xs">
+              <span className="size-2 rounded-full bg-emerald-300" /> Property management, made clearer
             </p>
-            <h1 className="max-w-3xl text-4xl font-semibold leading-[1.08] tracking-tight sm:text-5xl lg:text-7xl">
-              The platform is being built behind the scenes.
+            <h1 className="max-w-2xl text-4xl font-semibold leading-[1.06] tracking-tight sm:text-5xl lg:text-[4.25rem]">
+              A better way to care for property.
             </h1>
-            <p className="mt-7 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg sm:leading-8">
-              Legacy Real Estate is becoming a Kenya-focused property operations platform for agencies,
-              landlords, caretakers, and tenants. The engineering foundation and core rental finance workflows
-              are now in place. The next step is for the PMs to review the completed work and give the
-              green light to proceed. W3 clarification is only needed where a workflow requires a business
-              decision that has not yet been agreed.
+            <p className="mt-6 max-w-xl text-base leading-7 text-slate-300 sm:text-lg sm:leading-8">
+              Legacy Real Estate brings owners, residents and property teams into one thoughtful workspace—so the details are easier to manage and the experience feels more connected.
             </p>
-            <div className="mt-9 flex flex-wrap items-center gap-4">
-              <a
-                href="#status"
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-300 px-5 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-200"
-              >
-                Explore the progress <ArrowRight size={17} aria-hidden="true" />
+            <div className="mt-8 flex flex-wrap gap-3">
+              <a href="#homes" className="inline-flex items-center gap-2 rounded-xl bg-emerald-300 px-5 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-200">
+                Find a home <ArrowRight size={16} />
               </a>
-              <span className="text-sm text-slate-400">First client presentation prototype coming soon</span>
+              <a href="#platform" className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10">
+                Discover the platform
+              </a>
             </div>
-            <div className="mt-14 flex flex-wrap gap-x-8 gap-y-3 border-t border-white/15 pt-6 text-sm text-slate-300">
-              <span className="inline-flex items-center gap-2"><BadgeCheck size={17} className="text-emerald-300" aria-hidden="true" />W2 validated</span>
-              <span className="inline-flex items-center gap-2"><GitBranch size={17} className="text-emerald-300" aria-hidden="true" />Branch-aware</span>
-              <span className="inline-flex items-center gap-2"><ShieldCheck size={17} className="text-emerald-300" aria-hidden="true" />Audited access</span>
+            <div className="mt-10 flex flex-wrap gap-x-6 gap-y-3 border-t border-white/15 pt-5 text-xs text-slate-300 sm:text-sm">
+              <span className="inline-flex items-center gap-2"><Check size={15} className="text-emerald-300" /> Clear property records</span>
+              <span className="inline-flex items-center gap-2"><Check size={15} className="text-emerald-300" /> Connected rental finances</span>
+              <span className="inline-flex items-center gap-2"><Check size={15} className="text-emerald-300" /> Access shaped by your role</span>
             </div>
           </div>
-          <div className="rounded-2xl border border-white/15 bg-white/[0.06] p-5 shadow-2xl backdrop-blur sm:p-7">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-200">Delivery checkpoint</p>
-            <div className="mt-6 space-y-3">
-              {[
-                ['01', 'Foundation', 'Scope, API, security, and quality'],
-                ['02', 'Rental records', 'Branches, owners, properties, units, tenants'],
-                ['03', 'Financial workflows', 'Invoices, payments, arrears, reconciliation'],
-                ['04', 'Next decision', 'PM sign-off and W3 planning'],
-              ].map(([number, title, detail], index) => (
-                <div key={number} className="flex items-center gap-4 rounded-xl bg-black/15 p-4">
-                  <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-emerald-200/20 text-xs font-bold text-emerald-200">{number}</span>
-                  <div className="min-w-0 flex-1"><p className="font-semibold">{title}</p><p className="mt-1 text-xs text-slate-400">{detail}</p></div>
-                  <span className={`size-2 shrink-0 rounded-full ${index < 3 ? 'bg-emerald-300' : 'bg-amber-300'}`} />
-                </div>
-              ))}
-            </div>
+          <ProductPreview />
+        </div>
+        <div className="relative mx-auto max-w-7xl px-5 pb-12 sm:px-8">
+          <ListingSearch />
+        </div>
+      </section>
+
+      <section id="platform" className="px-5 py-20 sm:px-8 sm:py-24">
+        <div className="mx-auto max-w-7xl">
+          <div className="mx-auto max-w-3xl text-center">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">One connected platform</p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">The moving parts of property, working together.</h2>
+            <p className="mt-4 text-base leading-7 text-slate-600">
+              From property records to the resident experience, keep the important work organized and easier to follow.
+            </p>
+          </div>
+          <div className="mt-10 grid gap-4 md:grid-cols-3">
+            {capabilities.map(({ icon: Icon, title, description }) => (
+              <article key={title} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                <span className="grid size-11 place-items-center rounded-xl bg-emerald-50 text-emerald-900">
+                  <Icon size={21} />
+                </span>
+                <h3 className="mt-5 text-lg font-semibold tracking-tight">{title}</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{description}</p>
+              </article>
+            ))}
           </div>
         </div>
       </section>
 
-      <section id="status" className="scroll-mt-8 border-b border-amber-200 bg-amber-50 px-5 py-8 sm:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex gap-4">
-            <ClipboardCheck className="mt-1 shrink-0 text-amber-800" size={22} aria-hidden="true" />
-            <div>
-              <p className="text-sm font-bold uppercase tracking-[0.14em] text-amber-900">What this website is today</p>
-              <p className="mt-1 max-w-4xl text-sm leading-6 text-amber-950">
-                This is a presentation homepage, not the finished landlord, caretaker, or tenant portal.
-                Most completed work is backend and infrastructure work that users do not see yet: records,
-                rules, permissions, APIs, payments, audit trails, migrations, tests, and deployment preparation.
+      <section id="portals" className="scroll-mt-24 border-y border-slate-200 bg-white px-5 py-20 sm:px-8 sm:py-24">
+        <div className="mx-auto max-w-7xl">
+          <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
+            <div className="max-w-2xl">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">A workspace for you</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">The right view for every relationship.</h2>
+              <p className="mt-4 text-base leading-7 text-slate-600">
+                Start with the portal that fits you. Each workspace is designed around the information and responsibilities that matter to that role.
               </p>
             </div>
-          </div>
-          <span className="shrink-0 rounded-full bg-white px-3 py-2 text-xs font-bold text-amber-900 ring-1 ring-amber-200">
-            Prototype UI coming soon
-          </span>
-        </div>
-      </section>
-
-      <section className="px-5 py-20 sm:px-8 sm:py-24">
-        <div className="mx-auto max-w-7xl">
-          <div className="max-w-3xl">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">The product vision</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">One connected workspace for property work.</h2>
-            <p className="mt-4 text-base leading-7 text-slate-600">
-              The long-term product brings together agency operations, property records, tenant relationships,
-              bills, payments, maintenance, communication, and owner oversight—while each role sees only what it needs.
+            <p className="max-w-sm text-sm leading-6 text-slate-500">
+              Tenant accounts can be created online. Owner and caretaker accounts are provisioned by the agency.
             </p>
           </div>
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Capability icon={Building2} title="Agency workspace" text="Branches, teams, roles, properties, units, agreements, and secure access." />
-            <Capability icon={ReceiptText} title="Rental finance" text="Invoices, recurring charges, water billing, payments, credits, deposits, and arrears." />
-            <Capability icon={Network} title="Operational workflows" text="Maintenance, caretakers, vendors, expenses, approvals, readings, and notifications." />
-            <Capability icon={Users} title="Role-based portals" text="Focused experiences for landlords, caretakers, tenants, and the agency team." />
-          </div>
-        </div>
-      </section>
 
-      <section className="border-y border-slate-200 bg-white px-5 py-20 sm:px-8 sm:py-24">
-        <div className="mx-auto max-w-7xl">
-          <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">Completed foundation</p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">W0 and W1 made the system trustworthy.</h2>
-            </div>
-            <p className="max-w-2xl text-sm leading-6 text-slate-600">
-              Before adding finance and operations, the platform needed a reliable vocabulary, secure boundaries,
-              and durable rental records. Those layers are now implemented.
-            </p>
-          </div>
-          <div className="mt-10 grid gap-4 lg:grid-cols-2">{foundationWork.map((work) => <WorkCard key={work.id} work={work} />)}</div>
-        </div>
-      </section>
-
-      <section className="bg-[#eaf0ec] px-5 py-20 sm:px-8 sm:py-24">
-        <div className="mx-auto max-w-7xl">
-          <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">Wave 2 completed</p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">The financial engine is in place.</h2>
-            </div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
-              <TestTube2 size={18} aria-hidden="true" /> Full Django integration suite: 60 tests passed
-            </div>
-          </div>
-          <div className="mt-10 grid gap-4 md:grid-cols-2">{billingWork.map((work) => <WorkCard key={work.id} work={work} />)}</div>
-          <div className="mt-8 grid gap-4 sm:grid-cols-3">
-            <div className="rounded-2xl bg-white p-5"><Database className="text-emerald-800" size={21} aria-hidden="true" /><p className="mt-3 text-sm font-semibold">PostgreSQL-ready migrations</p><p className="mt-1 text-xs leading-5 text-slate-600">Models, constraints, indexes, and immutable financial records.</p></div>
-            <div className="rounded-2xl bg-white p-5"><LockKeyhole className="text-emerald-800" size={21} aria-hidden="true" /><p className="mt-3 text-sm font-semibold">Authorization and audit</p><p className="mt-1 text-xs leading-5 text-slate-600">Finance actions are permissioned, scoped, and traceable.</p></div>
-            <div className="rounded-2xl bg-white p-5"><BarChart3 className="text-emerald-800" size={21} aria-hidden="true" /><p className="mt-3 text-sm font-semibold">Reconciliation visibility</p><p className="mt-1 text-xs leading-5 text-slate-600">Daily totals and channel-level reporting are available.</p></div>
-          </div>
-        </div>
-      </section>
-
-      <section className="border-y border-slate-200 bg-white px-5 py-20 sm:px-8 sm:py-24">
-        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.85fr_1.15fr] lg:items-start">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-800">Delivery and infrastructure</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Staging is deliberately simple. Production can scale later.</h2>
-            <p className="mt-4 text-sm leading-7 text-slate-600">
-              The accepted architecture decision uses Docker Compose on the prepared single-VPS staging environment.
-              This keeps the current deployment repeatable while the application contracts and workflows stabilize.
-            </p>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Capability icon={Container} title="Compose for staging" text="Django, Next.js, PostgreSQL, Redis, MinIO, and Caddy run as a repeatable VM deployment with HTTPS." />
-            <Capability icon={CloudCog} title="K3s and Helm for production" text="The repository retains Kubernetes infrastructure for the production phase when scale, rollout, isolation, and resilience justify it." />
-            <Capability icon={Rocket} title="Direct staging deployment" text="Commit locally and push directly to staging; GitHub Actions builds the archived commit, deploys it, and checks the public health endpoint." />
-            <Capability icon={ShieldCheck} title="Safe environment boundaries" text="Staging uses demo data and VM-only secrets; production credentials and live records remain separate." />
-          </div>
-        </div>
-        <div className="mx-auto mt-8 flex max-w-7xl items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-5 text-sm leading-6 text-blue-950">
-          <FileCheck2 className="mt-0.5 shrink-0 text-blue-800" size={19} aria-hidden="true" />
-          <p><strong>Architecture decision:</strong> Docker Compose on a VM is the right fit for current staging. K3s/Helm remains the intended production direction and can be adopted when production requirements call for multiple nodes, automated rollouts, horizontal scaling, stronger workload isolation, or high availability.</p>
-        </div>
-        <div className="mx-auto mt-4 flex max-w-7xl items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-950">
-          <MessageSquareText className="mt-0.5 shrink-0 text-emerald-800" size={19} aria-hidden="true" />
-          <p><strong>M-Pesa sandbox callback:</strong> <code className="break-all rounded bg-white px-2 py-1 text-xs font-semibold text-emerald-900 ring-1 ring-emerald-200">https://staging.legacyhomes.live/api/v1/payments/mpesa/callback</code></p>
-        </div>
-      </section>
-
-      <section className="bg-[#10251f] px-5 py-20 text-white sm:px-8 sm:py-24">
-        <div className="mx-auto max-w-7xl">
-          <div className="max-w-3xl">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-200">The next decision</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Ready to continue with Wave 3 after PM sign-off.</h2>
-            <p className="mt-4 text-sm leading-7 text-slate-300">
-              W3 should connect the trusted backend records to the people and processes that keep properties running.
-              The PMs are being asked to approve the completed W0-W2 foundation and give the green light to
-              proceed. W3 can begin after approval; only unresolved business decisions within specific W3
-              tasks should pause implementation for clarification.
-            </p>
-          </div>
-          <div className="mt-10 grid gap-4 lg:grid-cols-2">{nextWork.map((work, index) => <WorkCard key={work.id} work={work} tone={index === 0 ? 'pending' : 'next'} />)}</div>
-          <div className="mt-10 flex flex-col gap-4 rounded-2xl bg-emerald-300 p-6 text-emerald-950 sm:flex-row sm:items-center sm:justify-between sm:p-8">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.16em]">PM sign-off checkpoint</p>
-              <p className="mt-2 max-w-3xl text-lg font-semibold leading-7">Review the completed W0-W2 foundation and give the green light to proceed. Any W3-specific business clarification can be handled when that task is reached.</p>
-            </div>
-            <ChevronRight className="hidden shrink-0 sm:block" size={34} aria-hidden="true" />
-          </div>
-        </div>
-      </section>
-
-      <section className="px-5 py-20 sm:px-8 sm:py-24">
-        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">What the first prototype will show</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">A client-facing view is coming soon.</h2>
-            <p className="mt-4 text-base leading-7 text-slate-600">
-              We are intentionally building the platform behind the scenes first. The first prototype for client
-              presentation will arrive as the workflow and portal tasks mature, giving stakeholders something visual
-              to review without pretending that the finished product is already live.
-            </p>
-            <div className="mt-7 space-y-3 text-sm text-slate-700">
-              {[
-                'A clear agency and property operations overview',
-                'Early landlord, caretaker, and tenant experience concepts',
-                'Representative bills, payment, maintenance, and notification flows',
-              ].map((item) => (
-                <p key={item} className="flex items-center gap-3"><CheckCircle2 size={17} className="shrink-0 text-emerald-700" aria-hidden="true" />{item}</p>
-              ))}
-            </div>
-          </div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8">
-            <div className="flex items-center gap-3"><Presentation className="text-emerald-800" size={23} aria-hidden="true" /><p className="font-semibold">Presentation now, product UI later</p></div>
-            <div className="mt-6 space-y-4">
-              {[
-                ['Today', 'Progress dashboard and project story'],
-                ['Next', 'W3 operational workflow foundations'],
-                ['Later', 'Interactive role-based portal prototype'],
-                ['Production', 'Validated product on the appropriate deployment platform'],
-              ].map(([label, text], index) => (
-                <div key={label} className="flex gap-4">
-                  <span className={`mt-1 size-2 shrink-0 rounded-full ${index === 0 ? 'bg-emerald-600' : 'bg-slate-300'}`} />
-                  <div><p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{label}</p><p className="mt-1 text-sm font-medium text-slate-800">{text}</p></div>
+          <div className="mt-9 grid gap-5 lg:grid-cols-3">
+            {roles.map(({ name, eyebrow, description, icon: Icon, features, tone }) => (
+              <article key={name} className="overflow-hidden rounded-[1.6rem] border border-slate-200 bg-[#fbfcfb] shadow-sm">
+                <div className={`h-1.5 ${tone === 'emerald' ? 'bg-emerald-700' : 'bg-blue-700'}`} />
+                <div className="p-6 sm:p-8">
+                  <div className="flex items-start justify-between gap-4">
+                    <span className={`grid size-12 place-items-center rounded-2xl ${tone === 'emerald' ? 'bg-emerald-50 text-emerald-900' : 'bg-blue-50 text-blue-900'}`}>
+                      <Icon size={23} />
+                    </span>
+                    <span className="rounded-full bg-white px-3 py-1.5 text-[10px] font-bold tracking-[0.13em] text-slate-500 ring-1 ring-slate-200">{eyebrow}</span>
+                  </div>
+                  <h3 className="mt-5 text-2xl font-semibold tracking-tight">{name}</h3>
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">{description}</p>
+                  <ul className="mt-5 grid gap-2 sm:grid-cols-3">
+                    {features.map((feature) => (
+                      <li key={feature} className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                        <Check size={14} className={tone === 'emerald' ? 'text-emerald-700' : 'text-blue-700'} />{feature}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-7 rounded-xl bg-slate-100 px-4 py-3 text-xs font-medium text-slate-600">
+                    Portal access is provided through an account assigned to this role.
+                  </div>
                 </div>
-              ))}
-            </div>
+              </article>
+            ))}
+          </div>
+          <div className="mt-6 flex flex-col gap-3 rounded-2xl bg-[#f3f6f4] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-600">
+              Property owners and caretakers receive access through their agency. Residents access the account linked to their tenancy.
+            </p>
           </div>
         </div>
       </section>
 
-      <footer className="border-t border-slate-200 bg-white px-5 py-8 sm:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 text-xs leading-5 text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <p>Legacy Real Estate · Kenya-focused property operations platform</p>
-          <p className="inline-flex items-center gap-2"><Smartphone size={14} aria-hidden="true" />Presentation homepage · W0-W2 complete · W3 pending approval</p>
+      <section id="approach" className="px-5 py-20 sm:px-8 sm:py-24">
+        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">A considered approach</p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Good property experiences start with trust.</h2>
+            <p className="mt-4 text-base leading-7 text-slate-600">
+              Built for the realities of property management in Kenya, with a focus on accurate records, clear financial activity and respectful role-based access.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {[
+              { icon: ShieldCheck, title: 'Private by role', detail: 'Your workspace is shaped by your account and assigned responsibilities.' },
+              { icon: KeyRound, title: 'Secure sign-in', detail: 'Protected sessions with additional verification for finance roles.' },
+              { icon: ClipboardList, title: 'Traceable activity', detail: 'Important records and changes are designed for accountability.' },
+              { icon: Users, title: 'People-first service', detail: 'A shared operating picture for the people behind every property.' },
+            ].map(({ icon: Icon, title, detail }) => (
+              <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <Icon size={19} className="text-emerald-800" />
+                <h3 className="mt-4 text-sm font-semibold">{title}</h3>
+                <p className="mt-1.5 text-xs leading-5 text-slate-600">{detail}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-[#102820] px-5 py-14 text-white sm:px-8">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.17em] text-emerald-200">A more connected property experience</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Let’s make property work feel simpler.</h2>
+          </div>
+        </div>
+      </section>
+
+      <footer className="border-t border-slate-200 bg-white px-5 py-6 sm:px-8">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+          <Link href="/" className="font-bold tracking-tight text-slate-800">LEGACY REAL ESTATE</Link>
+          <p>Property, in good hands.</p>
         </div>
       </footer>
     </main>

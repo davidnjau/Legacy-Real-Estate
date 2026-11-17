@@ -2,69 +2,51 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Home, FileText, Wallet, Wrench, LogOut, Users, FolderUp } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { Building2, ClipboardCheck, FileText, LayoutDashboard } from 'lucide-react';
+import SignOutButton from '../auth/SignOutButton';
 
-const navItems = [
-  { name: 'Dashboard',        href: '/landlord/dashboard',  icon: LayoutDashboard, tourId: 'nav-dashboard' },
-  { name: 'Units & Tenants',  href: '/landlord/units',      icon: Home,            tourId: 'nav-units' },
-  { name: 'Billing Wizard',   href: '/landlord/billing',    icon: FileText,        tourId: 'nav-billing' },
-  { name: 'Financial Ledger', href: '/landlord/ledger',     icon: Wallet,          tourId: 'nav-ledger' },
-  { name: 'Maintenance',      href: '/landlord/maintenance', icon: Wrench,         tourId: 'nav-maintenance' },
-  { name: 'Staff & Caretakers', href: '/landlord/staff',    icon: Users,           tourId: 'nav-staff' },
-  { name: 'Migration Setup',  href: '/landlord/migration',  icon: FolderUp,        tourId: 'nav-migration' },
+const landlordItems = [
+  { name: 'Overview', href: '/landlord/dashboard', icon: LayoutDashboard, tourId: 'nav-dashboard' },
+  { name: 'My Properties', href: '/landlord/properties', icon: Building2, tourId: 'nav-properties' },
+  { name: 'Statements & Remittances', href: '/landlord/statements', icon: FileText, tourId: 'nav-statements' },
+  { name: 'Expense Approvals', href: '/landlord/approvals', icon: ClipboardCheck, tourId: 'nav-approvals' },
 ];
 
-export function Sidebar({ userRole = 'landlord' }: { userRole?: string }) {
+export function Sidebar() {
   const pathname = usePathname();
-  const router = useRouter();
-
-  const handleLogout = async () => {
-    const csrf = await fetch('/api/auth/csrf').then((response) => response.json());
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrf.csrfToken || '' },
-    });
-    router.push('/login');
-    router.refresh();
-  };
 
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col h-full">
-      <div className="p-6" data-tour-id="sidebar-header">
-        <h1 className="text-xl font-bold tracking-tight">Sunshine Apts</h1>
-        <p className="text-sm text-slate-400 mt-1">Landlord Portal</p>
+    <aside className="w-64 bg-[#102820] text-white flex flex-col h-full border-r border-emerald-950/60 shrink-0">
+      <div className="p-5 border-b border-emerald-900/40" data-tour-id="sidebar-header">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
+            L
+          </span>
+          <h1 className="text-lg font-bold tracking-tight text-white">Legacy Portal</h1>
+        </div>
+        <p className="text-xs text-emerald-200/80 mt-1 font-medium">Property Owner Workspace</p>
       </div>
 
-      <nav className="flex-1 px-4 space-y-2 mt-4">
-        {navItems.map((item) => {
-          const isActive = pathname === item.href;
-          const Icon = item.icon;
-          
+      <nav className="flex-1 px-3 space-y-1.5 mt-4 overflow-y-auto">
+        <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-200/60">My portfolio</p>
+        {landlordItems.map(({ name, href, icon: Icon, tourId }) => {
+          const isActive = pathname === href;
           return (
-            <Link 
-              key={item.name} 
-              href={item.href}
-              data-tour-id={item.tourId}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-                isActive ? 'bg-emerald-600 text-white font-bold' : 'hover:bg-slate-800 text-slate-300 font-medium'
-              }`}
-            >
-              <Icon size={20} className={isActive ? 'text-white' : 'text-slate-400'} />
-              <span>{item.name}</span>
+            <Link key={name} href={href} data-tour-id={tourId}
+              aria-current={isActive ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
+                isActive ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'text-slate-300 hover:bg-white/10'
+              }`}>
+              <Icon size={16} className={isActive ? 'text-white' : 'text-emerald-300/80'} />
+              <span>{name}</span>
             </Link>
           );
         })}
       </nav>
 
-      <div className="p-4 border-t border-slate-800">
-        <button 
-          onClick={handleLogout}
-          className="flex items-center gap-3 px-3 py-2 w-full text-left rounded-lg hover:bg-slate-800 transition-colors text-red-400"
-        >
-          <LogOut size={20} />
-          <span className="font-medium">Log Out</span>
-        </button>
+      <div className="p-4 border-t border-emerald-900/40">
+        <SignOutButton />
       </div>
     </aside>
   );

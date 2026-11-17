@@ -23,6 +23,7 @@ than filled with an assumed rule.
 | RentRate / UnitCharge | amount, charge type, effective from/to | Belongs to Unit. |
 | Tenant | name, ID, KRA PIN, phone, email, type | Has many Tenancies. |
 | Tenancy | start, end, rent, deposit, due day, notice, status | Links Tenant and Unit; has many Invoices, Payments, DepositEntries. |
+| MoveInSettlement / MoveInPayment | tenant contact, move-in date, charge snapshot, paid/outstanding totals, payment method/reference/status | Settlement belongs to Unit and optionally links the Tenant after payment; payments are append-only and checkout IDs are unique. |
 | Invoice / InvoiceLine | number, period, lines, total, status | Belongs to a Tenancy or PlotSale. |
 | Payment | channel, M-Pesa/bank ref, amount, payer phone, status | Allocated to Invoices via PaymentAllocation. |
 | PaymentAllocation | Named as the allocation relationship; no key fields specified. | Links Payments to Invoices. |
@@ -52,6 +53,25 @@ than filled with an assumed rule.
 Paired names such as `Invoice / InvoiceLine` are both SRS entity names. The
 relationship descriptions above preserve the SRS's stated links; they do not
 add cardinalities, keys, or constraints beyond what it says.
+
+## Implemented billing configuration
+
+The current Django implementation adds property-scoped billing configuration
+for portal workflows beyond the entities explicitly listed in the SRS:
+
+The Property record also stores the portal's address, currency, timezone, rent
+due day, billing mode, and default rent, deposit, garbage, and water-rate
+amounts. These are configuration defaults; invoice amounts and effective
+tenancy charges continue to be recorded in the corresponding financial records.
+
+| Entity | Key fields | Relationships |
+|---|---|---|
+| PropertyBillingSettings | paybill number, account number, universal security and water deposits, first online billing month | One-to-one with Property; records the user who last updated it. |
+| PropertyRecurringCharge | name, amount, active status | Belongs to Property; charge names are unique per property without regard to case. |
+
+These are implementation details, not additional SRS requirements. They are
+stored in PostgreSQL and exposed only within the authenticated landlord's
+property scope.
 
 ## Conventions supported by the SRS
 

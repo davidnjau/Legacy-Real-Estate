@@ -1,62 +1,144 @@
-// app/tenant/dashboard/page.tsx
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { CreditCard, Download, Bell, CheckCircle2, Pencil, Save, X, PlayCircle } from 'lucide-react';
+import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import {
+  CalendarDays,
+  ChevronRight,
+  ClipboardList,
+  Home,
+  Info,
+  Megaphone,
+  Receipt,
+  RefreshCw,
+  Smartphone,
+  UserCircle,
+  Wrench,
+} from 'lucide-react';
 
-type Invoice = {
-  id: string;
-  month: string;
-  baseRent: number;
-  garbage: number;
-  recurringCharges: { name: string; amount: number }[];
-  waterUnits: number;
-  waterRate: number;
-  waterTotal: number;
-  priorArrears: number;
-  totalDue: number;
-  amountPaid: number;
-  balance: number;
-  status: string;
-  dueDate: string;
-  publishedAt: string;
+/* ------------------------------------------------------------------ */
+/*  Types                                                              */
+/* ------------------------------------------------------------------ */
+
+type DashboardInvoice = {
+  id: number;
+  number: string;
+  period_start: string;
+  period_end: string;
+  due_date: string;
+  status: 'settled' | 'partial' | 'unpaid';
+  total: string;
+  amount_paid: string;
+  waived_amount: string;
+  approved_waivers?: { amount: string; reason: string; approved_at: string }[];
+  penalty: string;
+  balance_due: string;
+  lines: { id: number; charge_type: string; description: string; amount: string }[];
 };
 
-type PaymentRecord = {
-  id: string;
-  date: string;
-  month: string;
-  amount: number;
+type DashboardPayment = {
+  id: number;
+  amount: string;
   reference: string;
-  method: string;
-  category: string;
-  invoiceMonth: string | null;
+  source: string;
+  status: string;
+  instrument_status: string;
+  received_at: string;
+  allocations: { invoice_id: number; invoice_number: string; amount: string }[];
+  receipt: {
+    number: string;
+    amount: string;
+    balance_after: string;
+    issued_at: string;
+  } | null;
 };
 
-type MoveInSettlement = { id: string; status: string; totalRequired: number; totalPaid: number; outstandingBalance: number; deposit: number; rent: number; garbage: number; waterDeposit: number };
-type TransitionArrears = {
-  assignmentId: string;
-  unitCode: string | null;
-  balance: number;
-  payments: { id: string; date: string; amount: number; reference: string; method: string }[];
-};
-
-type TenantProfile = {
-  fullName: string;
-  email: string;
-  phone: string;
-  deposit: number;
-  moveInDate: string | null;
-  unitCode: string | null;
-  floor: string | null;
+type TenantDashboard = {
+  tenant: {
+    name: string;
+    email: string;
+    phone: string;
+    unit_code: string | null;
+    property_name: string | null;
+    paybill_number?: string | null;
+    move_in_date: string | null;
+    notice_period_days: number | null;
+  };
+  summary: { balance_due: string; next_due_date: string | null };
+  invoices: DashboardInvoice[];
+  payments: DashboardPayment[];
+  deposit: {
+    balance: string;
+    target_amount: string;
+    entries: {
+      id: number;
+      entry_type: string;
+      amount: string;
+      reference: string;
+      description: string;
+      created_at: string;
+    }[];
+  } | null;
+  move_out_settlements: {
+    id: number;
+    property_name: string;
+    unit_code: string;
+    paybill_number: string | null;
+    actual_move_out_date: string;
+    notice_status: string;
+    inspection_completed_at: string | null;
+    settlement_reviewed_at: string | null;
+    deposit_balance: string;
+    arrears_amount: string;
+    utility_amount: string;
+    damages_amount: string;
+    deduction_from_deposit: string;
+    refund_amount: string;
+    shortfall_amount: string;
+    final_readings: { utility_type: string; name: string; current_value: string; amount: string }[];
+    damage_items: { description: string; amount: string }[];
+    maintenance_required: boolean;
+    inspection_photos: { index: number; caption: string }[];
+    status: string;
+    payout_reference: string | null;
+    payout_date: string | null;
+    rejection_reason: string;
+  }[];
 };
 
 type TenantAnnouncement = {
-  id: string;
+  id: number;
   title: string;
   body: string;
   expires_at: string | null;
 };
+
+type TenantMoveOutNotice = {
+  id: number;
+  proposed_move_out_date: string;
+  status: string;
+  reason: string;
+  review_note: string;
+};
+
+type TenantMoveOutContext = {
+  tenancy_id: number;
+  unit_code: string;
+  property_name: string;
+  notice_period_days: number;
+  notice: TenantMoveOutNotice | null;
+  tenancies: {
+    id: number;
+    unit_code: string;
+    property_name: string;
+    notice_period_days: number;
+    notice: TenantMoveOutNotice | null;
+  }[];
+};
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 const currency = new Intl.NumberFormat('en-KE', {
   style: 'currency',
@@ -64,447 +146,710 @@ const currency = new Intl.NumberFormat('en-KE', {
   maximumFractionDigits: 0,
 });
 
-function daysUntilDeadline(dueDate: string): number | null {
-  const [year, month, day] = dueDate.split('-').map(Number);
-  if (!year || !month || !day) return null;
+function formatDate(value: string | null) {
+  if (!value) return '—';
+  return new Intl.DateTimeFormat('en-KE', {
+    dateStyle: 'medium',
+    timeZone: 'Africa/Nairobi',
+  }).format(new Date(value));
+}
+
+function dateAfterNairobiDays(days: number) {
   const today = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Africa/Nairobi',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).formatToParts(new Date());
-  const todayParts = Object.fromEntries(today.map((part) => [part.type, part.value]));
-  const todayUtc = Date.UTC(Number(todayParts.year), Number(todayParts.month) - 1, Number(todayParts.day));
-  const dueUtc = Date.UTC(year, month - 1, day);
-  return Math.floor((dueUtc - todayUtc) / 86_400_000);
+  }).format(new Date());
+  const [year, month, day] = today.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
-function PaymentHistory({ payments }: { payments: PaymentRecord[] }) {
-  const grouped = payments.reduce<Record<string, PaymentRecord[]>>((groups, payment) => {
-    const month = payment.month || payment.date.slice(0, 7) || 'Other';
-    groups[month] = [...(groups[month] || []), payment];
-    return groups;
-  }, {});
-
-  return (
-    <section className="bg-white rounded-xl shadow-sm border border-slate-200">
-      <div className="p-5 border-b border-slate-200"><h3 className="font-bold text-slate-900">Payment History</h3></div>
-      {Object.keys(grouped).length ? Object.entries(grouped).map(([month, monthPayments]) => (
-        <div key={month} className="border-b border-slate-100 last:border-b-0">
-          <h4 className="px-5 py-2 bg-slate-50 text-xs font-bold uppercase text-slate-500">{month}</h4>
-          <div className="divide-y divide-slate-100">
-            {monthPayments.map((payment) => <div key={`${payment.category}-${payment.id}`} className="px-5 py-3 flex items-center justify-between gap-4 text-sm">
-              <div><p className="font-medium text-slate-900">{payment.category}{payment.invoiceMonth ? ` · ${payment.invoiceMonth}` : ''}</p><p className="text-xs text-slate-500">{new Date(payment.date).toLocaleString()} · {payment.method.replace(/_/g, ' ')}{payment.reference ? ` · ${payment.reference}` : ''}</p></div>
-              <strong className="text-emerald-700">{currency.format(payment.amount)}</strong>
-            </div>)}
-          </div>
-        </div>
-      )) : <p className="p-5 text-sm text-slate-500">No payments recorded yet.</p>}
-    </section>
-  );
+function statusLabel(status: DashboardInvoice['status']) {
+  if (status === 'settled') return 'Settled';
+  if (status === 'partial') return 'Partially Paid';
+  return 'Unpaid';
 }
 
-export default function TenantDashboard() {
-  const [currentInvoice, setCurrentInvoice] = useState<Invoice | null>(null);
-  const [history, setHistory] = useState<Invoice[]>([]);
-  const [payments, setPayments] = useState<PaymentRecord[]>([]);
-  const [tenantPhone, setTenantPhone] = useState<string | null>(null);
-  const [profile, setProfile] = useState<TenantProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isPreLive, setIsPreLive] = useState(false);
-  const [isPaying, setIsPaying] = useState(false);
-  const [transitionArrears, setTransitionArrears] = useState<TransitionArrears | null>(null);
-  const [paymentMessage, setPaymentMessage] = useState('');
-  const [moveInSettlement, setMoveInSettlement] = useState<MoveInSettlement | null>(null);
-  const [transitionSettings, setTransitionSettings] = useState<any>(null);
+function statusBadge(status: DashboardInvoice['status']) {
+  if (status === 'settled')
+    return 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200';
+  if (status === 'partial')
+    return 'bg-amber-100 text-amber-800 ring-1 ring-amber-200';
+  return 'bg-red-100 text-red-800 ring-1 ring-red-200';
+}
+
+function balanceIndicator(balance: number) {
+  if (balance <= 0) return { color: 'text-emerald-600', bg: 'bg-emerald-500', label: 'Settled' };
+  if (balance < 15000) return { color: 'text-amber-600', bg: 'bg-amber-500', label: 'Partial' };
+  return { color: 'text-red-600', bg: 'bg-red-500', label: 'Overdue' };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Page Component                                                     */
+/* ------------------------------------------------------------------ */
+
+export default function TenantDashboardPage() {
+  const [dashboard, setDashboard] = useState<TenantDashboard | null>(null);
   const [announcements, setAnnouncements] = useState<TenantAnnouncement[]>([]);
+  const [moveOutContext, setMoveOutContext] = useState<TenantMoveOutContext | null>(null);
+  const [selectedMoveOutTenancyId, setSelectedMoveOutTenancyId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [moveOutDate, setMoveOutDate] = useState('');
+  const [moveOutReason, setMoveOutReason] = useState('');
+  const [submittingNotice, setSubmittingNotice] = useState(false);
 
-  const loadInvoices = useCallback(async () => {
-      try {
-        const response = await fetch('/api/tenant/invoices');
-        const payload = await response.json();
-
-        if (!response.ok) {
-          throw new Error(payload.error || 'Unable to load invoices');
-        }
-
-        setCurrentInvoice(payload.current);
-        setHistory(payload.history || []);
-        setIsPreLive(payload.isPreLive || false);
-        setTransitionArrears(payload.transitionArrears || null);
-        setTenantPhone(payload.tenantPhone || null);
-        setMoveInSettlement(payload.moveInSettlement || null);
-        setTransitionSettings(payload.transitionSettings || null);
-        setPayments(payload.paymentHistory || []);
-      } catch (error) {
-        console.error('Failed to load invoices:', error);
-      } finally {
-        setLoading(false);
-      }
-  }, []);
-
-  useEffect(() => {
-    loadInvoices();
-  }, [loadInvoices]);
-
-  useEffect(() => {
-    const loadAnnouncements = async () => {
-      try {
-        const response = await fetch('/api/announcements');
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Unable to load announcements.');
-        setAnnouncements(payload.announcements || []);
-      } catch (error) {
-        console.error('Failed to load tenant announcements:', error);
-      }
-    };
-    loadAnnouncements();
-  }, []);
-
-  useEffect(() => {
-    if (!isPreLive && !(moveInSettlement && moveInSettlement.outstandingBalance > 0) && !(currentInvoice && currentInvoice.balance > 0)) return;
-    const interval = setInterval(loadInvoices, 12000);
-    return () => clearInterval(interval);
-  }, [isPreLive, moveInSettlement, currentInvoice, loadInvoices]);
-
-
-  const handleMpesaPush = async (paymentTarget: 'invoice' | 'transition' | 'move-in') => {
-    if (paymentTarget === 'invoice' && !currentInvoice) return;
-    if (paymentTarget === 'transition' && !transitionArrears) return;
-    if (paymentTarget === 'move-in' && !moveInSettlement) return;
-
-    setIsPaying(true);
-    setPaymentMessage('');
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
     try {
-      const response = await fetch('/api/mpesa/stkpush', {
+      const dashRes = await fetch('/api/tenant/invoices', { cache: 'no-store' });
+      if (!dashRes.ok) {
+        const payload = await dashRes.json().catch(() => ({}));
+        throw new Error(payload.error || 'Unable to load your tenant account.');
+      }
+      setDashboard((await dashRes.json()) as TenantDashboard);
+      const [announcementResult, moveOutResult] = await Promise.allSettled([
+        fetch('/api/announcements', { cache: 'no-store' }),
+        fetch('/api/tenant/move-out-notice', { cache: 'no-store' }),
+      ]);
+      const warnings: string[] = [];
+      if (announcementResult.status === 'fulfilled' && announcementResult.value.ok) {
+        const announcementPayload = await announcementResult.value.json();
+        setAnnouncements(announcementPayload.announcements || []);
+      } else {
+        setAnnouncements([]);
+        warnings.push('Announcements could not be loaded.');
+      }
+      if (moveOutResult.status === 'fulfilled' && moveOutResult.value.ok) {
+        const context = await moveOutResult.value.json() as TenantMoveOutContext;
+        setMoveOutContext(context);
+        setSelectedMoveOutTenancyId((current) => current ?? context.tenancy_id);
+      } else {
+        setMoveOutContext(null);
+        if (moveOutResult.status === 'rejected' || moveOutResult.value.status !== 404) {
+          warnings.push('Move-out notice information could not be loaded.');
+        }
+      }
+      setLoadError(warnings.join(' '));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load your tenant account.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  async function submitMoveOutNotice(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmittingNotice(true);
+    setLoadError('');
+    try {
+      const response = await fetch('/api/tenant/move-out-notice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: tenantPhone,
-          amount: paymentTarget === 'transition'
-            ? transitionArrears!.balance
-            : paymentTarget === 'move-in' ? moveInSettlement!.outstandingBalance : currentInvoice!.balance,
-          ...(paymentTarget === 'transition'
-            ? { transitionAssignmentId: transitionArrears!.assignmentId }
-            : paymentTarget === 'move-in' ? { settlementId: moveInSettlement!.id } : { invoiceId: currentInvoice!.id }),
+          tenancy_id: selectedMoveOutTenancyId,
+          proposed_move_out_date: moveOutDate,
+          reason: moveOutReason,
         }),
       });
-
-      const data = await response.json();
-
-      if (response.ok && data.success) {
-        setPaymentMessage('M-Pesa request sent. Enter your PIN, then this balance will refresh automatically.');
-      } else {
-        setPaymentMessage(data.error?.message || data.error || 'Failed to initiate payment. Please try again.');
-      }
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Unable to submit your move-out notice.');
+      setMoveOutReason('');
+      setMoveOutDate('');
+      await loadDashboard();
     } catch (error) {
-      console.error('M-Pesa push error:', error);
-      setPaymentMessage('An error occurred while processing the payment request.');
+      setLoadError(error instanceof Error ? error.message : 'Unable to submit your move-out notice.');
     } finally {
-      setIsPaying(false);
+      setSubmittingNotice(false);
     }
-  };
-
-  if (loading) {
-    return <div className="p-8 text-slate-500 animate-pulse">Loading dashboard...</div>;
   }
 
-
-
-  const moveInDeadline = process.env.NEXT_PUBLIC_MOVE_IN_BALANCE_DEADLINE || 'the deadline';
-
-  const moveInStatus = String(moveInSettlement?.status || '').toLowerCase();
-  const hasOpenMoveInSettlement = Boolean(moveInSettlement && moveInSettlement.outstandingBalance > 0);
-  const moveInSettlementComplete = Boolean(moveInSettlement && moveInSettlement.outstandingBalance <= 0);
-  const dueDays = currentInvoice?.balance && currentInvoice.balance > 0
-    ? daysUntilDeadline(currentInvoice.dueDate)
-    : null;
-
-  const deadlineNotice = dueDays === null ? null : dueDays < 0
-    ? { text: `Overdue by ${Math.abs(dueDays)} day${Math.abs(dueDays) === 1 ? '' : 's'}`, tone: 'red' }
-    : dueDays === 0
-      ? { text: 'Payment is due today', tone: 'red' }
-      : dueDays <= 3
-        ? { text: `Payment due in ${dueDays} day${dueDays === 1 ? '' : 's'}`, tone: 'amber' }
-        : dueDays <= 7
-          ? { text: `Payment due in ${dueDays} days`, tone: 'yellow' }
-          : { text: `Payment due in ${dueDays} days`, tone: 'blue' };
-
-  if (hasOpenMoveInSettlement && moveInSettlement) {
+  if (loading && !dashboard) {
+    return <p className="p-8 text-slate-500">Loading your tenant account…</p>;
+  }
+  if (loadError && !dashboard) {
     return (
-      <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">Welcome to the Apartment!</h1>
-            <p className="text-slate-500 mt-1">Your account is successfully activated.</p>
-          </div>
-          <button
-            onClick={() => window.location.assign('?tour=true')}
-            className="flex items-center gap-2 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg px-3 py-2 text-sm font-semibold transition-colors"
-          >
-            <PlayCircle size={16} /> Take Tour
-          </button>
-        </div>
-
-        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 sm:p-8 max-w-4xl">
-          <h2 className="text-xl font-bold text-emerald-900 mb-4 flex items-center gap-2">
-            <CheckCircle2 size={24} className="text-emerald-600" /> Move-In Settlement Details
-          </h2>
-          
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white p-4 rounded-xl border border-emerald-100">
-              <span className="block text-sm text-slate-500">Security Deposit</span>
-              <strong className="text-lg text-slate-900">{currency.format(moveInSettlement.deposit)}</strong>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-emerald-100">
-              <span className="block text-sm text-slate-500">Water Deposit</span>
-              <strong className="text-lg text-slate-900">{currency.format(moveInSettlement.waterDeposit)}</strong>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-emerald-100">
-              <span className="block text-sm text-slate-500">Garbage Fee</span>
-              <strong className="text-lg text-slate-900">{currency.format(moveInSettlement.garbage)}</strong>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-emerald-100">
-              <span className="block text-sm text-slate-500">Month's Rent</span>
-              <strong className="text-lg text-slate-900">{currency.format(moveInSettlement.rent)}</strong>
-            </div>
-          </div>
-
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-white rounded-xl p-5 border border-emerald-100 shadow-sm gap-4">
-            <div>
-              <span className="block text-sm text-slate-500">Total Required</span>
-              <strong className="text-xl text-slate-900">{currency.format(moveInSettlement.totalRequired)}</strong>
-            </div>
-            <div>
-              <span className="block text-sm text-slate-500">Amount Paid</span>
-              <strong className="text-xl text-emerald-600">{currency.format(moveInSettlement.totalPaid)}</strong>
-            </div>
-            <div>
-              <span className="block text-sm text-slate-500">Outstanding Balance</span>
-              <strong className={`text-xl ${moveInSettlement.outstandingBalance > 0 ? 'text-red-600' : 'text-slate-900'}`}>
-                {currency.format(moveInSettlement.outstandingBalance)}
-              </strong>
-            </div>
-          </div>
-
-          {moveInSettlement.outstandingBalance > 0 ? (
-            <div className="mt-6 bg-red-50 border border-red-200 rounded-xl p-4 flex gap-3 items-start">
-              <Bell className="text-red-600 shrink-0 mt-0.5" size={20} />
-              <div>
-                <h3 className="font-bold text-red-900">Balance Clearance Required</h3>
-                <p className="text-red-800 mt-1">
-                  You have an outstanding move-in balance of <strong>{currency.format(moveInSettlement.outstandingBalance)}</strong>. 
-                  Please ensure this is cleared before <strong>{moveInDeadline}</strong>.
-                </p>
-              </div>
-              <button onClick={() => handleMpesaPush('move-in')} disabled={isPaying} className="mt-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold px-4 py-2 rounded-lg flex items-center gap-2"><CreditCard size={17} />{isPaying ? 'Processing...' : 'Pay via M-Pesa'}</button>
-              {paymentMessage && <p role="status" className="mt-2 text-sm text-slate-600">{paymentMessage}</p>}
-            </div>
-          ) : (
-            <div className="mt-6 bg-emerald-100/50 border border-emerald-200 rounded-xl p-4">
-              <p className="text-emerald-800 font-medium">Your move-in settlement is fully cleared. Your next monthly invoice will appear in the normal billing cycle.</p>
-            </div>
-          )}
-        </div>
-        <PaymentHistory payments={payments} />
+      <div role="alert" className="m-6 rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">
+        <p>{loadError}</p>
+        <button type="button" onClick={() => void loadDashboard()} className="mt-3 font-semibold underline">Try again</button>
       </div>
     );
   }
-
-  if (isPreLive) {
-    const paymentsTotal = transitionArrears?.payments.reduce((total, payment) => total + payment.amount, 0) || 0;
-    return (
-      <div className="space-y-6">
-
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">Welcome to your Portal!</h1>
-          <p className="text-slate-500 mt-1">Your account is successfully activated.</p>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-6 sm:p-8 max-w-4xl">
-          <h2 className="text-xl font-bold text-slate-900">Transition balance</h2>
-          <p className="text-sm text-slate-500 mt-1">Your remaining opening arrears will carry into your first monthly invoice.</p>
-          <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="border border-slate-200 rounded-lg p-4"><span className="text-sm text-slate-500">Opening arrears</span><p className="text-xl font-bold mt-1">{currency.format(paymentsTotal + Number(transitionArrears?.balance || 0))}</p></div>
-            <div className="border border-slate-200 rounded-lg p-4"><span className="text-sm text-slate-500">Paid</span><p className="text-xl font-bold text-emerald-700 mt-1">{currency.format(paymentsTotal)}</p></div>
-            <div className="border border-amber-200 bg-amber-50 rounded-lg p-4"><span className="text-sm text-amber-800">Remaining</span><p className="text-xl font-bold text-amber-900 mt-1">{currency.format(transitionArrears?.balance || 0)}</p></div>
-          </div>
-          {transitionArrears && transitionArrears.balance > 0 && (
-            <button onClick={() => handleMpesaPush('transition')} disabled={isPaying} className="w-full sm:w-auto mt-5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-bold px-5 py-3 rounded-lg flex items-center justify-center gap-2">
-              <CreditCard size={18} />{isPaying ? 'Processing...' : 'Pay arrears via M-Pesa'}
-            </button>
-          )}
-          {paymentMessage && <p role="status" className="mt-3 text-sm text-slate-600">{paymentMessage}</p>}
-          <div className="mt-6"><PaymentHistory payments={payments} /></div>
-          <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <h3 className="font-semibold text-blue-900">Manual payment instructions</h3>
-            <p className="text-sm text-blue-800 mt-1">For payments made outside this portal, use the Paybill and account details provided by your landlord. Keep your M-Pesa reference for reconciliation.</p>
-            {transitionSettings?.paybill_number && <p className="text-sm text-blue-900 mt-2"><strong>Paybill:</strong> {transitionSettings.paybill_number}{transitionSettings.account_number && <> · <strong>Account:</strong> {transitionSettings.account_number}</>}</p>}
-          </div>
-        </div>
-      </div>
-    );
+  if (!dashboard) {
+    return <p role="alert" className="m-6 text-sm text-slate-600">No tenant account data is available.</p>;
   }
+  const data = dashboard;
+  const balance = Number(data.summary.balance_due);
+  const indicator = balanceIndicator(balance);
+  const selectedMoveOutTenancy = moveOutContext?.tenancies.find(
+    (tenancy) => tenancy.id === selectedMoveOutTenancyId,
+  ) ?? (moveOutContext
+    ? {
+        id: moveOutContext.tenancy_id,
+        unit_code: moveOutContext.unit_code,
+        property_name: moveOutContext.property_name,
+        notice_period_days: moveOutContext.notice_period_days,
+        notice: moveOutContext.notice,
+      }
+    : null);
+  const canSubmitMoveOutNotice = Boolean(
+    selectedMoveOutTenancy &&
+    (!selectedMoveOutTenancy.notice || ['rejected', 'withdrawn'].includes(selectedMoveOutTenancy.notice.status)),
+  );
+  const earliestMoveOutDate = selectedMoveOutTenancy
+    ? dateAfterNairobiDays(selectedMoveOutTenancy.notice_period_days)
+    : '';
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex gap-4 items-start w-full mr-4">
-          <Bell className="text-blue-600 shrink-0 mt-0.5" size={20} />
+      {/* ============================================================ */}
+      {/*  1. Resident Welcome Header                                  */}
+      {/* ============================================================ */}
+      <header className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#102820] via-[#123b2c] to-[#164a36] px-7 py-8 text-white shadow-xl shadow-emerald-950/15 sm:px-10 sm:py-10">
+        <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/[0.03]" />
+        <div className="absolute -bottom-20 -left-20 h-64 w-64 rounded-full bg-white/[0.02]" />
+
+        <div className="relative flex flex-wrap items-end justify-between gap-6">
           <div>
-            <h3 className="font-bold text-blue-900">Manual Payment Notice</h3>
-            <p className="text-sm text-blue-800 mt-1">If you pay outside the portal, retain your payment reference and share it with your landlord.</p>
-            {transitionSettings?.paybill_number && <p className="text-sm text-blue-900 mt-2"><strong>Paybill:</strong> {transitionSettings.paybill_number}{transitionSettings.account_number && <> · <strong>Account:</strong> {transitionSettings.account_number}</>}</p>}
+            <div className="flex items-center gap-2">
+              <Home size={16} className="text-emerald-300" />
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">
+                Resident Hub
+              </p>
+            </div>
+            <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
+              Welcome home, {data.tenant.name}
+            </h1>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-emerald-100/80">
+              <span className="flex items-center gap-1.5">
+                <span className="font-mono font-semibold text-white">
+                  {data.tenant.unit_code}
+                </span>
+                <span>at {data.tenant.property_name}</span>
+              </span>
+              {data.tenant.move_in_date && (
+                <span className="flex items-center gap-1.5">
+                  <CalendarDays size={14} className="text-emerald-400" />
+                  Move-in: {formatDate(data.tenant.move_in_date)}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void loadDashboard()}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition hover:bg-white/15 disabled:opacity-50"
+          >
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      {loadError && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{loadError}</p>}
+
+      {/* M-Pesa Paybill Instructions Banner (SRS Section 06.2) */}
+      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#123b2c] to-[#0a231a] p-6 text-white shadow-md">
+        <div className="flex flex-wrap items-center justify-between gap-6">
+          <div>
+            <span className="rounded-full bg-emerald-400/20 px-2.5 py-0.5 text-xs font-bold text-emerald-300 ring-1 ring-emerald-400/40">
+              Safaricom Daraja Paybill Instructions
+            </span>
+            <h2 className="mt-2 text-2xl font-bold tracking-tight">How to Pay Rent via M-Pesa</h2>
+            <p className="mt-1 text-xs text-emerald-100/80">
+              Enter your assigned Unit Code as the Account Number for instant automated reconciliation and SMS receipt.
+            </p>
+
+            <div className="mt-4 flex flex-wrap items-center gap-6">
+              <div className="rounded-xl bg-white/10 px-4 py-2 border border-white/10">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">Business Paybill</p>
+                <p className="font-mono text-xl font-black text-white">{data.tenant.paybill_number || 'Not configured'}</p>
+              </div>
+              <div className="rounded-xl bg-white/10 px-4 py-2 border border-white/10">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">Account No. (Unit Code)</p>
+                <p className="font-mono text-xl font-black text-emerald-300">{data.tenant.unit_code || 'Not linked'}</p>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-sm text-emerald-100">Payments and receipts appear in your account ledger below.</p>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  2. Account Balance Card                                     */}
+      {/* ============================================================ */}
+      <section aria-label="Account balance" className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-slate-500">Current Balance Due</p>
+            <p className={`mt-2 text-4xl font-bold tracking-tight ${indicator.color}`}>
+              {currency.format(balance)}
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                balance <= 0
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : balance < 15000
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-red-100 text-red-800'
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${indicator.bg}`} />
+              {indicator.label}
+            </span>
+            <p className="text-sm text-slate-500">
+              Next due:{' '}
+              <span className="font-semibold text-slate-800">
+                {formatDate(data.summary.next_due_date)}
+              </span>
+            </p>
           </div>
         </div>
-        <button
-          onClick={() => window.location.assign('?tour=true')}
-          className="shrink-0 flex items-center gap-2 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg px-4 py-2 font-semibold transition-colors h-fit"
-        >
-          <PlayCircle size={18} /> Take Tour
-        </button>
-      </div>
+      </section>
 
-      {moveInSettlementComplete && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-          <h2 className="font-bold text-emerald-900">Welcome. Your move-in settlement is complete.</h2>
-          <p className="text-sm text-emerald-800 mt-1">Your rent, garbage, water, and any carried balance will appear here as a monthly invoice when it is released.</p>
+      {/* ============================================================ */}
+      {/*  3. M-Pesa Payment Instructions Card                         */}
+      {/* ============================================================ */}
+      <section
+        aria-labelledby="mpesa-heading"
+        className="overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-teal-50/60 to-white p-6 shadow-sm"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
+            <Smartphone size={24} />
+          </div>
+          <div>
+            <h2 id="mpesa-heading" className="text-lg font-bold text-slate-900">
+              Pay via M-Pesa
+            </h2>
+            <p className="text-sm text-slate-600">
+              Fast, secure rent payments via Lipa na M-Pesa Paybill
+            </p>
+          </div>
         </div>
+
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <div className="rounded-xl border border-emerald-100 bg-white p-4 shadow-xs">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Paybill Number
+            </span>
+            <p className="mt-1 font-mono text-2xl font-bold tracking-tight text-slate-900">
+              {data.tenant.paybill_number || 'Not configured'}
+            </p>
+          </div>
+          <div className="rounded-xl border border-emerald-100 bg-white p-4 shadow-xs">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Account Number
+            </span>
+            <p className="mt-1 font-mono text-2xl font-bold tracking-tight text-emerald-700">
+              {data.tenant.unit_code || 'Your Unit Code'}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-emerald-100/60 bg-white/80 p-4">
+          <p className="mb-2 text-sm font-semibold text-slate-800">Step-by-step instructions:</p>
+          <ol className="list-inside list-decimal space-y-1.5 text-sm text-slate-600">
+            <li>
+              Go to <strong>M-Pesa</strong> on your phone (SIM Toolkit or M-Pesa App)
+            </li>
+            <li>
+              Select <strong>Lipa na M-Pesa</strong> &gt; <strong>Pay Bill</strong>
+            </li>
+            <li>
+              Enter Business Number:{' '}
+              <strong className="font-mono text-slate-900">
+                {data.tenant.paybill_number || 'Not configured'}
+              </strong>
+            </li>
+            <li>
+              Enter Account Number:{' '}
+              <strong className="font-mono text-emerald-700">
+                {data.tenant.unit_code || 'Not linked'}
+              </strong>
+            </li>
+            <li>Enter Amount, confirm with your M-Pesa PIN, and press Send</li>
+          </ol>
+          <div className="mt-3 flex items-start gap-2 rounded-lg bg-emerald-50 p-3">
+            <Info size={16} className="mt-0.5 shrink-0 text-emerald-600" />
+            <p className="text-xs text-emerald-800">
+              Payments reflect within 24 hours. You will receive an SMS confirmation and your receipt
+              will appear in your dashboard.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  4. Recent Invoices                                          */}
+      {/* ============================================================ */}
+      <section aria-labelledby="invoices-heading" className="space-y-4">
+        <div>
+          <h2 id="invoices-heading" className="text-xl font-bold text-slate-900">
+            Recent Invoices
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Your issued invoices with charge breakdowns and payment status.
+          </p>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-5 py-3 font-semibold text-slate-600">Period</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Invoice #</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Total</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Waiver</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Status</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Line Items</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {data.invoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-slate-50/50">
+                    <td className="px-5 py-4 font-medium text-slate-900">
+                      {formatDate(inv.period_start)} – {formatDate(inv.period_end)}
+                    </td>
+                    <td className="px-5 py-4 font-mono text-xs text-slate-600">{inv.number}</td>
+                    <td className="px-5 py-4 font-semibold text-slate-900">
+                      {currency.format(Number(inv.total))}
+                    </td>
+                    <td className="px-5 py-4 text-xs text-slate-600">
+                      {Number(inv.waived_amount) > 0 ? (
+                        <div>
+                          <span className="font-semibold">{currency.format(Number(inv.waived_amount))}</span>
+                          {inv.approved_waivers?.map((waiver, index) => (
+                            <p key={`${inv.id}-waiver-${index}`} className="mt-1 max-w-xs">
+                              {waiver.reason}
+                            </p>
+                          ))}
+                        </div>
+                      ) : '—'}
+                    </td>
+                    <td className="px-5 py-4">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-bold ${statusBadge(inv.status)}`}
+                      >
+                        {statusLabel(inv.status)}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 text-xs text-slate-500">
+                      {inv.lines.map((l) => l.description).join(', ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  5. Payment History                                          */}
+      {/* ============================================================ */}
+      <section aria-labelledby="payments-heading" className="space-y-4">
+        <div>
+          <h2 id="payments-heading" className="text-xl font-bold text-slate-900">
+            Payment History
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            M-Pesa payments recorded against your account with receipt references.
+          </p>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-5 py-3 font-semibold text-slate-600">Date</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Amount</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Method</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">M-Pesa Ref</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Receipt</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {data.payments.map((pmt) => (
+                  <tr key={pmt.id} className="hover:bg-slate-50/50">
+                    <td className="px-5 py-4 text-slate-900">{formatDate(pmt.received_at)}</td>
+                    <td className="px-5 py-4 font-semibold text-slate-900">
+                      {currency.format(Number(pmt.amount))}
+                    </td>
+                    <td className="px-5 py-4">
+                      <span className="inline-flex items-center gap-1.5 text-emerald-700">
+                        <Smartphone size={14} />
+                        {pmt.source.replaceAll('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 font-mono text-xs text-slate-600">{pmt.reference}</td>
+                    <td className="px-5 py-4">
+                      {pmt.receipt ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
+                          <Receipt size={14} />
+                          {pmt.receipt.number}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">Pending</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="deposit-heading" className="space-y-4">
+        <div>
+          <h2 id="deposit-heading" className="text-xl font-bold text-slate-900">Deposit ledger</h2>
+          <p className="mt-1 text-sm text-slate-500">Recorded deposit movements for your active tenancy.</p>
+        </div>
+        {!data.deposit ? (
+          <p className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">No deposit account is linked to your active tenancy.</p>
+        ) : (
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="grid gap-4 border-b border-slate-100 p-5 sm:grid-cols-2">
+              <div><p className="text-xs font-semibold uppercase text-slate-500">Current deposit balance</p><p className="mt-1 text-2xl font-bold text-slate-900">{currency.format(Number(data.deposit.balance))}</p></div>
+              <div><p className="text-xs font-semibold uppercase text-slate-500">Target deposit</p><p className="mt-1 text-2xl font-bold text-slate-900">{currency.format(Number(data.deposit.target_amount))}</p></div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs font-semibold uppercase text-slate-500"><tr><th className="px-5 py-3">Date</th><th className="px-5 py-3">Movement</th><th className="px-5 py-3">Reference</th><th className="px-5 py-3">Amount</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {data.deposit.entries.map((entry) => <tr key={entry.id}>
+                    <td className="px-5 py-3">{formatDate(entry.created_at)}</td>
+                    <td className="px-5 py-3">{entry.description} · {entry.entry_type.replaceAll('_', ' ')}</td>
+                    <td className="px-5 py-3 font-mono text-xs">{entry.reference}</td>
+                    <td className="px-5 py-3 font-semibold">{currency.format(Number(entry.amount))}</td>
+                  </tr>)}
+                  {data.deposit.entries.length === 0 && <tr><td colSpan={4} className="px-5 py-5 text-center text-slate-500">No deposit movements recorded.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {data.move_out_settlements.length > 0 && (
+        <section aria-labelledby="refunds-heading" className="space-y-4">
+          <div>
+            <h2 id="refunds-heading" className="text-xl font-bold text-slate-900">Move-out settlement tracker</h2>
+            <p className="mt-1 text-sm text-slate-500">Follow each unit&apos;s inspection, deposit reconciliation, approval, and payout progress.</p>
+          </div>
+          <div className="space-y-4">
+            {data.move_out_settlements.map((settlement) => {
+              const milestones = [
+                ['Notice recorded', true],
+                ['Exit inspection', Boolean(settlement.inspection_completed_at)],
+                ['Manager approval', settlement.status === 'approved' || settlement.status === 'paid'],
+                ['Payout recorded', settlement.status === 'paid'],
+              ] as const;
+              return (
+                <article key={settlement.id} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <header className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-semibold text-slate-900">{settlement.property_name} · {settlement.unit_code}</h3>
+                      <p className="mt-1 text-sm text-slate-500">Moved out {formatDate(settlement.actual_move_out_date)} · {settlement.status.replaceAll('_', ' ')}</p>
+                    </div>
+                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">{settlement.maintenance_required ? 'Under maintenance' : 'Vacancy processing'}</span>
+                  </header>
+                  <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {milestones.map(([label, complete]) => (
+                      <li key={label} className={`rounded-lg p-3 text-sm ${complete ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-500'}`}>
+                        <span className="block text-xs font-semibold uppercase">{complete ? 'Complete' : 'Pending'}</span>
+                        <span className="mt-1 block font-medium">{label}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                    <div><dt className="text-slate-500">Deposit held</dt><dd className="font-semibold">{currency.format(Number(settlement.deposit_balance))}</dd></div>
+                    <div><dt className="text-slate-500">Arrears</dt><dd className="font-semibold">{currency.format(Number(settlement.arrears_amount))}</dd></div>
+                    <div><dt className="text-slate-500">Final utilities</dt><dd className="font-semibold">{currency.format(Number(settlement.utility_amount))}</dd></div>
+                    <div><dt className="text-slate-500">Damage deductions</dt><dd className="font-semibold">{currency.format(Number(settlement.damages_amount))}</dd></div>
+                    <div><dt className="text-slate-500">Deducted from deposit</dt><dd className="font-semibold">{currency.format(Number(settlement.deduction_from_deposit))}</dd></div>
+                    <div><dt className="text-slate-500">Refund due</dt><dd className="font-semibold text-emerald-700">{currency.format(Number(settlement.refund_amount))}</dd></div>
+                    <div><dt className="text-slate-500">Outstanding shortfall</dt><dd className="font-semibold text-red-700">{currency.format(Number(settlement.shortfall_amount))}</dd></div>
+                    <div><dt className="text-slate-500">Payout reference</dt><dd className="font-mono text-xs">{settlement.payout_reference || '—'}</dd></div>
+                  </dl>
+                  {settlement.damage_items.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">Itemized damage findings</h4>
+                      <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                        {settlement.damage_items.map((item, index) => <li key={`${item.description}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{currency.format(Number(item.amount))}</span></li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {settlement.final_readings.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">Final utility readings</h4>
+                      <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                        {settlement.final_readings.map((reading) => <li key={reading.utility_type}>{reading.name}: {reading.current_value} · {currency.format(Number(reading.amount))}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {settlement.inspection_photos.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">Exit inspection photos</h4>
+                      <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {settlement.inspection_photos.map((photo) => (
+                          <a key={photo.index} href={`/api/tenant/move-out-settlements/${settlement.id}/photos/${photo.index}`} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-200 p-2 text-sm text-emerald-800 hover:bg-emerald-50">
+                            {photo.caption}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {Number(settlement.shortfall_amount) > 0 && (
+                    <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                      A remaining balance of {currency.format(Number(settlement.shortfall_amount))} is due. {settlement.paybill_number ? `Pay via Paybill ${settlement.paybill_number}` : 'Contact the Property Officer for the property Paybill'} using unit {settlement.unit_code} as the account reference, or contact the Property Officer to arrange debt clearance.
+                    </p>
+                  )}
+                  {settlement.rejection_reason && <p className="text-sm text-red-700">Settlement review note: {settlement.rejection_reason}</p>}
+                </article>
+              );
+            })}
+          </div>
+        </section>
       )}
 
+      {/* ============================================================ */}
+      {/*  6. Move-Out Notice Section                                  */}
+      {/* ============================================================ */}
+      <section
+        id="move-out-notice"
+        aria-labelledby="move-out-heading"
+        className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <ClipboardList size={20} className="text-slate-400" />
+              <h2 id="move-out-heading" className="text-xl font-bold text-slate-900">
+                Move-Out Notice
+              </h2>
+            </div>
+            <p className="mt-1 text-sm text-slate-500">
+              Notice period:{' '}
+              <span className="font-semibold text-slate-700">
+                {selectedMoveOutTenancy?.notice_period_days ?? 'Unavailable'}{selectedMoveOutTenancy ? ' days' : ''}
+              </span>
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+              {selectedMoveOutTenancy?.notice?.status || (selectedMoveOutTenancy ? 'No active notice' : 'No active tenancy data')}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-xl border border-slate-100 bg-slate-50 p-4">
+          {moveOutContext && moveOutContext.tenancies.length > 1 && (
+            <label className="mb-4 block text-sm font-medium text-slate-700">Tenancy
+              <select value={selectedMoveOutTenancyId ?? moveOutContext.tenancy_id} onChange={(event) => {
+                setSelectedMoveOutTenancyId(Number(event.target.value));
+                setMoveOutDate('');
+                setMoveOutReason('');
+              }} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
+                {moveOutContext.tenancies.map((tenancy) => <option key={tenancy.id} value={tenancy.id}>{tenancy.property_name} · {tenancy.unit_code}</option>)}
+              </select>
+            </label>
+          )}
+          <p className="text-sm text-slate-600">
+            {selectedMoveOutTenancy?.notice
+              ? `Your move-out notice for ${selectedMoveOutTenancy.property_name} / ${selectedMoveOutTenancy.unit_code} is ${selectedMoveOutTenancy.notice.status} for ${formatDate(selectedMoveOutTenancy.notice.proposed_move_out_date)}.`
+              : selectedMoveOutTenancy
+                ? <>You currently have no active move-out notice for {selectedMoveOutTenancy.property_name} / {selectedMoveOutTenancy.unit_code}. Submit at least <strong>{selectedMoveOutTenancy.notice_period_days} days</strong> before your intended move-out date.</>
+                : 'Move-out notice information is unavailable because no active tenancy was returned.'}
+          </p>
+          {canSubmitMoveOutNotice && (
+            <form onSubmit={submitMoveOutNotice} className="mt-4 grid gap-3 sm:grid-cols-[1fr_2fr_auto]">
+              <label className="text-xs font-semibold text-slate-700">Proposed move-out date
+                <input required type="date" min={earliestMoveOutDate} value={moveOutDate} onChange={(event) => setMoveOutDate(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Reason (optional)
+                <input value={moveOutReason} onChange={(event) => setMoveOutReason(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <button type="submit" disabled={submittingNotice || !moveOutDate} className="self-end rounded-lg bg-emerald-800 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{submittingNotice ? 'Submitting…' : 'Submit notice'}</button>
+            </form>
+          )}
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/*  7. Announcements                                            */}
+      {/* ============================================================ */}
       {announcements.length > 0 && (
-        <section aria-label="Property announcements" className="space-y-3">
-          {announcements.map((announcement) => (
-            <article key={announcement.id} className="rounded-xl border border-blue-200 bg-blue-50 p-5">
-              <h2 className="font-bold text-blue-950">{announcement.title}</h2>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-blue-900">{announcement.body}</p>
-              {announcement.expires_at && <p className="mt-3 text-xs text-blue-700">Notice expires {new Date(announcement.expires_at).toLocaleDateString('en-KE')}</p>}
+        <section aria-labelledby="announcements-heading" className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Megaphone size={20} className="text-blue-500" />
+            <h2 id="announcements-heading" className="text-xl font-bold text-slate-900">
+              Announcements
+            </h2>
+          </div>
+          {announcements.map((ann) => (
+            <article
+              key={ann.id}
+              className="rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50/40 p-5 shadow-sm"
+            >
+              <h3 className="font-bold text-blue-950">{ann.title}</h3>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-blue-900">{ann.body}</p>
+              {ann.expires_at && (
+                <p className="mt-3 text-xs text-blue-600">
+                  Notice expires: {formatDate(ann.expires_at)}
+                </p>
+              )}
             </article>
           ))}
         </section>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Current Invoice</h2>
-              <p className="text-sm text-slate-500">{currentInvoice ? `Billing Cycle: ${currentInvoice.month}` : 'No active invoices'}</p>
-            </div>
-            {currentInvoice && (
-              currentInvoice.status === 'PAID' ? (
-                <span className="px-3 py-1 bg-emerald-100 text-emerald-700 font-bold rounded-full flex items-center gap-2">
-                  <CheckCircle2 size={16} /> Paid in Full
-                </span>
-              ) : (
-                <span className={`px-3 py-1 font-bold rounded-full ${
-                  currentInvoice.status === 'PARTIAL' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
-                }`}>
-                  {currentInvoice.status === 'PARTIAL' ? 'Partially Paid' : 'Unpaid Balance'}
-                </span>
-              )
-            )}
+      {/* ============================================================ */}
+      {/*  8. Quick Links                                              */}
+      {/* ============================================================ */}
+      <section aria-label="Quick links" className="grid gap-4 sm:grid-cols-2">
+        <Link
+          href="/tenant/maintenance"
+          className="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-emerald-300 hover:shadow-md"
+        >
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 transition group-hover:bg-emerald-600 group-hover:text-white">
+            <Wrench size={22} />
           </div>
-
-          {currentInvoice ? (
-            <div className="p-6 space-y-4">
-              <div className={`rounded-lg border p-3 text-sm font-semibold ${
-                deadlineNotice?.tone === 'red' ? 'border-red-200 bg-red-50 text-red-800'
-                  : deadlineNotice?.tone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-800'
-                    : deadlineNotice?.tone === 'yellow' ? 'border-yellow-200 bg-yellow-50 text-yellow-800'
-                      : 'border-blue-200 bg-blue-50 text-blue-800'
-              }`}>
-                {currentInvoice.balance <= 0
-                  ? <>Payment deadline: {new Date(`${currentInvoice.dueDate}T00:00:00`).toLocaleDateString('en-KE')}</>
-                  : <>{deadlineNotice?.text || 'Payment deadline'} · Due by {new Date(`${currentInvoice.dueDate}T00:00:00`).toLocaleDateString('en-KE')}</>}
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-slate-100">
-                <span className="text-slate-600">Base Rent</span>
-                <span className="font-medium">{currency.format(currentInvoice.baseRent)}</span>
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-slate-100">
-                <span className="text-slate-600">Garbage Collection</span>
-                <span className="font-medium">{currency.format(currentInvoice.garbage)}</span>
-              </div>
-              {currentInvoice.recurringCharges.map((charge) => (
-                <div key={charge.name} className="flex justify-between items-center py-2 border-b border-slate-100">
-                  <span className="text-slate-600">{charge.name}</span>
-                  <span className="font-medium">{currency.format(charge.amount)}</span>
-                </div>
-              ))}
-              <div className="flex justify-between items-center py-2 border-b border-slate-100">
-                <span className="text-slate-600">Water Consumption ({currentInvoice.waterUnits} units @ {currency.format(currentInvoice.waterRate)})</span>
-                <span className="font-medium">{currency.format(currentInvoice.waterTotal)}</span>
-              </div>
-              {currentInvoice.priorArrears > 0 && (
-                <div className="flex justify-between items-center py-2 border-b border-slate-100 text-red-600">
-                  <span>Carried-Over Arrears</span>
-                  <span className="font-medium">{currency.format(currentInvoice.priorArrears)}</span>
-                </div>
-              )}
-              {currentInvoice.amountPaid > 0 && (
-                <div className="flex justify-between items-center py-2 border-b border-slate-100 text-emerald-600">
-                  <span>Amount Already Paid</span>
-                  <span className="font-medium">{currency.format(currentInvoice.amountPaid)}</span>
-                </div>
-              )}
-
-              <div className="flex justify-between items-center pt-4">
-                <span className="text-lg font-bold text-slate-900">Total Amount Due</span>
-                <span className={`text-2xl font-bold ${currentInvoice.balance > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                  {currency.format(currentInvoice.balance)}
-                </span>
-              </div>
-
-              {currentInvoice.status !== 'PAID' && currentInvoice.balance > 0 && (
-                <button
-                  onClick={() => handleMpesaPush('invoice')}
-                  disabled={isPaying}
-                  className="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                >
-                  <CreditCard size={20} />
-                  {isPaying ? 'Processing...' : 'Pay via M-Pesa'}
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="p-6 text-slate-600">
-              {moveInSettlementComplete
-                ? 'Your move-in settlement is cleared. Your first monthly invoice will appear here when it is released.'
-                : 'No active invoices at this moment. You will see your invoice here once it is generated by your landlord.'}
-            </div>
-          )}
-        </div>
-
-        <PaymentHistory payments={payments} />
-      </div>
-
-      {history.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <div className="p-6 border-b border-slate-200 bg-slate-50">
-            <h3 className="font-bold text-slate-900">Past Invoices</h3>
+          <div className="flex-1">
+            <h3 className="font-bold text-slate-900">Maintenance Requests</h3>
+            <p className="mt-0.5 text-sm text-slate-500">Report and track repair requests</p>
           </div>
-          <div className="divide-y divide-slate-100">
-            {history.map((invoice) => (
-              <div key={invoice.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors">
-                <div>
-                  <p className="font-bold text-slate-900">{invoice.month}</p>
-                  <p className="text-sm text-slate-500">Total: {currency.format(invoice.totalDue)}</p>
-                </div>
-                <div className="text-right">
-                  <span className={`px-2 py-1 text-xs font-bold rounded-full ${
-                    invoice.status === 'PAID' ? 'bg-emerald-100 text-emerald-700' :
-                    invoice.status === 'PARTIAL' ? 'bg-amber-100 text-amber-700' :
-                    'bg-red-100 text-red-700'
-                  }`}>
-                    {invoice.status}
-                  </span>
-                </div>
-              </div>
-            ))}
+          <ChevronRight size={20} className="text-slate-300 transition group-hover:text-emerald-500" />
+        </Link>
+
+        <Link
+          href="/tenant/profile"
+          className="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-emerald-300 hover:shadow-md"
+        >
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 transition group-hover:bg-emerald-600 group-hover:text-white">
+            <UserCircle size={22} />
           </div>
-        </div>
-      )}
+          <div className="flex-1">
+            <h3 className="font-bold text-slate-900">Profile</h3>
+            <p className="mt-0.5 text-sm text-slate-500">Update your contact details</p>
+          </div>
+          <ChevronRight size={20} className="text-slate-300 transition group-hover:text-emerald-500" />
+        </Link>
+      </section>
     </div>
   );
 }

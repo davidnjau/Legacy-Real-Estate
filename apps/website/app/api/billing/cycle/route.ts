@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { requireApiRole } from '../../../../lib/api-auth';
 import { getInvoiceReleaseAt } from '../../../../lib/billing-schedule';
 
 function monthFromDate(date: Date) {
@@ -17,21 +16,15 @@ function previousMonth(month: string) {
 }
 
 export async function GET() {
-  const auth = await requireApiRole(['landlord', 'caretaker', 'tenant']);
-  if (auth.response) return auth.response;
-
   const now = new Date();
   const currentMonth = monthFromDate(now);
   const releaseAt = getInvoiceReleaseAt(currentMonth);
-  const released = new Date(releaseAt) <= now;
 
   return NextResponse.json({
-    now: now.toISOString(),
     currentMonth,
     previousMonth: previousMonth(currentMonth),
-    preparationMonth: released ? nextMonth(currentMonth) : currentMonth,
+    nextMonth: nextMonth(currentMonth),
     releaseAt,
-    released,
-    timeZone: 'Africa/Nairobi',
+    isReleased: new Date(releaseAt) <= now,
   });
 }

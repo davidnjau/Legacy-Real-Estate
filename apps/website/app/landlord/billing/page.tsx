@@ -343,7 +343,7 @@ export default function BillingWizard({ canEditPaymentInstructions = true }: { c
                 No water charge has been published for: {draftInvoices.filter((invoice) => invoice.water_reading_missing).map((invoice) => invoice.unit_code).join(', ')}.
                 Submit a valid reading for the month before these invoices can be released.
               </p>
-              {!canEditPaymentInstructions && <Link href="/caretaker/water-readings" className="mt-2 inline-block font-bold underline">Open water readings</Link>}
+              {!canEditPaymentInstructions && <Link href="/caretaker/meters" className="mt-2 inline-block font-bold underline">Open water readings</Link>}
             </div>
           )}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 flex items-start gap-3">

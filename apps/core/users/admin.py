@@ -9,6 +9,7 @@ from users.audit import record_audit_event
 from users.models import (
     AuditLog,
     Announcement,
+    Agency,
     ArrearsPolicy,
     ArrearsPaymentPlan,
     ArrearsPaymentPlanInstalment,
@@ -39,14 +40,22 @@ from users.models import (
     ManagementAgreement,
     MoveInCharge,
     MoveInChecklistItem,
+    MoveInPayment,
     MoveInPackage,
+    MoveInSettlement,
     TenantActivationChallenge,
     Property,
+    PropertyBillingSettings,
     PropertyCaretakerAssignment,
     PropertyDocument,
     PropertyExpense,
     PropertyInspection,
+    PropertyRecurringCharge,
+    PropertyUnitType,
+    PropertyUnitTypeUtility,
+    PropertyViewing,
     SMSLoginChallenge,
+    SMSDelivery,
     Tenancy,
     Tenant,
     TenantDocument,
@@ -56,8 +65,9 @@ from users.models import (
     UserProfile,
     UtilityConfiguration,
     Vendor,
+    ViewingLead,
 )
-from users.roles import SUPER_ADMIN_ROLE
+from users.roles import SUPER_ADMIN_ROLE, requires_finance_mfa
 
 User = get_user_model()
 admin.site.login_form = FinanceMFAAdminAuthenticationForm
@@ -112,7 +122,7 @@ def _group_audit_values(group):
 class UserProfileInline(admin.StackedInline):
     model = UserProfile
     extra = 0
-    fields = ("name", "phone", "branches")
+    fields = ("name", "phone", "branches", "active_property")
     filter_horizontal = ("branches",)
 
 
@@ -166,15 +176,22 @@ class UserAdmin(DjangoUserAdmin):
         super().delete_queryset(request, queryset)
 
     def has_module_permission(self, request):
-        return request.user.is_superuser or request.user.groups.filter(
-            name=SUPER_ADMIN_ROLE
-        ).exists()
+        return request.user.is_superuser
+
+
+@admin.register(Agency)
+class AgencyAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "is_active", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "slug")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(Branch)
 class BranchAdmin(admin.ModelAdmin):
-    list_display = ("name", "town")
-    search_fields = ("name", "town")
+    list_display = ("name", "agency", "town")
+    list_filter = ("agency",)
+    search_fields = ("name", "town", "agency__name")
 
     def save_model(self, request, obj, form, change):
         previous = _branch_audit_values(Branch.objects.get(pk=obj.pk)) if change else None
@@ -420,6 +437,105 @@ class PropertyAdmin(admin.ModelAdmin):
     filter_horizontal = ("caretakers",)
 
 
+@admin.register(PropertyBillingSettings)
+class PropertyBillingSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "property",
+        "paybill_number",
+        "account_number",
+        "universal_security_deposit",
+        "universal_water_deposit",
+        "first_online_billing_month",
+    )
+    search_fields = ("property__name", "paybill_number", "account_number")
+    readonly_fields = ("updated_at",)
+
+    def save_model(self, request, obj, form, change):
+        previous = None
+        if change:
+            previous_obj = PropertyBillingSettings.objects.get(pk=obj.pk)
+            previous = {
+                "property_id": previous_obj.property_id,
+                "paybill_number": previous_obj.paybill_number,
+                "account_number": previous_obj.account_number,
+                "universal_security_deposit": str(previous_obj.universal_security_deposit),
+                "universal_water_deposit": str(previous_obj.universal_water_deposit),
+                "first_online_billing_month": previous_obj.first_online_billing_month,
+            }
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "property_billing_settings.updated" if change else "property_billing_settings.created",
+            "PropertyBillingSettings",
+            old_values=previous,
+            new_values={
+                "property_id": obj.property_id,
+                "paybill_number": obj.paybill_number,
+                "account_number": obj.account_number,
+                "universal_security_deposit": str(obj.universal_security_deposit),
+                "universal_water_deposit": str(obj.universal_water_deposit),
+                "first_online_billing_month": obj.first_online_billing_month,
+            },
+        )
+
+
+@admin.register(PropertyRecurringCharge)
+class PropertyRecurringChargeAdmin(admin.ModelAdmin):
+    list_display = ("name", "property", "amount", "is_active", "updated_at")
+    list_filter = ("is_active", "property__branch")
+    search_fields = ("name", "property__name")
+    readonly_fields = ("created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        previous = None
+        if change:
+            previous_obj = PropertyRecurringCharge.objects.get(pk=obj.pk)
+            previous = {
+                "property_id": previous_obj.property_id,
+                "name": previous_obj.name,
+                "amount": str(previous_obj.amount),
+                "is_active": previous_obj.is_active,
+            }
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "property_recurring_charge.updated" if change else "property_recurring_charge.created",
+            "PropertyRecurringCharge",
+            old_values=previous,
+            new_values={
+                "property_id": obj.property_id,
+                "name": obj.name,
+                "amount": str(obj.amount),
+                "is_active": obj.is_active,
+            },
+        )
+
+
+@admin.register(PropertyUnitType)
+class PropertyUnitTypeAdmin(admin.ModelAdmin):
+    list_display = ("name", "property", "monthly_rent", "security_deposit", "created_at")
+    list_filter = ("property__branch",)
+    search_fields = ("name", "property__name")
+    readonly_fields = ("created_at",)
+
+
+@admin.register(PropertyUnitTypeUtility)
+class PropertyUnitTypeUtilityAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "unit_type",
+        "utility_type",
+        "billing_method",
+        "fixed_amount",
+        "rate_per_unit",
+        "deposit_amount",
+    )
+    list_filter = ("utility_type", "billing_method", "unit_type__property__branch")
+    search_fields = ("name", "unit_type__name", "unit_type__property__name")
+    readonly_fields = ("created_at",)
+
+
 @admin.register(PropertyCaretakerAssignment)
 class PropertyCaretakerAssignmentAdmin(admin.ModelAdmin):
     list_display = ("property", "caretaker", "assigned_by", "assigned_at", "ended_at")
@@ -599,6 +715,44 @@ class MaintenanceTicketAdmin(admin.ModelAdmin):
             "maintenance_ticket.updated" if change else "maintenance_ticket.created",
             "MaintenanceTicket",
             new_values={"id": obj.pk, "status": obj.status, "assigned_to": obj.assigned_to_id},
+        )
+
+
+@admin.register(ViewingLead)
+class ViewingLeadAdmin(admin.ModelAdmin):
+    list_display = ("full_name", "phone", "branch", "property", "unit", "status", "created_at")
+    list_filter = ("branch", "status")
+    search_fields = ("full_name", "phone", "email", "preference")
+    readonly_fields = ("created_by", "created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "viewing_lead.updated" if change else "viewing_lead.created",
+            "ViewingLead",
+            new_values={"id": obj.pk, "branch_id": obj.branch_id, "status": obj.status},
+        )
+
+
+@admin.register(PropertyViewing)
+class PropertyViewingAdmin(admin.ModelAdmin):
+    list_display = ("lead", "scheduled_for", "status", "assigned_to", "scheduled_by")
+    list_filter = ("status", "scheduled_for")
+    search_fields = ("lead__full_name", "lead__phone")
+    readonly_fields = ("scheduled_by", "created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.scheduled_by = request.user
+        super().save_model(request, obj, form, change)
+        record_audit_event(
+            request,
+            "property_viewing.updated" if change else "property_viewing.created",
+            "PropertyViewing",
+            new_values={"id": obj.pk, "lead_id": obj.lead_id, "status": obj.status},
         )
 
 
@@ -859,8 +1013,8 @@ class ArrearsPaymentPlanInstalmentAdmin(admin.ModelAdmin):
 
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin):
-    list_display = ("name", "tenant_type", "branch", "phone", "is_blacklisted")
-    list_filter = ("branch", "tenant_type", "is_blacklisted")
+    list_display = ("name", "tenant_type", "branch", "phone", "is_blacklisted", "is_provisional")
+    list_filter = ("branch", "tenant_type", "is_blacklisted", "is_provisional")
     search_fields = ("name", "company_registration_number", "national_id_or_passport", "phone", "email")
 
     def save_model(self, request, obj, form, change):
@@ -910,6 +1064,70 @@ class MoveInPackageAdmin(admin.ModelAdmin):
             old_values=previous,
             new_values=_move_in_package_audit_values(obj),
         )
+
+
+@admin.register(MoveInSettlement)
+class MoveInSettlementAdmin(admin.ModelAdmin):
+    list_display = ("unit", "tenant_name", "status", "total_required", "total_paid", "outstanding_balance")
+    list_filter = ("status", "unit__property")
+    search_fields = ("tenant_name", "tenant_email", "unit__code", "unit__property__name")
+    readonly_fields = (
+        "unit",
+        "tenant",
+        "tenant_name",
+        "tenant_email",
+        "tenant_phone",
+        "deposit_amount",
+        "rent_amount",
+        "garbage_amount",
+        "water_deposit_amount",
+        "utility_charges",
+        "total_required",
+        "total_paid",
+        "deposit_paid_amount",
+        "outstanding_balance",
+        "expected_move_in_date",
+        "status",
+        "cancellation_reason",
+        "cancelled_at",
+        "booked_at",
+        "activated_at",
+        "activation_email_sent_at",
+        "activation_email_error",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(MoveInPayment)
+class MoveInPaymentAdmin(admin.ModelAdmin):
+    list_display = ("settlement", "amount", "method", "status", "mpesa_reference", "created_at")
+    list_filter = ("method", "status")
+    search_fields = ("mpesa_reference", "checkout_request_id", "settlement__tenant_name")
+    readonly_fields = (
+        "settlement",
+        "amount",
+        "method",
+        "mpesa_reference",
+        "checkout_request_id",
+        "recorded_by",
+        "status",
+        "result_description",
+        "processed_at",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(MoveInCharge)
@@ -995,6 +1213,69 @@ class SMSLoginChallengeAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+
+@admin.register(SMSDelivery)
+class SMSDeliveryAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "template_name",
+        "status",
+        "attempts",
+        "provider_message_id",
+        "error_code",
+        "created_by",
+        "created_at",
+        "sent_at",
+    )
+    list_filter = ("status", "template_name", "created_at")
+    search_fields = ("provider_message_id", "error_code")
+    readonly_fields = (
+        "template_name",
+        "recipient_encrypted",
+        "message_encrypted",
+        "status",
+        "attempts",
+        "available_at",
+        "expires_at",
+        "locked_at",
+        "sent_at",
+        "provider_message_id",
+        "error_code",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return requires_finance_mfa(request.user)
+
+    def has_module_permission(self, request):
+        return requires_finance_mfa(request.user)
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        if request.method == "GET":
+            record_audit_event(request, "sms.deliveries_viewed", "SMSDelivery")
+        return super().changelist_view(request, extra_context)
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        if request.method == "GET":
+            record_audit_event(
+                request,
+                "sms.delivery_viewed",
+                "SMSDelivery",
+                new_values={"delivery_id": object_id},
+            )
+        return super().change_view(request, object_id, form_url, extra_context)
 
 
 @admin.register(AuditLog)

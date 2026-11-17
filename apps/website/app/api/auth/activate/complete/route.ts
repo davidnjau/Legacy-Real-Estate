@@ -12,6 +12,7 @@ export async function POST(request: Request) {
         full_name: body.fullName,
         email: body.email,
         phone: body.phone,
+        national_id_or_passport: body.nationalIdOrPassport,
         password: body.password,
       },
     });

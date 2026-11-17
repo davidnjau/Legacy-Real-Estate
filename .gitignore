@@ -51,3 +51,6 @@ deploy/charts/**/charts/*.tgz
 # Misc
 *.local
 coverage/
+*.docx
+*:Zone.Identifier
+test-data/

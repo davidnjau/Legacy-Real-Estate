@@ -12,7 +12,7 @@ from django.utils import timezone
 from users.audit import record_audit_event
 from users.models import SMSLoginChallenge
 from users.roles import requires_finance_mfa
-from users.sms import send_sms
+from users.sms import queue_template_sms
 
 ADMIN_CHALLENGE_SESSION_KEY = "admin_sms_challenge_id"
 
@@ -106,7 +106,14 @@ class FinanceMFAAdminAuthenticationForm(AdminAuthenticationForm):
                 expires_at=timezone.now()
                 + timedelta(seconds=settings.AUTH_SMS_CODE_LIFETIME_SECONDS),
             )
-            send_sms(phone, f"Your Legacy Real Estate sign-in code is {code}.")
+            queue_template_sms(
+                phone,
+                "login_verification_code",
+                {"code": code},
+                actor=user,
+                request=self.request,
+                expires_at=challenge.expires_at,
+            )
 
         self.request.session[ADMIN_CHALLENGE_SESSION_KEY] = challenge.pk
         record_audit_event(

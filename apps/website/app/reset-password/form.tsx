@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Building2, Lock, ArrowRight, CheckCircle, Eye, EyeOff } from 'lucide-react';
-import { createClient } from '../../lib/supabase/client';
 
 export default function ResetPasswordForm() {
   const router = useRouter();
@@ -20,9 +19,7 @@ export default function ResetPasswordForm() {
   });
 
   useEffect(() => {
-    // Check if we have a token in the URL
-    const token = searchParams.get('code');
-    if (!token) {
+    if (!searchParams.get('uid') || !searchParams.get('token')) {
       setError('Invalid password reset link. Please request a new one.');
     }
   }, [searchParams]);
@@ -34,6 +31,12 @@ export default function ResetPasswordForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const uid = searchParams.get('uid');
+    const token = searchParams.get('token');
+    if (!uid || !token) {
+      setError('Invalid password reset link. Please request a new one.');
+      return;
+    }
 
     // Validate passwords match
     if (passwords.password !== passwords.confirmPassword) {
@@ -41,24 +44,21 @@ export default function ResetPasswordForm() {
       return;
     }
 
-    // Validate password length
-    if (passwords.password.length < 6) {
-      setError('Password must be at least 6 characters long.');
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      const supabase = createClient();
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: passwords.password,
+      const response = await fetch('/api/auth/password-reset/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid,
+          token,
+          password: passwords.password,
+        }),
       });
-
-      if (updateError) {
-        setError(updateError.message || 'Failed to reset password. Please try again.');
-        setIsLoading(false);
-        return;
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to reset password. Please try again.');
       }
 
       setSuccess(true);
@@ -66,7 +66,7 @@ export default function ResetPasswordForm() {
         router.push('/login');
       }, 2000);
     } catch (err) {
-      setError('Something went wrong. Please try again.');
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setIsLoading(false);
     }

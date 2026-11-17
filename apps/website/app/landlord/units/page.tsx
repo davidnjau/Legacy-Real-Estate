@@ -127,6 +127,7 @@ export default function UnitsAndTenants() {
   const [floorFilter, setFloorFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [unitError, setUnitError] = useState('');
 
   // Pagination states
   const [unitsPage, setUnitsPage] = useState(1);
@@ -200,13 +201,21 @@ export default function UnitsAndTenants() {
   // ─── Fetch units ─────────────────────────────────────────────────────────
 
   const fetchUnits = async () => {
+    setLoading(true);
+    setUnitError('');
     try {
       const res = await fetch('/api/units');
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load units');
-      setUnits(data.units || []);
-    } catch (err) {
-      console.error('Failed to load units', err);
+      if (!res.ok) {
+        throw new Error(data.error || 'Unable to load units.');
+      }
+      if (!Array.isArray(data.units)) {
+        throw new Error('The units response was incomplete.');
+      }
+      setUnits(data.units);
+    } catch (loadError) {
+      setUnitError(loadError instanceof Error ? loadError.message : 'Unable to load units.');
+      setUnits([]);
     } finally {
       setLoading(false);
     }
@@ -220,7 +229,9 @@ export default function UnitsAndTenants() {
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Unable to load property utilities.');
-        const activeProperty = (data.properties || []).find((property: { id: string }) => property.id === data.activePropertyId);
+        const activeProperty = (data.properties || []).find(
+          (property: { id: string | number }) => String(property.id) === String(data.activePropertyId),
+        );
         setRecurringUtilityCharges((activeProperty?.recurringCharges || [])
           .filter((charge: { is_active: boolean }) => charge.is_active)
           .map((charge: { name: string; amount: number }) => ({ name: charge.name, amount: Number(charge.amount) })));
@@ -572,6 +583,12 @@ export default function UnitsAndTenants() {
         <p className="text-slate-500 mt-1">Manage occupancy, notices, offboarding, and deposits.</p>
       </div>
 
+      {unitError && (
+        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          Could not load unit data: {unitError}
+        </p>
+      )}
+
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="p-5 border-b border-slate-200 bg-emerald-50">
           <h2 className="font-bold text-slate-900">Move-In Settlements</h2>
@@ -631,6 +648,12 @@ export default function UnitsAndTenants() {
           <tbody className="divide-y divide-slate-200">
             {loading ? (
               <tr><td colSpan={7} className="p-6 text-center text-slate-500">Loading units...</td></tr>
+            ) : currentUnits.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="p-6 text-center text-slate-500">
+                  {unitError ? 'Units could not be loaded.' : 'No units are available for this account.'}
+                </td>
+              </tr>
             ) : currentUnits.map((unit) => (
               <tr key={unit.id} className="hover:bg-slate-50 transition-colors">
                 <td className="p-4 font-bold text-slate-900">{unit.unitCode}</td>
@@ -717,33 +740,25 @@ export default function UnitsAndTenants() {
 
                     {/* OCCUPIED */}
                     {unit.status === 'occupied' && (<>
-                      <button onClick={() => openModal(unit, 'log_notice')}
+                      <button onClick={() => window.location.assign('/landlord/move-outs')}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-700 text-sm font-medium rounded-lg transition-colors w-full justify-center">
-                        <Bell size={14} /> Log Notice
-                      </button>
-                      <button onClick={() => openModal(unit, 'evacuation')}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors w-full justify-center">
-                        <AlertTriangle size={14} /> Immediate Eviction
+                        <Bell size={14} /> Manage Move-Out
                       </button>
                     </>)}
 
                     {/* NOTICE GIVEN */}
-                    {unit.status === 'notice_given' && (<>
-                      <button onClick={() => openModal(unit, 'offboard')}
+                    {unit.status === 'notice_given' && (
+                      <button onClick={() => window.location.assign('/landlord/move-outs')}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium rounded-lg transition-colors">
-                        <LogOut size={14} /> Offboard Tenant
+                        <LogOut size={14} /> Manage Move-Out
                       </button>
-                      <button onClick={() => handleSimpleAction(unit.id, 'revoke_notice')}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition-colors">
-                        <BellOff size={14} /> Revoke Notice
-                      </button>
-                    </>)}
+                    )}
 
                     {/* DEPOSIT PENDING (offboarded, awaiting settlement) */}
                     {(unit.status === 'deposit_pending' || unit.status === 'offboarding') && (
-                      <button onClick={() => openModal(unit, 'settle')}
+                      <button onClick={() => window.location.assign('/landlord/move-outs')}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
-                        <FileCheck size={14} /> Settle Deposit
+                        <FileCheck size={14} /> Manage Settlement
                       </button>
                     )}
                   </div>

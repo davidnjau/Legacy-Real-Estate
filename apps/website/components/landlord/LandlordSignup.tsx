@@ -65,7 +65,7 @@ export default function LandlordSignup() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to create account.');
-      router.push('/landlord/welcome');
+      router.push('/landlord/dashboard');
       router.refresh();
     } catch (err: any) {
       setError(err.message);
@@ -83,13 +83,13 @@ export default function LandlordSignup() {
               <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
                 <Building2 size={32} />
               </div>
-              <h2 className="text-2xl font-bold text-slate-900">Welcome to Sunshine!</h2>
+              <h2 className="text-2xl font-bold text-slate-900">Welcome to Legacy Real Estate</h2>
               <p className="text-slate-600 text-sm leading-relaxed">
                 We're excited to have you on board. Our platform makes managing your properties, tenants, and billing completely seamless.
               </p>
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-left mt-4 text-sm text-slate-600">
                 <h3 className="font-bold text-slate-900 mb-1 flex items-center gap-2"><ShieldCheck size={16} className="text-emerald-600"/> Note to Landlords</h3>
-                <p>This is a secure system. Please ensure you have your correct authorization code ready before proceeding with the setup.</p>
+                <p>Your account gives you a private workspace for your property portfolio and rental operations.</p>
               </div>
               <button 
                 onClick={dismissWelcome}
@@ -107,7 +107,7 @@ export default function LandlordSignup() {
           <div className="w-12 h-12 bg-emerald-500/20 rounded-xl flex items-center justify-center mx-auto mb-4">
             <Building2 className="text-emerald-400" size={24} />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">Create Landlord Account</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Create your owner account</h1>
           <p className="text-slate-400 mt-2 text-sm">Set up your property management workspace.</p>
         </div>
 
@@ -136,7 +136,7 @@ export default function LandlordSignup() {
                 <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                 <input required value={form.propertyName} onChange={set('propertyName')}
                   className="block w-full pl-10 pr-3 py-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 transition-all text-sm"
-                  placeholder="Sunshine Apartments" />
+                  placeholder="Your property name" />
               </div>
             </div>
 
@@ -217,7 +217,7 @@ export default function LandlordSignup() {
 
             <p className="text-center text-sm text-slate-500">
               Already registered?{' '}
-              <Link href="/login" className="font-semibold text-emerald-600 hover:text-emerald-700 transition">
+              <Link href="/login?role=landlord" className="font-semibold text-emerald-600 hover:text-emerald-700 transition">
                 Sign in
               </Link>
             </p>

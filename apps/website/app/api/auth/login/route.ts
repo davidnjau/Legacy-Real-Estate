@@ -5,12 +5,19 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:800
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const email = String(body.email || '').trim().toLowerCase();
-    const password = String(body.password || '');
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'A JSON object is required.' }, { status: 400 });
+    }
+    const identifier = typeof body.identifier === 'string'
+      ? body.identifier.trim()
+      : typeof body.email === 'string'
+        ? body.email.trim()
+        : '';
+    const password = typeof body.password === 'string' ? body.password : '';
 
-    if (!email || !password) {
+    if (!identifier || !password) {
       return NextResponse.json(
-        { error: 'Email and password are required.' },
+        { error: 'Email or phone number and password are required.' },
         { status: 400 }
       );
     }
@@ -22,7 +29,7 @@ export async function POST(request: Request) {
         Cookie: request.headers.get('cookie') || '',
         'X-CSRFToken': request.headers.get('x-csrftoken') || '',
       },
-      body: JSON.stringify({ identifier: email, password }),
+      body: JSON.stringify({ identifier, password }),
       cache: 'no-store',
     });
 
@@ -30,6 +37,9 @@ export async function POST(request: Request) {
       status: response.status,
       headers: { 'Content-Type': response.headers.get('content-type') || 'application/json' },
     });
+    if (response.ok) {
+      result.cookies.set('demo_role', '', { path: '/', maxAge: 0 });
+    }
     for (const cookie of response.headers.getSetCookie()) {
       result.headers.append('Set-Cookie', cookie);
     }

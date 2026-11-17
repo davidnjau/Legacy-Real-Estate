@@ -55,9 +55,49 @@ export interface paths {
         put?: never;
         /**
          * Start a session
-         * @description Requires the CSRF cookie and X-CSRFToken header. Finance-role users must complete SMS verification before a session is established.
+         * @description Requires the CSRF cookie and X-CSRFToken header. Finance-role users receive a challenge while their verification code is queued for SMS delivery; a session is established only after successful verification.
          */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a password reset link
+         * @description Sends a single-use reset link when an active account uses the supplied email. The response is the same when no account matches. Requires the CSRF cookie and X-CSRFToken header.
+         */
+        post: operations["requestPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set a new password with a reset token
+         * @description Requires the CSRF cookie and X-CSRFToken header.
+         */
+        post: operations["confirmPasswordReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -104,6 +144,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/landlord/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the landlord's portal profile
+         * @description Returns the authenticated landlord's profile fields.
+         */
+        get: operations["getLandlordPortalProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update the landlord's portal profile
+         * @description Updates profile name and Kenyan mobile number for the authenticated landlord.
+         */
+        patch: operations["updateLandlordPortalProfile"];
+        trace?: never;
+    };
+    "/landlord/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get landlord onboarding state
+         * @description Returns onboarding/tutorial flags and the landlord's first property name.
+         */
+        get: operations["getLandlordOnboarding"];
+        put?: never;
+        /**
+         * Complete landlord onboarding
+         * @description Marks onboarding complete and saves the submitted tutorial state.
+         */
+        post: operations["completeLandlordOnboarding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/caretaker/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the caretaker's portal profile
+         * @description Returns the authenticated caretaker's profile and account status.
+         */
+        get: operations["getCaretakerPortalProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update the caretaker's portal profile
+         * @description Updates the authenticated caretaker's name, email, and Kenyan mobile number.
+         */
+        patch: operations["updateCaretakerPortalProfile"];
+        trace?: never;
+    };
+    "/caretaker/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get caretaker onboarding state
+         * @description Returns the authenticated caretaker's onboarding and tutorial flags.
+         */
+        get: operations["getCaretakerOnboarding"];
+        put?: never;
+        /**
+         * Complete caretaker onboarding
+         * @description Marks onboarding complete and saves the submitted tutorial state.
+         */
+        post: operations["completeCaretakerOnboarding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/logout": {
         parameters: {
             query?: never;
@@ -124,7 +260,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/auth/register-landlord": {
+    "/auth/register-tenant": {
         parameters: {
             query?: never;
             header?: never;
@@ -134,10 +270,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Register a landlord portal account
-         * @description Creates the Django account, landlord record, initial property, and session transactionally.
+         * Create a resident portal account
+         * @description Creates a tenant-role account and session without creating or assigning a tenancy.
          */
-        post: operations["registerLandlordPortal"];
+        post: operations["registerTenantPortal"];
         delete?: never;
         options?: never;
         head?: never;
@@ -288,6 +424,438 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/landlord/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the landlord oversight dashboard
+         * @description Returns current-month portfolio metrics only for properties linked to the authenticated landlord portal account. The read is audit logged.
+         */
+        get: operations["getLandlordDashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/properties": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the authenticated landlord's properties
+         * @description Returns only properties linked to the authenticated landlord portal account, including recurring charges and the selected property. The read is audit logged.
+         */
+        get: operations["listLandlordProperties"];
+        put?: never;
+        /**
+         * Create a property for the authenticated landlord
+         * @description Creates a property under the authenticated landlord's linked landlord record, saves its recurring charges atomically, and selects it when no valid active property is currently selected.
+         */
+        post: operations["createLandlordProperty"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Select or update an authenticated landlord's property
+         * @description Selects an owned active property, or updates an owned property's configuration and recurring charges in one atomic, audited operation.
+         */
+        patch: operations["updateLandlordProperty"];
+        trace?: never;
+    };
+    "/landlord/billing-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the active property's billing settings
+         * @description Returns billing settings only for a property linked to the authenticated landlord portal account.
+         */
+        get: operations["getLandlordBillingSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update payment instructions for the active property
+         * @description Updates paybill and account numbers for a property linked to the authenticated landlord account and records the change in the audit log.
+         */
+        patch: operations["updateLandlordBillingSettings"];
+        trace?: never;
+    };
+    "/landlord/units": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List units in the authenticated landlord's properties
+         * @description Returns only units belonging to properties linked to the authenticated landlord portal account. The read is audit logged.
+         */
+        get: operations["listLandlordUnits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/move-in-units": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the active property's units and occupancies
+         * @description Returns unit, current tenancy, and open move-in reservation details for the selected property.
+         */
+        get: operations["listLandlordMoveInUnits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/move-in-settlements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List open move-in settlements
+         * @description Returns open reservations and their associated payments for the landlord's active property.
+         */
+        get: operations["listLandlordMoveInSettlements"];
+        put?: never;
+        /**
+         * Reserve a unit for a new move-in
+         * @description Snapshots active recurring property charges and creates a payment-pending settlement for one vacant unit.
+         */
+        post: operations["createLandlordMoveInSettlement"];
+        /**
+         * Cancel an unactivated move-in reservation
+         * @description Cancels a reservation only if it has no linked tenant account or activation email.
+         */
+        delete: operations["cancelLandlordMoveInSettlement"];
+        options?: never;
+        head?: never;
+        /**
+         * Record payment or send tenant activation
+         * @description Records a manual settlement payment or issues a tenant activation link after the settlement is fully paid.
+         */
+        patch: operations["updateLandlordMoveInSettlement"];
+        trace?: never;
+    };
+    "/move-in-settlements/stk-payment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create, attach, or fail an STK payment attempt
+         * @description Authenticated internal website flow. Payment attempts are bound to an authorized landlord or tenant and a settlement.
+         */
+        post: operations["createOrUpdateMoveInStkPayment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/occupancy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transition a unit's occupancy status
+         * @description Changes the unit status only when the transition is valid and an active tenancy is not being improperly marked vacant.
+         */
+        post: operations["updateUnitOccupancy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/units/manage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a supported legacy unit action
+         * @description Maintenance/vacancy actions use the Django unit lifecycle; retired move-out actions return 410 and direct callers to the audited move-out workflow.
+         */
+        post: operations["manageUnitAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the signed-in tenant profile and active tenancy details
+         * @description Returns profile, unit, move-in date, and deposit details for the authenticated tenant.
+         */
+        get: operations["getTenantPortalProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update the signed-in tenant profile
+         * @description Updates the authenticated tenant's name, email, and phone after validating uniqueness and phone format.
+         */
+        patch: operations["updateTenantPortalProfile"];
+        trace?: never;
+    };
+    "/tenant/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the signed-in tenant tutorial and transition state
+         * @description Returns tutorial completion, migration, move-in settlement, and billing transition details.
+         */
+        get: operations["getTenantOnboarding"];
+        put?: never;
+        /**
+         * Save the signed-in tenant tutorial state
+         * @description Saves whether the authenticated tenant has completed the portal tutorial.
+         */
+        post: operations["updateTenantOnboarding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/unit-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the signed-in tenant's latest unit status
+         * @description Returns the latest tenancy and unit status for the authenticated tenant.
+         */
+        get: operations["getTenantUnitStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/payments/mpesa/move-in-callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Process a move-in payment callback
+         * @description Callback endpoint matches checkout ID, amount, and receipt reference. Amount mismatches are marked for reconciliation without applying funds.
+         */
+        post: operations["receiveMoveInMpesaCallback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get or export a landlord statement
+         * @description Returns a date-range statement for the authenticated landlord's own linked properties. CSV exports and statement reads are audit logged. Tax is calculated only from an explicitly approved agreement configuration.
+         */
+        get: operations["getLandlordStatement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/maintenance/quotations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List landlord quotation approvals
+         * @description Returns submitted maintenance quotations above the active agreement threshold for properties owned by the authenticated landlord.
+         */
+        get: operations["listLandlordMaintenanceQuotationApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/maintenance/quotations/{quotation_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or reject a landlord maintenance quotation
+         * @description Allows only the owning landlord to decide a submitted quotation above the active agreement threshold. Rejection requires a reason.
+         */
+        post: operations["decideLandlordMaintenanceQuotation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/remittances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List accessible landlord remittances
+         * @description Returns branch-scoped remittances for staff or only the authenticated landlord's own remittances.
+         */
+        get: operations["listLandlordRemittances"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/remittances/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare a landlord remittance
+         * @description Creates a period snapshot using the approved landlord statement rules. Only authorized staff may prepare a run.
+         */
+        post: operations["createLandlordRemittance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/remittances/{remittance_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or reject a landlord remittance
+         * @description Requires Branch Manager or Super Admin access and an approver different from the preparer.
+         */
+        post: operations["decideLandlordRemittance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/landlord/remittances/{remittance_id}/payout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a manual landlord payout
+         * @description Records the reference and date of an externally completed payout; no payment is sent by this endpoint.
+         */
+        post: operations["recordLandlordRemittancePayout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/landlords": {
         parameters: {
             query?: never;
@@ -297,7 +865,7 @@ export interface paths {
         };
         /**
          * List accessible landlords
-         * @description Returns landlord records in the authenticated user's branch scope.
+         * @description Returns landlord records whose home branch or linked properties are in the authenticated user's branch scope.
          */
         get: operations["listLandlords"];
         put?: never;
@@ -337,7 +905,7 @@ export interface paths {
         };
         /**
          * Get an accessible landlord
-         * @description Returns a landlord only when it belongs to the authenticated user's branch scope.
+         * @description Returns a landlord only when its home branch or linked properties are in the authenticated user's branch scope.
          */
         get: operations["getLandlord"];
         put?: never;
@@ -377,7 +945,7 @@ export interface paths {
         };
         /**
          * List accessible properties
-         * @description Returns branch-scoped properties visible to the authenticated user.
+         * @description Returns properties visible to the authenticated user: branch-scoped records for authorized staff, assigned-property records for caretakers, and all properties linked to the landlord portal account.
          */
         get: operations["listProperties"];
         put?: never;
@@ -417,7 +985,7 @@ export interface paths {
         };
         /**
          * Get a property
-         * @description Returns one property when it is within the authenticated user's branch scope.
+         * @description Returns one property when it is within the authenticated user's role-based access scope.
          */
         get: operations["getProperty"];
         put?: never;
@@ -457,7 +1025,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create a caretaker account */
+        /**
+         * Create a caretaker account
+         * @description Creates an active caretaker account and assigns it to the caller's accessible branches.
+         */
         post: operations["createCaretaker"];
         delete?: never;
         options?: never;
@@ -517,6 +1088,46 @@ export interface paths {
          * @description Returns maintenance tickets within the authenticated user's property scope.
          */
         get: operations["listMaintenanceTickets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/maintenance-ledger/months": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List months with completed maintenance tickets
+         * @description Returns months containing completed maintenance tickets within the authenticated user's property scope.
+         */
+        get: operations["listMaintenanceLedgerMonths"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/maintenance-ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List completed maintenance costs for a month
+         * @description Returns completed maintenance tickets, actual repair costs, and technician names within the authenticated user's property scope.
+         */
+        get: operations["listMaintenanceLedger"];
         put?: never;
         post?: never;
         delete?: never;
@@ -696,7 +1307,7 @@ export interface paths {
         put?: never;
         /**
          * Update a maintenance ticket status
-         * @description Advances a ticket through the SRS maintenance lifecycle and optionally assigns a caretaker.
+         * @description Advances a ticket through the maintenance lifecycle. A caretaker may omit assigned_to when self-assigning an open ticket. Completing a ticket requires fundi_name and repair_cost.
          */
         post: operations["updateMaintenanceTicketStatus"];
         delete?: never;
@@ -709,16 +1320,42 @@ export interface paths {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                ticket_id: number;
+            };
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List comments on an accessible maintenance ticket
+         * @description Returns the tenant and property-team conversation for a maintenance ticket in the authenticated user's scope.
+         */
+        get: operations["listMaintenanceTicketComments"];
         put?: never;
         /**
          * Add a maintenance ticket comment
          * @description Adds an auditable operational comment and optional photo metadata to an accessible ticket.
          */
         post: operations["addMaintenanceTicketComment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/maintenance-tickets/{ticket_id}/evidence/{evidence_index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve evidence from an accessible maintenance ticket
+         * @description Streams private ticket evidence to a tenant who reported the ticket or authorized property staff.
+         */
+        get: operations["getMaintenanceTicketEvidence"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -732,7 +1369,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List caretaker assignments */
+        /**
+         * List caretaker assignments
+         * @description Returns caretaker assignment history for a property the caller can access.
+         */
         get: operations["listPropertyCaretakerAssignments"];
         put?: never;
         post?: never;
@@ -751,7 +1391,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Assign a caretaker to a property */
+        /**
+         * Assign a caretaker to a property
+         * @description Assigns an active caretaker from the property's branch to the accessible property.
+         */
         post: operations["assignPropertyCaretaker"];
         delete?: never;
         options?: never;
@@ -768,7 +1411,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** End a caretaker assignment */
+        /**
+         * End a caretaker assignment
+         * @description Ends the active assignment between the specified caretaker and accessible property.
+         */
         post: operations["endPropertyCaretakerAssignment"];
         delete?: never;
         options?: never;
@@ -785,7 +1431,7 @@ export interface paths {
         };
         /**
          * List accessible units
-         * @description Returns units belonging to properties in the authenticated user's branch scope.
+         * @description Returns units belonging to properties visible to the authenticated user: branch-scoped records for authorized staff, assigned-property records for caretakers, and landlord-owned records for landlord portal accounts.
          */
         get: operations["listUnits"];
         put?: never;
@@ -808,6 +1454,26 @@ export interface paths {
          * @description Returns accessible units with current rent and optional branch, area, unit type, status, listing, and rent filters.
          */
         get: operations["getVacancyBoard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/vacancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search published vacant units
+         * @description Publicly returns only units explicitly listed and currently vacant, with reduced public-safe fields.
+         */
+        get: operations["getPublicVacancies"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1103,7 +1769,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List arrears ageing */
+        /**
+         * List arrears ageing
+         * @description Returns accessible issued-invoice arrears and ageing-bucket totals as of the requested date, defaulting to today.
+         */
         get: operations["listArrears"];
         put?: never;
         post?: never;
@@ -1122,7 +1791,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Approve an arrears waiver */
+        /**
+         * Approve an arrears waiver
+         * @description Records a manager-approved waiver against an accessible issued invoice, limited to its outstanding arrears.
+         */
         post: operations["createArrearsWaiver"];
         delete?: never;
         options?: never;
@@ -1139,7 +1811,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Issue a demand letter */
+        /**
+         * Issue a demand letter
+         * @description Issues a demand letter for an accessible issued invoice, or returns the existing letter if one was already issued.
+         */
         post: operations["createDemandLetter"];
         delete?: never;
         options?: never;
@@ -1154,7 +1829,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List arrears payment plans */
+        /**
+         * List arrears payment plans
+         * @description Returns payment plans for tenancies in properties accessible to the caller.
+         */
         get: operations["listPaymentPlans"];
         put?: never;
         post?: never;
@@ -1173,7 +1851,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create an arrears payment plan */
+        /**
+         * Create an arrears payment plan
+         * @description Creates a manager-authorized instalment schedule for an accessible tenancy that has no active payment plan.
+         */
         post: operations["createPaymentPlan"];
         delete?: never;
         options?: never;
@@ -1190,7 +1871,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record an instalment payment */
+        /**
+         * Record an instalment payment
+         * @description Records a payment against an accessible payment-plan instalment and updates its plan balance.
+         */
         post: operations["payPaymentPlanInstalment"];
         delete?: never;
         options?: never;
@@ -1325,7 +2009,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Review bank statement rows */
+        /**
+         * Review bank statement rows
+         * @description Returns an imported bank statement and its parsed rows within the caller's branch access.
+         */
         get: operations["getBankStatementImport"];
         put?: never;
         post?: never;
@@ -1344,7 +2031,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Manually match a bank statement row */
+        /**
+         * Manually match a bank statement row
+         * @description Allocates the payment associated with a valid statement row and marks the row as matched when allocation succeeds.
+         */
         post: operations["matchBankStatementRow"];
         delete?: never;
         options?: never;
@@ -1359,7 +2049,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Report bank statement reconciliation */
+        /**
+         * Report bank statement reconciliation
+         * @description Returns row counts and statement, valid, and matched totals for an imported bank statement.
+         */
         get: operations["getBankStatementReconciliation"];
         put?: never;
         post?: never;
@@ -1398,7 +2091,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Update cheque clearing status */
+        /**
+         * Update cheque clearing status
+         * @description Marks an accessible cheque payment as cleared or bounced and records today's clearing date.
+         */
         post: operations["updateChequeStatus"];
         delete?: never;
         options?: never;
@@ -1413,7 +2109,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Report cash collections */
+        /**
+         * Report cash collections
+         * @description Returns cash payment details and totals for the requested inclusive date range, defaulting to today.
+         */
         get: operations["getCashCollectionReport"];
         put?: never;
         post?: never;
@@ -1450,7 +2149,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get the refundable deposit ledger */
+        /**
+         * Get the refundable deposit ledger
+         * @description Returns the deposit balance, target, and ledger entries for an accessible tenancy with a deposit account.
+         */
         get: operations["getDepositAccount"];
         put?: never;
         post?: never;
@@ -1600,6 +2302,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tenancies/{tenancy_id}/move-in-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get move-in invoice payment status
+         * @description Returns recorded and confirmed allocations for the issued move-in invoice and refreshes the unit's Booked-to-Occupied transition when fully paid and the tenancy start date has arrived.
+         */
+        get: operations["getMoveInStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tenancies/{tenancy_id}/move-in-agreement.pdf": {
         parameters: {
             query?: never;
@@ -1740,6 +2462,292 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tenant/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the authenticated tenant's dashboard
+         * @description Returns only the linked tenant's issued invoices, balances, payment history, receipts, and current tenancy context. The dashboard read is audit logged; published announcements are available through GET /announcements.
+         */
+        get: operations["getTenantDashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/move-out-notice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the authenticated tenant's move-out notice
+         * @description Returns only the authenticated tenant's active tenancy and its latest notice.
+         */
+        get: operations["getTenantMoveOutNotice"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/move-out-notice/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a proposed move-out date
+         * @description Requires an active tenant portal tenancy and honors its configured notice period. Submission is audited.
+         */
+        post: operations["submitTenantMoveOutNotice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/move-out-notices/{notice_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw a pending tenant notice
+         * @description Only the tenant who submitted a notice can withdraw it while it is still pending review.
+         */
+        post: operations["withdrawTenantMoveOutNotice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/move-out-workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List property-scoped move-out notices and settlements
+         * @description Returns notices, settlement records, and accepted notices eligible for settlement preparation within the user's property scope.
+         */
+        get: operations["listMoveOutWorkflows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/move-out-notices/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a move-out notice for an active tenancy
+         * @description Records a proposed date for an active tenancy after validating its configured notice period.
+         */
+        post: operations["createStaffMoveOutNotice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/move-out-notices/{notice_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept, reject, or withdraw a move-out notice
+         * @description Notice decisions are atomic and property-scoped; rejecting a notice requires a review note.
+         */
+        post: operations["decideMoveOutNotice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/move-out-settlements/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare a move-out settlement for independent approval
+         * @description Calculates final utility charges, issued invoice arrears, itemized damage, deposit deduction, refund, and any debt shortfall server-side.
+         */
+        post: operations["createMoveOutSettlement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/move-out-settlements/{settlement_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or reject a move-out settlement
+         * @description The preparer cannot approve their own settlement; rejection requires a reason.
+         */
+        post: operations["decideMoveOutSettlement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/move-out-settlements/{settlement_id}/payout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a manual deposit refund payout
+         * @description Requires finance authorization. If no refund is due, this closes the approved settlement without a payout reference.
+         */
+        post: operations["recordMoveOutPayout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/maintenance-tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the authenticated tenant's maintenance requests
+         * @description Returns only tickets reported by the authenticated tenant portal user. Reads are audit logged.
+         */
+        get: operations["listTenantMaintenanceTickets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/maintenance-tickets/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a tenant maintenance request
+         * @description Creates a request for the tenant's active tenancy; property and unit are derived server-side. Optional evidence is uploaded to private object storage.
+         */
+        post: operations["createTenantMaintenanceTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/maintenance-tickets/{ticket_id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: number;
+            };
+            cookie?: never;
+        };
+        /**
+         * List comments visible to the tenant
+         * @description Returns comments for a ticket reported by the authenticated tenant, limited to tenant and property-team authors.
+         */
+        get: operations["listTenantMaintenanceTicketComments"];
+        put?: never;
+        /**
+         * Reply to a tenant maintenance request
+         * @description Adds an auditable tenant comment to one of the tenant's open maintenance requests.
+         */
+        post: operations["addTenantMaintenanceTicketComment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/maintenance-tickets/{ticket_id}/evidence/{evidence_index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve private evidence from the tenant's maintenance request
+         * @description Streams an evidence image only when the authenticated tenant reported the parent ticket.
+         */
+        get: operations["getTenantMaintenanceEvidence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tenants/create": {
         parameters: {
             query?: never;
@@ -1790,10 +2798,30 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Add tenant KYC document metadata
-         * @description Records tenant document metadata and an object-storage key.
+         * Upload a private tenant document
+         * @description Uploads a PDF, JPEG, PNG, or WebP tenant document to private object storage. The server generates the storage key and never returns it.
          */
         post: operations["createTenantDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenants/{tenant_id}/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a private tenant document
+         * @description Streams a tenant document only to authorized staff within the tenant's property scope.
+         */
+        get: operations["getTenantDocument"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2058,11 +3086,85 @@ export interface components {
         };
         Property: components["schemas"]["PropertyInput"] & {
             id: number;
+            landlord_id: number | null;
+            address: string | null;
+            currency_code: string;
+            timezone: string;
+            rent_due_day: number;
+            /** @enum {string} */
+            billing_mode: "metered_water" | "fixed_utilities";
+            default_rent: string;
+            security_deposit: string;
+            water_deposit: string;
+            default_garbage_charge: string;
+            default_water_rate: string;
             blocks?: Record<string, never>[];
             caretaker_ids?: number[];
             caretakers?: components["schemas"]["Caretaker"][];
             documents?: Record<string, never>[];
         };
+        PropertyBillingSettings: {
+            paybill_number: string;
+            account_number: string;
+            universal_security_deposit: string;
+            universal_water_deposit: string;
+            first_online_billing_month: string | null;
+        };
+        PropertyRecurringCharge: {
+            id: number;
+            name: string;
+            amount: string;
+            is_active: boolean;
+        };
+        PropertyRecurringChargeInput: {
+            name: string;
+            amount: number | string;
+            isActive?: boolean;
+        };
+        LandlordPropertyCreateInput: {
+            name: string;
+            address?: string;
+            location?: string;
+            /** @default residential */
+            propertyType: string;
+            /** @default KES */
+            currencyCode: string;
+            /** @default Africa/Nairobi */
+            timezone: string;
+            /** @default 10 */
+            rentDueDay: number;
+            /**
+             * @default metered_water
+             * @enum {string}
+             */
+            billingMode: "metered_water" | "fixed_utilities";
+            defaultRent?: number | string;
+            securityDeposit?: number | string;
+            waterDeposit?: number | string;
+            garbageCharge?: number | string;
+            waterRate?: number | string;
+            recurringCharges?: components["schemas"]["PropertyRecurringChargeInput"][];
+        };
+        LandlordPropertyUpdateInput: {
+            activePropertyId: number;
+        } | ({
+            propertyId: number;
+            name?: string;
+            address?: string;
+            location?: string;
+            propertyType?: string;
+            currencyCode?: string;
+            timezone?: string;
+            rentDueDay?: number;
+            /** @enum {string} */
+            billingMode?: "metered_water" | "fixed_utilities";
+            defaultRent?: number | string;
+            securityDeposit?: number | string;
+            waterDeposit?: number | string;
+            garbageCharge?: number | string;
+            waterRate?: number | string;
+            recurringCharges?: components["schemas"]["PropertyRecurringChargeInput"][];
+        } | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
         CaretakerInput: {
             /** Format: email */
             email: string;
@@ -2105,6 +3207,78 @@ export interface components {
             priority: "low" | "normal" | "high" | "urgent";
             photos?: Record<string, never>[];
             vendor_id?: number;
+        };
+        TenantMaintenanceTicketInput: {
+            /** @enum {string} */
+            category: "plumbing" | "electrical" | "structural" | "security" | "other";
+            description: string;
+            /**
+             * @default normal
+             * @enum {string}
+             */
+            priority: "low" | "normal" | "high" | "urgent";
+            /** @description Each image may be up to 5 MB; total evidence is limited to 20 MB. */
+            evidence?: string[];
+        };
+        TenantMaintenanceTicket: {
+            id: number;
+            title: string;
+            description: string;
+            /** @enum {string} */
+            category: "plumbing" | "electrical" | "structural" | "security" | "other";
+            /** @enum {string} */
+            priority: "low" | "normal" | "high" | "urgent";
+            /** @enum {string} */
+            status: "open" | "assigned" | "quotation" | "awaiting_landlord_approval" | "in_progress" | "completed" | "closed";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            evidence: {
+                name: string;
+                /** @enum {string} */
+                content_type: "image/jpeg" | "image/png" | "image/webp";
+                size_bytes: number;
+                download_path: string;
+            }[];
+        };
+        TenantMaintenanceComment: {
+            id: number;
+            /** @enum {string} */
+            sender_role: "tenant" | "staff";
+            sender_name: string;
+            message: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        MaintenanceTicketComment: {
+            id: number;
+            /** @enum {string} */
+            sender_role: "tenant" | "landlord" | "caretaker";
+            sender_name: string;
+            message: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        MaintenanceLedgerEntry: {
+            id: number;
+            ticket_id: string;
+            unit_code: string;
+            tenant_name: string;
+            category: string;
+            description: string;
+            fundi_name: string;
+            cost: string | null;
+            /** Format: date-time */
+            resolved_at: string;
+        };
+        MaintenanceLedger: {
+            month: string;
+            summary: {
+                total_spend: string;
+                total_repairs: number;
+            };
+            ledger: components["schemas"]["MaintenanceLedgerEntry"][];
         };
         VendorInput: {
             branch_id: number;
@@ -2198,6 +3372,98 @@ export interface components {
             /** @enum {string} */
             status?: "Draft" | "Vacant" | "Occupied" | "Notice Given" | "Maintenance" | "Archived";
         };
+        MoveInUnit: {
+            id: number;
+            unitCode: string;
+            roomName: string;
+            floor: string;
+            /** @enum {string} */
+            status: "vacant" | "booked" | "occupied" | "notice_given" | "deposit_pending" | "maintenance" | "archived" | "draft" | "unknown";
+            rentAmount: number;
+            garbageAmount: number;
+            depositAmount: number;
+            securityDeposit: number;
+            waterDeposit: number;
+            monthlyWaterRate: number;
+            tenantId: number | null;
+            currentTenant: string;
+            tenantEmail: string;
+            tenantPhone: string;
+            /** @enum {string|null} */
+            tenantStatus: "active" | "dormant" | null;
+            currentTenantName: string;
+            moveInDate: string;
+            /** Format: date */
+            expectedMoveOutDate: string | null;
+        };
+        MoveInSettlement: {
+            id: number;
+            unit_id: number;
+            tenant_id: number | null;
+            tenant_name: string;
+            /** Format: email */
+            tenant_email: string;
+            tenant_phone: string;
+            deposit_amount: number;
+            rent_amount: number;
+            garbage_amount: number;
+            water_deposit_amount: number;
+            utility_charges: {
+                name: string;
+                amount: string;
+            }[];
+            total_required: number;
+            total_paid: number;
+            deposit_paid_amount: number;
+            outstanding_balance: number;
+            /** Format: date */
+            expected_move_in_date: string;
+            status: string;
+            /** Format: date-time */
+            activation_email_sent_at: string | null;
+            activation_email_error: string | null;
+            cancellation_reason: string | null;
+            /** Format: date-time */
+            booked_at: string | null;
+            /** Format: date-time */
+            activated_at: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            units: {
+                unit_code: string;
+            };
+            payments: {
+                id: number;
+                amount: number;
+                method: string;
+                mpesa_reference: string | null;
+                status: string;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+        };
+        MoveInSettlementSummary: {
+            status: string;
+            total_required: number;
+            total_paid: number;
+            outstanding_balance: number;
+            deposit_amount: number;
+            rent_amount: number;
+            garbage_amount: number;
+            water_deposit_amount: number;
+        };
+        TenantActivationContext: {
+            tenant_id: number;
+            full_name: string;
+            email: string;
+            unit_code: string;
+            property_name: string;
+            identity_required: boolean;
+            /** Format: date-time */
+            expires_at: string;
+        };
         Unit: components["schemas"]["UnitInput"] & {
             id: number;
         };
@@ -2207,6 +3473,18 @@ export interface components {
             location: string;
             rent: string | null;
             rent_charge_id: number | null;
+        };
+        PublicVacancy: {
+            code: string;
+            unit_type: string;
+            bedrooms: number;
+            property_name: string;
+            branch: string;
+            town: string;
+            location: string;
+            rent: string;
+            deposit: string;
+            photos: string[];
         };
         AuditHistoryEvent: {
             id: number;
@@ -2415,13 +3693,17 @@ export interface components {
         };
         Tenant: components["schemas"]["TenantInput"] & {
             id: number;
-            documents: Record<string, never>[];
+            documents: components["schemas"]["TenantDocument"][];
         };
-        TenantDocumentInput: {
+        TenantDocument: {
+            id: number;
             document_type: string;
             name: string;
-            storage_key: string;
-            metadata?: Record<string, never>;
+            metadata: Record<string, never>;
+            uploaded_by: number | null;
+            /** Format: date-time */
+            created_at: string;
+            download_path: string;
         };
         TenancyInput: {
             unit_id: number;
@@ -2441,6 +3723,9 @@ export interface components {
             id: number;
             /** @enum {string} */
             status: "active" | "ended" | "cancelled";
+            unit_code: string;
+            property_name: string;
+            tenant_name: string;
         };
         InvoiceLine: {
             id: number;
@@ -2467,6 +3752,213 @@ export interface components {
             /** Format: date-time */
             issued_at: string;
             lines: components["schemas"]["InvoiceLine"][];
+        };
+        TenantDashboard: {
+            tenant: components["schemas"]["TenantDashboardProfile"];
+            summary: components["schemas"]["TenantDashboardSummary"];
+            invoices: components["schemas"]["TenantDashboardInvoice"][];
+            payments: components["schemas"]["TenantDashboardPayment"][];
+        };
+        TenantDashboardProfile: {
+            id: number;
+            name: string;
+            email: string;
+            phone: string;
+            unit_code: string | null;
+            property_name: string | null;
+            paybill_number?: string | null;
+            /** Format: date */
+            move_in_date: string | null;
+        };
+        TenantDashboardSummary: {
+            /** @description Sum of outstanding issued invoices and applicable overdue penalties after valid allocations and approved waivers. */
+            balance_due: string;
+            /** Format: date */
+            next_due_date: string | null;
+        };
+        TenantDashboardInvoice: {
+            id: number;
+            number: string;
+            /** Format: date */
+            period_start: string;
+            /** Format: date */
+            period_end: string;
+            /** Format: date */
+            due_date: string;
+            /** @enum {string} */
+            status: "settled" | "partial" | "unpaid";
+            total: string;
+            amount_paid: string;
+            waived_amount: string;
+            penalty: string;
+            balance_due: string;
+            lines: components["schemas"]["TenantDashboardInvoiceLine"][];
+        };
+        TenantDashboardInvoiceLine: {
+            id: number;
+            charge_type: string;
+            description: string;
+            amount: string;
+        };
+        TenantDashboardPayment: {
+            id: number;
+            amount: string;
+            reference: string;
+            source: string;
+            status: string;
+            instrument_status: string;
+            /** Format: date-time */
+            received_at: string;
+            allocations: components["schemas"]["TenantDashboardAllocation"][];
+            receipt: components["schemas"]["Receipt"] | null;
+        };
+        TenantDashboardAllocation: {
+            invoice_id: number;
+            invoice_number: string;
+            amount: string;
+        };
+        TenantMoveOutContext: {
+            tenancy_id: number;
+            unit_code: string;
+            property_name: string;
+            notice_period_days: number;
+            notice: components["schemas"]["MoveOutNotice"] | null;
+        };
+        TenantMoveOutNoticeInput: {
+            /** Format: date */
+            proposed_move_out_date: string;
+            reason?: string;
+        };
+        StaffMoveOutNoticeInput: {
+            tenancy_id: number;
+            /** Format: date */
+            proposed_move_out_date: string;
+            reason?: string;
+        };
+        MoveOutNoticeDecision: {
+            /** @enum {string} */
+            action: "accept" | "reject" | "withdraw";
+            review_note?: string;
+        };
+        MoveOutNoticeEnvelope: {
+            notice: components["schemas"]["MoveOutNotice"];
+        };
+        MoveOutNotice: {
+            id: number;
+            tenancy_id: number;
+            tenant_name: string;
+            property_id: number;
+            property_name: string;
+            unit_id: number;
+            unit_code: string;
+            requested_by: number;
+            /** Format: date */
+            proposed_move_out_date: string;
+            /** Format: date */
+            previous_tenancy_end_date: string | null;
+            notice_period_days: number;
+            reason: string;
+            /** @enum {string} */
+            status: "submitted" | "accepted" | "rejected" | "withdrawn";
+            reviewed_by: number | null;
+            /** Format: date-time */
+            reviewed_at: string | null;
+            review_note: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        MoveOutSettlementInput: {
+            tenancy_id: number;
+            notice_id: number;
+            exit_inspection_id: number;
+            /** Format: date */
+            actual_move_out_date: string;
+            final_readings: {
+                utility_type: string;
+                current_value: string | number;
+            }[];
+            damage_items: {
+                description: string;
+                amount: string | number;
+            }[];
+        };
+        MoveOutSettlementDecision: {
+            /** @enum {string} */
+            action: "approve" | "reject";
+            review_note?: string;
+        };
+        MoveOutPayoutInput: {
+            payout_reference?: string;
+            /** Format: date */
+            payout_date: string;
+        };
+        MoveOutSettlementEnvelope: {
+            settlement: components["schemas"]["MoveOutSettlement"];
+        };
+        MoveOutSettlement: {
+            id: number;
+            tenancy_id: number;
+            notice_id: number;
+            exit_inspection_id: number;
+            property_id: number;
+            property_name: string;
+            unit_id: number;
+            unit_code: string;
+            tenant_id: number;
+            tenant_name: string;
+            /** Format: date */
+            actual_move_out_date: string;
+            final_readings: Record<string, never>[];
+            damage_items: Record<string, never>[];
+            deposit_balance: string;
+            arrears_amount: string;
+            utility_amount: string;
+            damages_amount: string;
+            deduction_from_deposit: string;
+            refund_amount: string;
+            /** @description Remaining move-out costs not covered by the deposit; remains recorded as tenant debt. */
+            shortfall_amount: string;
+            /** @enum {string} */
+            status: "awaiting_approval" | "rejected" | "approved" | "paid";
+            prepared_by: number;
+            reviewed_by: number | null;
+            /** Format: date-time */
+            reviewed_at: string | null;
+            rejection_reason: string;
+            payout_reference: string | null;
+            /** Format: date */
+            payout_date: string | null;
+            payout_recorded_by: number | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        MoveOutWorkflowList: {
+            notices: components["schemas"]["MoveOutNotice"][];
+            settlements: components["schemas"]["MoveOutSettlement"][];
+            eligible_tenancies: {
+                tenancy_id: number;
+                unit_id: number;
+                notice_id: number;
+                tenant_name: string;
+                property_name: string;
+                unit_code: string;
+                /** Format: date */
+                move_out_date: string;
+                deposit_balance: string;
+                arrears_amount: string;
+                metered_utilities: {
+                    utility_type: string;
+                    name: string;
+                    meter: string | null;
+                    rate_per_unit: string;
+                    minimum_charge: string;
+                    previous_reading: {
+                        /** Format: date */
+                        period: string;
+                        current_value: string;
+                    } | null;
+                }[];
+            }[];
         };
         MoveInCharge: {
             id: number;
@@ -2544,6 +4036,186 @@ export interface components {
             };
             management_agreements: components["schemas"]["ManagementAgreement"][];
         };
+        LandlordDashboard: {
+            /** Format: date */
+            period_start: string;
+            /** Format: date */
+            period_end: string;
+            summary: components["schemas"]["LandlordDashboardMetrics"];
+            properties: components["schemas"]["LandlordDashboardProperty"][];
+        };
+        LandlordDashboardMetrics: {
+            total_units: number;
+            occupied_units: number;
+            /** @description Current-month issued invoice total, including rent and billed charges. */
+            expected_rent: string;
+            /** @description Valid payment allocations to current-month invoices; amounts are not split by invoice line. */
+            collected_rent: string;
+            arrears: string;
+            approved_expenses: string;
+            pending_expenses: string;
+            pending_expense_count: number;
+            open_maintenance_count: number;
+            occupancy_rate: number;
+        };
+        LandlordDashboardProperty: {
+            id: number;
+            name: string;
+            location: string;
+            total_units: number;
+            occupied_units: number;
+            /** @description Current-month issued invoice total, including rent and billed charges. */
+            expected_rent: string;
+            /** @description Valid payment allocations to current-month invoices; amounts are not split by invoice line. */
+            collected_rent: string;
+            arrears: string;
+            approved_expenses: string;
+            pending_expenses: string;
+            pending_expense_count: number;
+            open_maintenance_count: number;
+            occupancy_rate: number;
+        };
+        LandlordStatement: {
+            landlord: {
+                id: number;
+                name: string;
+            };
+            /** Format: date */
+            period_start: string;
+            /** Format: date */
+            period_end: string;
+            /** @constant */
+            commission_basis: "collected_invoice_allocations";
+            /** @enum {string} */
+            commission_status: "configured" | "not_configured";
+            /** @enum {string} */
+            tax_status: "configured" | "not_configured" | "not_applicable";
+            summary: {
+                billed_rent: string;
+                /** @description Payments allocated to invoices, including non-rent charges where present. */
+                collected_invoice_allocations: string;
+                arrears: string;
+                commission: string;
+                /** @description Approved expenses with an effective date in the statement period. */
+                expenses: string;
+                /** @description Approved quotation allocations charged to the landlord during the statement period. */
+                maintenance_costs: string;
+                tax: string | null;
+                /** @description Null when commission or applicable tax configuration is incomplete. */
+                net_payout: string | null;
+            };
+            properties: {
+                property_id: number;
+                property: string;
+                billed_rent: string;
+                collected_invoice_allocations: string;
+                arrears: string;
+                expenses: string;
+                maintenance_costs: string;
+            }[];
+            maintenance_cost_allocations: {
+                id: number;
+                quotation_id: number;
+                ticket_id: number;
+                ticket_title: string;
+                property_id: number;
+                property: string;
+                unit_code: string | null;
+                vendor: string;
+                description: string;
+                reason: string;
+                amount: string;
+                /** Format: date-time */
+                allocated_at: string;
+            }[];
+        };
+        LandlordMaintenanceQuotationApprovalList: {
+            quotations: {
+                id: number;
+                ticket_id: number;
+                ticket_title: string;
+                ticket_description: string;
+                property_id: number;
+                property_name: string;
+                unit_code: string | null;
+                vendor_name: string;
+                vendor_trade: string;
+                description: string;
+                amount: string;
+                approval_threshold: string;
+                /** Format: date */
+                valid_until: string | null;
+                /** Format: date-time */
+                submitted_at: string;
+            }[];
+        };
+        LandlordMaintenanceQuotationDecision: {
+            approved: boolean;
+            rejection_reason?: string;
+        };
+        CreateLandlordRemittanceRequest: {
+            landlord_id: number;
+            /** Format: date */
+            period_start: string;
+            /** Format: date */
+            period_end: string;
+        };
+        LandlordRemittanceDecision: {
+            /** @enum {string} */
+            action: "approve" | "reject";
+            review_note?: string;
+        };
+        LandlordRemittancePayout: {
+            payout_reference: string;
+            /** Format: date */
+            payout_date: string;
+        };
+        LandlordRemittanceList: {
+            landlords: {
+                id: number;
+                name: string;
+            }[];
+            remittances: components["schemas"]["LandlordRemittance"][];
+        };
+        LandlordRemittanceEnvelope: {
+            remittance: components["schemas"]["LandlordRemittance"];
+        };
+        LandlordRemittance: {
+            id: number;
+            landlord: {
+                id: number;
+                name: string;
+            };
+            /** Format: date */
+            period_start: string;
+            /** Format: date */
+            period_end: string;
+            revision: number;
+            summary: {
+                billed_rent: string;
+                collected_invoice_allocations: string;
+                arrears: string;
+                commission: string;
+                expenses: string;
+                tax: string | null;
+                net_payout: string;
+            };
+            /** @enum {string} */
+            commission_status: "configured" | "not_configured";
+            /** @enum {string} */
+            tax_status: "configured" | "not_configured" | "not_applicable";
+            /** @enum {string} */
+            status: "awaiting_approval" | "rejected" | "approved" | "paid" | "no_payout";
+            prepared_by: number;
+            reviewed_by: number | null;
+            rejection_reason: string;
+            payout_reference: string | null;
+            /** Format: date */
+            payout_date: string | null;
+            payout_recorded_by: number | null;
+            /** Format: date-time */
+            created_at: string;
+        };
         LandlordInput: {
             branch_id: number;
             name: string;
@@ -2568,6 +4240,31 @@ export interface components {
                 name: string;
                 town: string;
             }[];
+        };
+        PortalProfileResponse: {
+            profile: {
+                full_name: string;
+                /** Format: email */
+                email: string;
+                phone: string;
+                role?: string;
+                status?: string;
+                /** Format: date-time */
+                created_at?: string;
+            };
+        };
+        PortalProfileUpdate: {
+            fullName: string;
+            /** Format: email */
+            email?: string;
+            phone: string;
+        };
+        PortalProfileUpdateResponse: {
+            success: boolean;
+            message: string;
+        };
+        PortalOnboardingResponse: {
+            success: boolean;
         };
         HealthResponse: {
             /**
@@ -2738,6 +4435,73 @@ export interface operations {
             403: components["responses"]["Problem"];
         };
     };
+    requestPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Request accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        success: true;
+                        message: string;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    confirmPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    uid: string;
+                    token: string;
+                    /** Format: password */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Password updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        success: true;
+                        message: string;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+        };
+    };
     verifyAuthSmsChallenge: {
         parameters: {
             query?: never;
@@ -2792,6 +4556,212 @@ export interface operations {
             401: components["responses"]["Problem"];
         };
     };
+    getLandlordPortalProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Landlord profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalProfileResponse"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    updateLandlordPortalProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalProfileUpdate"];
+            };
+        };
+        responses: {
+            /** @description Profile updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalProfileUpdateResponse"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getLandlordOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Onboarding state and initial property name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        fullName: string;
+                        propertyName: string;
+                        onboardingCompleted: boolean;
+                        tutorialCompleted: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    completeLandlordOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    tutorialCompleted?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Onboarding state saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalOnboardingResponse"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getCaretakerPortalProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Caretaker profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalProfileResponse"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    updateCaretakerPortalProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalProfileUpdate"];
+            };
+        };
+        responses: {
+            /** @description Profile updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalProfileUpdateResponse"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getCaretakerOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Onboarding state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        fullName: string;
+                        tutorialCompleted: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    completeCaretakerOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    tutorialCompleted?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Onboarding state saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalOnboardingResponse"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
     logout: {
         parameters: {
             query?: never;
@@ -2816,7 +4786,7 @@ export interface operations {
             401: components["responses"]["Problem"];
         };
     };
-    registerLandlordPortal: {
+    registerTenantPortal: {
         parameters: {
             query?: never;
             header?: never;
@@ -2832,20 +4802,26 @@ export interface operations {
                     phone: string;
                     /** Format: password */
                     password: string;
-                    property_name: string;
                 };
             };
         };
         responses: {
-            /** @description Landlord account and initial property created */
+            /** @description Resident account and session created; agency linkage is pending. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        user: components["schemas"]["AuthUser"];
+                        /** @constant */
+                        status: "awaiting_agency_linkage";
+                    };
+                };
             };
             400: components["responses"]["Problem"];
             409: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
         };
     };
     listCaretakerInvitations: {
@@ -3048,6 +5024,922 @@ export interface operations {
             };
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+        };
+    };
+    getLandlordDashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Landlord portfolio dashboard */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordDashboard"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    listLandlordProperties: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Properties owned by the authenticated landlord */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        properties: (components["schemas"]["Property"] & {
+                            recurringCharges: {
+                                id: number;
+                                name: string;
+                                amount: string;
+                                is_active: boolean;
+                            }[];
+                        })[];
+                        activePropertyId: number | null;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createLandlordProperty: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LandlordPropertyCreateInput"];
+            };
+        };
+        responses: {
+            /** @description The created property and active property selection */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        property: components["schemas"]["Property"] & {
+                            recurringCharges: components["schemas"]["PropertyRecurringCharge"][];
+                        };
+                        activePropertyId: number;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    updateLandlordProperty: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LandlordPropertyUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description The updated property or active property selection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        activePropertyId: number;
+                    } | {
+                        property: components["schemas"]["Property"] & {
+                            recurringCharges: components["schemas"]["PropertyRecurringCharge"][];
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    getLandlordBillingSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Billing settings for the active property */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        settings: components["schemas"]["PropertyBillingSettings"];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    updateLandlordBillingSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    paybillNumber?: string;
+                    accountNumber?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated billing settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        settings: components["schemas"]["PropertyBillingSettings"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    listLandlordUnits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Units in properties owned by the authenticated landlord */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        units: components["schemas"]["Unit"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    listLandlordMoveInUnits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active-property units */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        units: components["schemas"]["MoveInUnit"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    listLandlordMoveInSettlements: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open settlements for the active property */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        settlements: components["schemas"]["MoveInSettlement"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createLandlordMoveInSettlement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    unitId: number;
+                    tenantName: string;
+                    /** Format: email */
+                    tenantEmail: string;
+                    tenantPhone: string;
+                    /** Format: date */
+                    expectedMoveInDate: string;
+                    depositAmount?: number;
+                    rentAmount: number;
+                    garbageAmount?: number;
+                    waterDepositAmount?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Move-in settlement created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        settlement: components["schemas"]["MoveInSettlement"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    cancelLandlordMoveInSettlement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    settlementId: number;
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Reservation cancelled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        settlement: components["schemas"]["MoveInSettlement"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    updateLandlordMoveInSettlement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    settlementId: number;
+                    amount: number;
+                    mpesaReference?: string;
+                } | {
+                    settlementId: number;
+                    /** @constant */
+                    sendActivationEmail: true;
+                };
+            };
+        };
+        responses: {
+            /** @description Payment recorded or activation email sent */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        settlement: components["schemas"]["MoveInSettlement"];
+                        bookingConfirmed: boolean;
+                        activationReady: boolean;
+                    } | {
+                        success: boolean;
+                        message: string;
+                        settlement: {
+                            id: number;
+                            /** Format: date-time */
+                            activation_email_sent_at: string;
+                            activation_email_error: null;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            502: components["responses"]["Problem"];
+        };
+    };
+    createOrUpdateMoveInStkPayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    action: "create" | "attach" | "fail";
+                    settlementId?: number;
+                    amount?: number;
+                    paymentId?: number;
+                    checkoutRequestId?: string;
+                    description?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Payment attempt updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        paymentId: number;
+                        settlementId: number;
+                    } | {
+                        updated: boolean;
+                    };
+                };
+            };
+            /** @description Pending payment attempt created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        paymentId: number;
+                        tenantPhone: string;
+                        settlementId: number;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    updateUnitOccupancy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    unitId: number;
+                    /** @enum {string} */
+                    status: "vacant" | "occupied" | "offboarding" | "notice_given" | "maintenance";
+                };
+            };
+        };
+        responses: {
+            /** @description Unit status updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        success: boolean;
+                        unit: {
+                            id: number;
+                            status: string;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    manageUnitAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    unitId: number;
+                    /** @enum {string} */
+                    action: "mark_maintenance" | "mark_vacant" | "log_notice" | "revoke_notice" | "offboard_tenant" | "immediate_evacuation";
+                };
+            };
+        };
+        responses: {
+            /** @description Unit action completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            /** @description The move-out action has been retired. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTenantPortalProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        profile: {
+                            fullName: string;
+                            email: string;
+                            phone: string;
+                            /** Format: date */
+                            moveInDate: string | null;
+                            securityDeposit: number;
+                            waterDeposit: number;
+                            deposit: number;
+                            unitCode: string | null;
+                            floor: string | null;
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    updateTenantPortalProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    fullName: string;
+                    /** Format: email */
+                    email: string;
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Profile updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        success: boolean;
+                        message: string;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    getTenantOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant onboarding state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        fullName: string;
+                        tutorialCompleted: boolean;
+                        isMigrated: boolean;
+                        moveInSettlement: components["schemas"]["MoveInSettlementSummary"] | null;
+                        transitionSettings: {
+                            first_online_billing_month: string | null;
+                        } | null;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    updateTenantOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    tutorialCompleted?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Tutorial state saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        success: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    getTenantUnitStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unit and tenancy status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "no_unit" | "vacant" | "booked" | "occupied" | "notice_given" | "deposit_pending" | "maintenance" | "archived" | "draft" | "unknown";
+                        unitCode: string | null;
+                        assignmentStatus?: string;
+                        /** Format: date */
+                        moveInDate?: string;
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    receiveMoveInMpesaCallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    checkout_request_id: string;
+                    result_code: number;
+                    amount?: number;
+                    reference?: string;
+                    result_description?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Callback accepted or unmatched */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        matched: boolean;
+                        applied?: boolean;
+                        duplicate?: boolean;
+                        reason?: string;
+                    };
+                };
+            };
+            /** @description Invalid callback payload */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        matched: boolean;
+                        error: string;
+                    };
+                };
+            };
+            /** @description Callback could not be processed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        matched: boolean;
+                        applied: boolean;
+                        reason: string;
+                    };
+                };
+            };
+        };
+    };
+    getLandlordStatement: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                format?: "json" | "csv";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Landlord statement or downloadable CSV export */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordStatement"];
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listLandlordMaintenanceQuotationApprovals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pending landlord quotation approvals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordMaintenanceQuotationApprovalList"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    decideLandlordMaintenanceQuotation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quotation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LandlordMaintenanceQuotationDecision"];
+            };
+        };
+        responses: {
+            /** @description Quotation decision recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listLandlordRemittances: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Remittance history and selectable landlords */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordRemittanceList"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createLandlordRemittance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLandlordRemittanceRequest"];
+            };
+        };
+        responses: {
+            /** @description Remittance awaiting independent review */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordRemittanceEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    decideLandlordRemittance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                remittance_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LandlordRemittanceDecision"];
+            };
+        };
+        responses: {
+            /** @description Remittance decision recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordRemittanceEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    recordLandlordRemittancePayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                remittance_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LandlordRemittancePayout"];
+            };
+        };
+        responses: {
+            /** @description Payout record saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandlordRemittanceEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
         };
     };
     listLandlords: {
@@ -3365,6 +6257,55 @@ export interface operations {
             403: components["responses"]["Problem"];
         };
     };
+    listMaintenanceLedgerMonths: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available ledger months */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        months: string[];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    listMaintenanceLedger: {
+        parameters: {
+            query?: {
+                month?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Monthly maintenance ledger */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceLedger"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
     listVendors: {
         parameters: {
             query?: {
@@ -3586,6 +6527,8 @@ export interface operations {
                     /** @enum {string} */
                     status: "open" | "assigned" | "quotation" | "awaiting_landlord_approval" | "in_progress" | "completed" | "closed";
                     assigned_to?: number;
+                    fundi_name?: string;
+                    repair_cost?: number;
                 };
             };
         };
@@ -3598,6 +6541,33 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listMaintenanceTicketComments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ticket comments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        comments: components["schemas"]["MaintenanceTicketComment"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
         };
@@ -3625,11 +6595,44 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        comment: components["schemas"]["MaintenanceTicketComment"];
+                    };
+                };
             };
             400: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+        };
+    };
+    getMaintenanceTicketEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: number;
+                evidence_index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Private evidence image */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
         };
     };
     listPropertyCaretakerAssignments: {
@@ -3762,6 +6765,35 @@ export interface operations {
             401: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+        };
+    };
+    getPublicVacancies: {
+        parameters: {
+            query?: {
+                branch?: string;
+                area?: string;
+                type?: string;
+                rent_min?: number;
+                rent_max?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public vacancy listings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        listings: components["schemas"]["PublicVacancy"][];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
         };
     };
     createUnit: {
@@ -4876,6 +7908,55 @@ export interface operations {
             404: components["responses"]["Problem"];
         };
     };
+    getMoveInStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenancy_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Move-in invoice payment status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tenancy_id: number;
+                        /** @enum {string} */
+                        unit_status: "vacant" | "booked" | "occupied" | "maintenance";
+                        /** Format: date */
+                        start_date: string;
+                        invoice: {
+                            id: number;
+                            number: string;
+                            total: string;
+                            confirmed_paid: string;
+                            recorded_amount: string;
+                            outstanding: string;
+                            /** @enum {string} */
+                            status: "unpaid" | "partially_paid" | "paid";
+                            payments: {
+                                reference: string;
+                                source: string;
+                                instrument_status: string;
+                                amount: string;
+                                /** Format: date-time */
+                                received_at: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
     getMoveInAgreementPdf: {
         parameters: {
             query?: never;
@@ -4977,7 +8058,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TenantActivationContext"];
+                };
             };
             400: components["responses"]["Problem"];
         };
@@ -5003,7 +8086,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TenantActivationContext"];
+                };
             };
             400: components["responses"]["Problem"];
         };
@@ -5025,6 +8110,8 @@ export interface operations {
                     /** Format: email */
                     email?: string;
                     phone?: string;
+                    /** @description Required when the activation context marks a new move-in tenant as identity_required. */
+                    national_id_or_passport?: string;
                     password: string;
                 } | unknown | unknown;
             };
@@ -5039,6 +8126,417 @@ export interface operations {
             };
             400: components["responses"]["Problem"];
             409: components["responses"]["Problem"];
+        };
+    };
+    getTenantDashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant-scoped billing dashboard */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDashboard"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    getTenantMoveOutNotice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active tenancy and its current move-out notice */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantMoveOutContext"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    submitTenantMoveOutNotice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantMoveOutNoticeInput"];
+            };
+        };
+        responses: {
+            /** @description Notice submitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutNoticeEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    withdrawTenantMoveOutNotice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notice_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Notice withdrawn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutNoticeEnvelope"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    listMoveOutWorkflows: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Move-out workflow items and settlements ready for preparation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutWorkflowList"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createStaffMoveOutNotice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StaffMoveOutNoticeInput"];
+            };
+        };
+        responses: {
+            /** @description Staff-recorded notice */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutNoticeEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    decideMoveOutNotice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notice_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveOutNoticeDecision"];
+            };
+        };
+        responses: {
+            /** @description Updated notice */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutNoticeEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    createMoveOutSettlement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveOutSettlementInput"];
+            };
+        };
+        responses: {
+            /** @description Settlement awaiting approval */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutSettlementEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    decideMoveOutSettlement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                settlement_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveOutSettlementDecision"];
+            };
+        };
+        responses: {
+            /** @description Reviewed settlement */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutSettlementEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    recordMoveOutPayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                settlement_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveOutPayoutInput"];
+            };
+        };
+        responses: {
+            /** @description Payout recorded and settlement closed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveOutSettlementEnvelope"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    listTenantMaintenanceTickets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant-owned maintenance requests */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tickets: components["schemas"]["TenantMaintenanceTicket"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    createTenantMaintenanceTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["TenantMaintenanceTicketInput"];
+            };
+        };
+        responses: {
+            /** @description Maintenance request created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ticket: components["schemas"]["TenantMaintenanceTicket"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    listTenantMaintenanceTicketComments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tenant-visible request comments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        comments: components["schemas"]["TenantMaintenanceComment"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    addTenantMaintenanceTicketComment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    body: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Comment added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        comment: components["schemas"]["TenantMaintenanceComment"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
+    getTenantMaintenanceEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket_id: number;
+                evidence_index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Private evidence image */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
         };
     };
     createTenant: {
@@ -5101,19 +8599,70 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TenantDocumentInput"];
+                "multipart/form-data": {
+                    /** @enum {string} */
+                    document_type: "signed_agreement" | "identity_document" | "proof_of_payment" | "other";
+                    name: string;
+                    tenancy_id?: number;
+                    /** Format: binary */
+                    file: string;
+                };
             };
         };
         responses: {
-            /** @description Document metadata created */
+            /** @description Document uploaded */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        document?: {
+                            id: number;
+                            document_type: string;
+                            name: string;
+                            download_path: string;
+                        };
+                    };
+                };
             };
             400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
+        };
+    };
+    getTenantDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: number;
+                document_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Private tenant document */
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    "X-Content-Type-Options"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            503: components["responses"]["Problem"];
         };
     };
     listInspections: {

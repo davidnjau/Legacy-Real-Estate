@@ -2,7 +2,7 @@ name: Packages
 
 on:
   pull_request:
-    branches: [develop, main]
+    branches: [staging, develop, main]
     paths:
       - "packages/**"
       - "docs/api-guidelines.md"
@@ -11,15 +11,18 @@ on:
       - "apps/core/**"
       - "apps/website/**"
       - "tools/local/**"
+      - "tools/staging/**"
       - "docs/srs/**"
       - "docs/data-dictionary.md"
       - "README.md"
       - "Makefile"
       - ".github/workflows/packages.yml"
+      - ".github/workflows/deploy-staging.yml"
       - "pnpm-lock.yaml"
       - "package.json"
       - "pnpm-workspace.yaml"
       - "turbo.json"
+  workflow_call:
   push:
     branches: [develop, main]
     paths:
@@ -30,11 +33,13 @@ on:
       - "apps/core/**"
       - "apps/website/**"
       - "tools/local/**"
+      - "tools/staging/**"
       - "docs/srs/**"
       - "docs/data-dictionary.md"
       - "README.md"
       - "Makefile"
       - ".github/workflows/packages.yml"
+      - ".github/workflows/deploy-staging.yml"
       - "pnpm-lock.yaml"
       - "package.json"
       - "pnpm-workspace.yaml"
@@ -53,18 +58,40 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Verify Supabase SDK and credentials remain absent
+        run: |
+          if grep -rn -i "supabase" apps/website/app apps/website/lib apps/website/components; then
+            echo "Error: Supabase references detected in apps/website runtime code!"
+            exit 1
+          fi
       - run: pnpm --filter @legacy/website lint
       - run: pnpm --filter @legacy/website build
-        env:
-          NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.invalid
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-build-placeholder
-          SUPABASE_SERVICE_ROLE_KEY: ci-build-placeholder
 
   local-stack:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker compose -f tools/local/docker-compose.yml config -q
+      - run: docker compose -f tools/staging/docker-compose.yml config -q
+        env:
+          DJANGO_SECRET_KEY: ci-placeholder-secret-not-for-reuse
+          DJANGO_DEBUG: "0"
+          DJANGO_ALLOWED_HOSTS: localhost
+          CORS_ALLOWED_ORIGINS: http://localhost
+          AUTH_SMS_BACKEND: ""
+          POSTGRES_DB: legacy_core
+          POSTGRES_USER: legacy
+          POSTGRES_PASSWORD: ci-placeholder-password
+          RABBITMQ_DEFAULT_USER: ci-placeholder-user
+          RABBITMQ_DEFAULT_PASS: ci-placeholder-password
+          RABBITMQ_ERLANG_COOKIE: ci-placeholder-cookie
+          MINIO_ROOT_USER: ci-placeholder-user
+          MINIO_ROOT_PASSWORD: ci-placeholder-password
+          OBJECT_STORAGE_ACCESS_KEY: ci-placeholder-access
+          OBJECT_STORAGE_SECRET_KEY: ci-placeholder-secret
+          OBJECT_STORAGE_BUCKET: legacy-private
+          OBJECT_STORAGE_REGION: us-east-1
+          STAGING_DOMAIN: localhost
 
   contract:
     runs-on: ubuntu-latest

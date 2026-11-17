@@ -1,22 +1,36 @@
 import { NextResponse } from 'next/server';
-
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api/v1';
+import { djangoProxyFailure, forwardDjangoRequest } from '../../../../lib/django-proxy';
 
 export async function POST(request: Request) {
-  const response = await fetch(`${apiBaseUrl}/auth/logout`, {
-    method: 'POST',
-    headers: {
-      Cookie: request.headers.get('cookie') || '',
-      'X-CSRFToken': request.headers.get('x-csrftoken') || '',
-    },
-    cache: 'no-store',
-  });
-  const result = new NextResponse(await response.text(), {
-    status: response.status,
-    headers: { 'Content-Type': response.headers.get('content-type') || 'application/json' },
-  });
-  for (const cookie of response.headers.getSetCookie()) {
-    result.headers.append('Set-Cookie', cookie);
+  try {
+    const response = await forwardDjangoRequest(request, '/auth/logout', { body: {} });
+    response.cookies.delete('demo_role');
+    return response;
+  } catch (error) {
+    return djangoProxyFailure(error, 'Unable to sign out.');
   }
-  return result;
+}
+
+export async function GET(request: Request) {
+  try {
+    const logoutResponse = await forwardDjangoRequest(request, '/auth/logout', {
+      method: 'POST',
+      body: {},
+    });
+    if (!logoutResponse.ok && logoutResponse.status !== 401) {
+      return logoutResponse;
+    }
+    const response = new NextResponse(null, {
+      status: 303,
+      headers: { Location: '/login' },
+    });
+    for (const cookie of logoutResponse.headers.getSetCookie()) {
+      response.headers.append('Set-Cookie', cookie);
+    }
+    response.cookies.delete('demo_role');
+    response.cookies.delete('sessionid');
+    return response;
+  } catch (error) {
+    return djangoProxyFailure(error, 'Unable to sign out.');
+  }
 }

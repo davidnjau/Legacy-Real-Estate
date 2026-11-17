@@ -3,7 +3,7 @@ from django.shortcuts import get_object_or_404
 from users.models import Branch
 
 
-def accessible_branches(user):
+def accessible_branches(user, role_names=None):
     if not user.is_authenticated:
         return Branch.objects.none()
 
@@ -11,7 +11,7 @@ def accessible_branches(user):
     if profile is None:
         return Branch.objects.none()
 
-    return profile.accessible_branches()
+    return profile.accessible_branches(role_names=role_names)
 
 
 def get_accessible_branch_or_404(user, branch_id):

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Home, Wrench, LogOut, UserCircle } from 'lucide-react';
+import { Home, Wrench, LogOut, UserCircle, DoorOpen } from 'lucide-react';
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -13,51 +13,93 @@ export function Sidebar() {
   const [propertyName, setPropertyName] = useState('...');
 
   useEffect(() => {
-    fetch('/api/tenant/profile').then((res) => res.json()).then((data) => {
-      if (data.profile) setIdentity({ unitCode: data.profile.unitCode || '-', name: data.profile.fullName || 'Tenant' });
-    }).catch(() => undefined);
-    
-    fetch('/api/system/config').then((res) => res.json()).then((data) => {
-      if (data.propertyName) setPropertyName(data.propertyName);
-    }).catch(() => undefined);
+    const loadTenant = async () => {
+      try {
+        const response = await fetch('/api/tenant/invoices', { cache: 'no-store' });
+        const data = await response.json();
+        if (response.ok && data.tenant?.name) {
+          setIdentity({
+            unitCode: data.tenant?.unit_code || 'NAI-SV-A3',
+            name: data.tenant?.name || 'Resident',
+          });
+          setPropertyName(data.tenant?.property_name || 'Sunset Villas');
+          return;
+        }
+      } catch {
+        // continue to auth/me fallback
+      }
+
+      try {
+        const authRes = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (authRes.ok) {
+          const authData = await authRes.json();
+          if (authData.user) {
+            setIdentity({
+              unitCode: 'NAI-SV-A3',
+              name: authData.user.name || 'Resident',
+            });
+            setPropertyName('Sunset Villas (Resident Hub)');
+            return;
+          }
+        }
+      } catch {
+        // fallback to default
+      }
+
+      setIdentity({ unitCode: 'NAI-SV-A3', name: 'Brian Omondi' });
+      setPropertyName('Sunset Villas (Resident Hub)');
+    };
+    void loadTenant();
   }, []);
 
   const handleLogout = async () => {
-    const csrf = await fetch('/api/auth/csrf').then((response) => response.json());
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrf.csrfToken || '' },
-    });
-    router.push('/login');
-    router.refresh();
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // ignore
+    } finally {
+      window.location.href = '/api/auth/logout';
+    }
   };
 
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col">
-      <div className="p-6">
-        <h1 className="text-xl font-bold tracking-tight">{propertyName === '...' ? 'Welcome' : propertyName}</h1>
-        <p className="text-sm text-emerald-400 mt-1 font-medium">Unit {identity.unitCode} • {identity.name}</p>
+    <aside className="w-64 bg-[#102820] text-white flex flex-col h-full border-r border-emerald-950/60 shrink-0">
+      <div className="p-5 border-b border-emerald-900/40">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
+            L
+          </span>
+          <h1 className="text-lg font-bold tracking-tight">{propertyName === '...' ? 'Resident Hub' : propertyName}</h1>
+        </div>
+        <p className="text-xs text-emerald-300 mt-1 font-semibold">Unit {identity.unitCode || 'NAI-SV-A3'} • {identity.name || 'Resident'}</p>
       </div>
 
-      <nav className="flex-1 px-4 space-y-2 mt-4">
-        <Link href="/tenant/dashboard" data-tour-id="tenant-nav-dashboard" className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${pathname === '/tenant/dashboard' ? 'bg-emerald-600 text-white font-bold' : 'hover:bg-slate-800'}`}>
-          <Home size={20} className={pathname === '/tenant/dashboard' ? 'text-white' : 'text-slate-400'} />
-          <span className="font-medium">Dashboard & Billing</span>
+      <nav className="flex-1 px-3 space-y-1.5 mt-4 overflow-y-auto">
+        <Link href="/tenant/dashboard" data-tour-id="tenant-nav-dashboard" className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${pathname === '/tenant/dashboard' ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'hover:bg-white/10 text-slate-300'}`}>
+          <Home size={16} className={pathname === '/tenant/dashboard' ? 'text-white' : 'text-emerald-300/80'} />
+          <span>Dashboard & Billing</span>
         </Link>
-        <Link href="/tenant/maintenance" data-tour-id="tenant-nav-maintenance" className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isOffboarding ? 'opacity-50 cursor-not-allowed pointer-events-none' : (pathname === '/tenant/maintenance' ? 'bg-emerald-600 text-white font-bold' : 'hover:bg-slate-800')}`}>
-          <Wrench size={20} className={pathname === '/tenant/maintenance' ? 'text-white' : 'text-slate-400'} />
-          <span className="font-medium">Maintenance</span>
+        <Link href="/tenant/dashboard#move-out-notice" data-tour-id="tenant-nav-move-out" className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-slate-300 transition-colors hover:bg-white/10 hover:text-white">
+          <DoorOpen size={16} className="text-emerald-300/80" />
+          <span>Move-Out Notice</span>
         </Link>
-        <Link href="/tenant/profile" data-tour-id="tenant-nav-profile" className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${pathname === '/tenant/profile' ? 'bg-emerald-600 text-white font-bold' : 'hover:bg-slate-800'}`}><UserCircle size={20} /><span className="font-medium">Profile</span></Link>
+        <Link href="/tenant/maintenance" data-tour-id="tenant-nav-maintenance" className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${isOffboarding ? 'opacity-50 cursor-not-allowed pointer-events-none' : (pathname === '/tenant/maintenance' ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'hover:bg-white/10 text-slate-300')}`}>
+          <Wrench size={16} className={pathname === '/tenant/maintenance' ? 'text-white' : 'text-emerald-300/80'} />
+          <span>Maintenance</span>
+        </Link>
+        <Link href="/tenant/profile" data-tour-id="tenant-nav-profile" className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${pathname === '/tenant/profile' ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'hover:bg-white/10 text-slate-300'}`}>
+          <UserCircle size={16} className={pathname === '/tenant/profile' ? 'text-white' : 'text-emerald-300/80'} />
+          <span>Profile</span>
+        </Link>
       </nav>
 
-      <div className="p-4 border-t border-slate-800">
+      <div className="p-4 border-t border-emerald-900/40">
         <button 
           onClick={handleLogout}
-          className="flex items-center gap-3 px-3 py-2 w-full text-left rounded-lg hover:bg-slate-800 transition-colors text-red-400"
+          className="flex items-center gap-2.5 px-3 py-2 w-full text-left rounded-xl hover:bg-red-500/15 transition-colors text-red-300 text-xs font-semibold"
         >
-          <LogOut size={20} />
-          <span className="font-medium">Log Out</span>
+          <LogOut size={16} />
+          <span>Sign Out</span>
         </button>
       </div>
     </aside>

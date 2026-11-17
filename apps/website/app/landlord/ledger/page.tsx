@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Download, Calendar, ChevronDown, CheckCircle, AlertCircle, Clock, Info } from 'lucide-react';
+import { Calendar, ChevronDown, CheckCircle, AlertCircle, Clock, Info } from 'lucide-react';
 import { LedgerTable } from '../../../components/landlord/LedgerTable';
 
 type LedgerEntry = {
@@ -152,9 +152,6 @@ export default function FinancialLedger() {
             <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
           </div>
 
-          <button type="button" onClick={() => window.alert('Exporting to Excel... (Demo)')} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-medium transition-colors">
-            <Download size={18} /> Export
-          </button>
         </div>
       </div>
 

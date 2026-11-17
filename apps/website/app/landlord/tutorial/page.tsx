@@ -7,7 +7,7 @@ import { ArrowLeft, ArrowRight, CheckCircle2 } from 'lucide-react';
 const steps = [
   { title: 'Start with your units', text: 'Add your rooms and property details from Units & Tenants, or bring an existing spreadsheet through Migration Setup.', href: '/landlord/units' },
   { title: 'Connect your tenants', text: 'Invite existing tenants to activate their accounts, or create a move-in settlement for a new tenant.', href: '/landlord/units' },
-  { title: 'Capture water readings', text: 'Your caretaker records monthly readings so each bill reflects actual consumption.', href: '/caretaker/water-readings' },
+  { title: 'Capture water readings', text: 'Your caretaker records monthly readings so each bill reflects actual consumption.', href: '/caretaker/meters' },
   { title: 'Prepare monthly bills', text: 'The Billing Wizard calculates rent, garbage, water, and carried arrears before you publish invoices.', href: '/landlord/billing' },
   { title: 'Track the ledger', text: 'Use the Financial Ledger to follow collections, balances, and move-in settlements over time.', href: '/landlord/ledger' },
   { title: 'Keep operations moving', text: 'Tenants can report maintenance issues, while you manage staff and caretakers from the portal.', href: '/landlord/maintenance' },

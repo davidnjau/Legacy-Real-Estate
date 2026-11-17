@@ -5,6 +5,7 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:800
 type ProxyOptions = {
   method?: string;
   body?: unknown;
+  formData?: FormData;
 };
 
 function mergeCookies(...cookieStrings: string[]) {
@@ -58,15 +59,20 @@ export async function forwardDjangoRequest(
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method,
     headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body: options.formData || (
+      options.body === undefined ? undefined : JSON.stringify(options.body)
+    ),
     cache: 'no-store',
   });
   const contentType = response.headers.get('content-type') || 'application/json';
-  let responseBody = await response.text();
+  const contentDisposition = response.headers.get('content-disposition');
+  let responseBody: string | ArrayBuffer = contentType.startsWith('image/') || contentType === 'application/pdf'
+    ? await response.arrayBuffer()
+    : await response.text();
   let responseContentType = contentType;
   if (contentType.includes('application/problem+json')) {
     try {
-      const problem = JSON.parse(responseBody);
+      const problem = JSON.parse(responseBody as string);
       responseBody = JSON.stringify({ error: problem.detail || problem.title || 'The request failed.' });
       responseContentType = 'application/json';
     } catch (error) {
@@ -76,7 +82,16 @@ export async function forwardDjangoRequest(
 
   const result = new NextResponse(responseBody, {
     status: response.status,
-    headers: { 'Content-Type': responseContentType },
+    headers: {
+      'Content-Type': responseContentType,
+      ...(contentDisposition ? { 'Content-Disposition': contentDisposition } : {}),
+      ...(response.headers.get('cache-control')
+        ? { 'Cache-Control': response.headers.get('cache-control')! }
+        : {}),
+      ...(response.headers.get('x-content-type-options')
+        ? { 'X-Content-Type-Options': response.headers.get('x-content-type-options')! }
+        : {}),
+    },
   });
   for (const cookie of response.headers.getSetCookie()) {
     result.headers.append('Set-Cookie', cookie);

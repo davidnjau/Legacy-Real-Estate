@@ -1,157 +1,137 @@
-import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
-import { requireApiRole } from '../../../../lib/api-auth';
-import { getActivePropertyId, getPropertyUnitIds } from '../../../../lib/property-access';
+import { djangoProxyFailure, forwardDjangoRequest } from '../../../../lib/django-proxy';
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
+type DjangoTicket = {
+  id: number;
+  property_id: number;
+  property_name: string;
+  category: string;
+  description: string;
+  priority: string;
+  status: string;
+  unit_code: string | null;
+  reported_by_name: string;
+  assigned_to: number | null;
+  created_at: string;
+  assigned_to_name: string | null;
+  can_update: boolean;
+  evidence: Array<{ name: string; download_path: string }>;
+};
 
-export async function GET() {
+const pendingStatuses = new Set([
+  'open',
+  'assigned',
+  'quotation',
+  'awaiting_landlord_approval',
+]);
+
+export async function GET(request: Request) {
   try {
-    const auth = await requireApiRole(['landlord', 'caretaker']);
-    if (auth.response) return auth.response;
-    const scope = await getActivePropertyId(supabaseAdmin, auth.currentUser!.user.id);
-    if (scope.error || !scope.propertyId) return NextResponse.json({ error: scope.error || 'Select a property.' }, { status: 403 });
-    const { unitIds, error: unitsError } = await getPropertyUnitIds(supabaseAdmin, scope.propertyId);
-    if (unitsError) return NextResponse.json({ error: unitsError }, { status: 500 });
-
-    // Fetch all open maintenance tickets (for landlord board)
-    const { data: tickets, error: ticketError } = unitIds?.length ? await supabaseAdmin
-      .from('maintenance_tickets')
-      .select('*, unit_id, tenant_id, fundi_name, cost')
-      .in('unit_id', unitIds)
-      .order('created_at', { ascending: false })
-      : { data: [], error: null };
-
-    if (ticketError) {
-      return NextResponse.json({ error: ticketError.message }, { status: 500 });
-    }
-
-    // Group by status
-    const pending = [];
-    const inProgress = [];
-    const resolved = [];
-
-    for (const ticket of tickets || []) {
-      const unit = await supabaseAdmin
-        .from('units')
-        .select('unit_code')
-        .eq('id', ticket.unit_id)
-        .maybeSingle();
-
-      const tenant = await supabaseAdmin
-        .from('users')
-        .select('full_name')
-        .eq('id', ticket.tenant_id)
-        .maybeSingle();
-
-      const formatted = {
-        id: ticket.id,
-        ticketId: `TCK-${String(ticket.id).slice(-3).toUpperCase()}`,
-        category: ticket.category,
-        description: ticket.description,
-        priority: ticket.priority,
-        status: ticket.status,
-        unitCode: unit.data?.unit_code || '-',
-        tenantName: tenant.data?.full_name || '-',
-        createdAt: ticket.created_at,
-        fundiName: ticket.fundi_name || '-',
-        cost: Number(ticket.cost || 0),
-      };
-
-      if (ticket.status === 'pending') {
-        pending.push(formatted);
-      } else if (ticket.status === 'in_progress') {
-        inProgress.push(formatted);
-      } else if (ticket.status === 'resolved') {
-        resolved.push(formatted);
-      }
-    }
-
+    const response = await forwardDjangoRequest(request, '/maintenance-tickets');
+    if (!response.ok) return response;
+    const payload = await response.json() as { tickets?: DjangoTicket[] };
+    const tickets = Array.isArray(payload.tickets) ? payload.tickets : [];
+    const formatted = tickets.map((ticket) => ({
+      id: String(ticket.id),
+      propertyId: ticket.property_id,
+      propertyName: ticket.property_name,
+      ticketId: `TCK-${String(ticket.id).padStart(3, '0')}`,
+      category: ticket.category,
+      description: ticket.description,
+      priority: ticket.priority,
+      status: ticket.status,
+      unitCode: ticket.unit_code || '-',
+      tenantName: ticket.reported_by_name || '-',
+      createdAt: ticket.created_at,
+      assignedToId: ticket.assigned_to,
+      canUpdate: ticket.can_update,
+      fundiName: ticket.assigned_to_name || '-',
+      cost: 0,
+      evidence: ticket.evidence || [],
+    }));
     return NextResponse.json({
-      pending,
-      inProgress,
-      resolved,
+      pending: formatted.filter((ticket) => pendingStatuses.has(ticket.status)),
+      inProgress: formatted.filter((ticket) => ticket.status === 'in_progress'),
+      resolved: formatted.filter((ticket) => (
+        ticket.status === 'completed' || ticket.status === 'closed'
+      )),
     });
-  } catch (error: any) {
-    console.error('Failed to fetch landlord maintenance tickets:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch maintenance tickets.' },
-      { status: 500 }
-    );
+  } catch (error) {
+    return djangoProxyFailure(error, 'Unable to load maintenance tickets.');
   }
 }
 
-  export async function PATCH(request: Request) {
-    try {
-      const auth = await requireApiRole(['landlord', 'caretaker']);
-      if (auth.response) return auth.response;
-      const scope = await getActivePropertyId(supabaseAdmin, auth.currentUser!.user.id);
-      if (scope.error || !scope.propertyId) return NextResponse.json({ error: scope.error || 'Select a property.' }, { status: 403 });
-
-      const body = await request.json();
-      const { ticketId, status, fundiName, cost } = body;
-  
-      if (!ticketId || !status) {
-        return NextResponse.json(
-          { error: 'Ticket ID and status are required.' },
-          { status: 400 }
-        );
-      }
-  
-      const validStatuses = ['pending', 'in_progress', 'resolved'];
-      if (!validStatuses.includes(status)) {
-        return NextResponse.json(
-          { error: 'Invalid status. Must be pending, in_progress, or resolved.' },
-          { status: 400 }
-        );
-      }
-
-      const { data: ticket, error: ticketLookupError } = await supabaseAdmin.from('maintenance_tickets')
-        .select('unit_id')
-        .eq('id', ticketId)
-        .maybeSingle();
-      if (ticketLookupError || !ticket?.unit_id) return NextResponse.json({ error: 'Ticket not found.' }, { status: 404 });
-      const { data: scopedUnit } = await supabaseAdmin.from('units').select('id').eq('id', ticket.unit_id).eq('property_id', scope.propertyId).maybeSingle();
-      if (!scopedUnit) return NextResponse.json({ error: 'Ticket not found in the active property.' }, { status: 404 });
-  
-      const payload: any = {
-        status,
-        updated_at: new Date().toISOString(),
-      };
-  
-      if (status === 'resolved') {
-        if (fundiName) payload.fundi_name = fundiName;
-        if (cost !== undefined) payload.cost = cost;
-      }
-  
-      const { error: updateError } = await supabaseAdmin
-        .from('maintenance_tickets')
-        .update(payload)
-        .eq('id', ticketId);
-
-    if (updateError) {
-      throw updateError;
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: `Ticket status updated to ${status}.`,
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    return await forwardDjangoRequest(request, '/maintenance-tickets/create', {
+      method: 'POST',
+      body,
     });
-  } catch (error: any) {
-    console.error('Failed to update maintenance ticket:', error);
-    return NextResponse.json(
-      { error: error.message || 'Failed to update ticket status.' },
-      { status: 500 }
+  } catch (error) {
+    return djangoProxyFailure(error, 'Unable to create the maintenance ticket.');
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const body = await request.json() as {
+      ticketId?: unknown;
+      status?: unknown;
+      assignedTo?: unknown;
+      fundiName?: unknown;
+      repairCost?: unknown;
+    };
+    const ticketId = String(body.ticketId ?? '');
+    if (
+      !/^\d+$/.test(ticketId)
+      || typeof body.status !== 'string'
+      || !['assigned', 'in_progress', 'completed'].includes(body.status)
+    ) {
+      return NextResponse.json({ error: 'A valid ticket ID and maintenance status are required.' }, { status: 400 });
+    }
+    const assignedTo = body.assignedTo;
+    if (
+      assignedTo !== undefined
+      && typeof assignedTo !== 'number'
+      && typeof assignedTo !== 'string'
+    ) {
+      return NextResponse.json({ error: 'The assignee ID is invalid.' }, { status: 400 });
+    }
+    let resolution: { fundi_name: string; repair_cost: string } | null = null;
+    if (body.status === 'completed') {
+      const repairCost = Number(body.repairCost);
+      if (
+        typeof body.fundiName !== 'string'
+        || !body.fundiName.trim()
+        || (typeof body.repairCost !== 'number' && typeof body.repairCost !== 'string')
+        || (typeof body.repairCost === 'string' && !body.repairCost.trim())
+        || !Number.isFinite(repairCost)
+        || repairCost < 0
+      ) {
+        return NextResponse.json(
+          { error: 'A technician name and valid repair cost are required to complete a ticket.' },
+          { status: 400 },
+        );
+      }
+      resolution = {
+        fundi_name: body.fundiName.trim(),
+        repair_cost: String(body.repairCost),
+      };
+    }
+    return await forwardDjangoRequest(
+      request,
+      `/maintenance-tickets/${ticketId}/status`,
+      {
+        method: 'POST',
+        body: {
+          status: body.status,
+          ...(assignedTo !== undefined ? { assigned_to: assignedTo } : {}),
+          ...(resolution || {}),
+        },
+      },
     );
+  } catch (error) {
+    return djangoProxyFailure(error, 'Unable to update the maintenance ticket.');
   }
 }

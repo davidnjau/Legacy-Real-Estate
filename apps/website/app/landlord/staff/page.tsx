@@ -35,7 +35,6 @@ export default function StaffPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [selectedPropertyId, setSelectedPropertyId] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
-  const [activationLink, setActivationLink] = useState('');
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
   // Pagination states
@@ -107,12 +106,12 @@ export default function StaffPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setActivationLink(`${window.location.origin}/caretaker-signup?token=${encodeURIComponent(data.activation_token)}`);
-      showToast('success', `Invitation link created for ${inviteEmail}. Copy and share it with the caretaker.`);
+      showToast('success', `Invitation created. An activation link and one-time code were emailed to ${inviteEmail}.`);
       setInviteEmail('');
       await loadData();
     } catch (err: any) {
       showToast('error', err.message || 'Failed to send activation email.');
+      await loadData();
     } finally {
       setGenerating(false);
     }
@@ -128,10 +127,11 @@ export default function StaffPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setActivationLink(`${window.location.origin}/caretaker-signup?token=${encodeURIComponent(data.activation_token)}`);
-      showToast('success', 'A new activation link is ready to copy and share.');
+      showToast('success', `A new activation link and code were emailed to ${data.invitation.email}.`);
+      await loadData();
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : 'Failed to resend activation email.');
+      await loadData();
     }
   };
 
@@ -175,7 +175,7 @@ export default function StaffPage() {
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Staff & Caretakers</h1>
-          <p className="text-slate-500 mt-1">Manage property access and create secure caretaker activation links.</p>
+          <p className="text-slate-500 mt-1">Manage property access and email secure caretaker activation credentials.</p>
         </div>
         <form onSubmit={(event) => { event.preventDefault(); void handleGenerate(); }} className="flex items-center gap-2">
           <select
@@ -208,36 +208,13 @@ export default function StaffPage() {
         </form>
       </div>
 
-      {activationLink && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-          <p className="font-semibold text-emerald-900">Share this one-time activation link with the caretaker</p>
-          <div className="mt-2 flex gap-2">
-            <input
-              readOnly
-              value={activationLink}
-              aria-label="Caretaker activation link"
-              className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-slate-700"
-            />
-            <button
-              type="button"
-              onClick={() => void navigator.clipboard.writeText(activationLink)}
-              className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white"
-            >
-              Copy link
-            </button>
-          </div>
-          <p className="mt-2 text-xs text-emerald-800">The link expires in 48 hours and is shown only when created or regenerated.</p>
-        </div>
-      )}
-
       {/* How it works */}
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-sm text-slate-600 space-y-2">
         <p className="font-bold text-slate-800">How to add a caretaker:</p>
         <ol className="list-decimal list-inside space-y-1">
-          <li>Select the property, enter the caretaker’s email address, and create an invitation link.</li>
-          <li>They follow the secure activation link to set their name, phone number, and password.</li>
-          <li>Invitations expire after <strong>48 hours</strong>.</li>
-          <li>Copy and share the generated link securely; it is not emailed automatically.</li>
+          <li>Select the property, enter the caretaker’s email address, and send an invitation.</li>
+          <li>The caretaker receives an activation link and one-time code by email.</li>
+          <li>Invitations expire after <strong>15 minutes</strong>; resend to issue new credentials.</li>
         </ol>
       </div>
 

@@ -1,0 +1,18 @@
+import { djangoProxyFailure, forwardDjangoRequest } from '../../../../../../lib/django-proxy';
+
+type RouteContext = {
+  params: Promise<{ landlordId: string }>;
+};
+
+export async function POST(request: Request, context: RouteContext) {
+  try {
+    const { landlordId } = await context.params;
+    return await forwardDjangoRequest(
+      request,
+      `/property-officer/landlords/${landlordId}/resend-activation`,
+      { method: 'POST' },
+    );
+  } catch (error) {
+    return djangoProxyFailure(error, 'Unable to resend the landlord activation email.');
+  }
+}

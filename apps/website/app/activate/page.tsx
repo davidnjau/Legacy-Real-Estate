@@ -2,22 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { AlertTriangle, CheckCircle, KeyRound, Lock } from 'lucide-react';
+import { AlertTriangle, CheckCircle, KeyRound } from 'lucide-react';
+import ActivationPasswordFields, { isActivationPasswordStrong } from '../../components/auth/ActivationPasswordFields';
 
 type TenantActivation = {
   full_name: string;
   email: string;
   unit_code: string;
+  identity_required: boolean;
 };
 
 export default function TenantActivationPage() {
-  const router = useRouter();
   const [unitCode, setUnitCode] = useState('');
   const [activationCode, setActivationCode] = useState('');
   const [activation, setActivation] = useState<TenantActivation | null>(null);
   const [linkToken, setLinkToken] = useState('');
   const [fullName, setFullName] = useState('');
+  const [nationalIdOrPassport, setNationalIdOrPassport] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [verifying, setVerifying] = useState(false);
@@ -37,6 +38,7 @@ export default function TenantActivationPage() {
           full_name: data.full_name,
           email: data.email,
           unit_code: data.unit_code,
+          identity_required: data.identity_required === true,
         };
         setActivation(context);
         setFullName(context.full_name);
@@ -62,6 +64,7 @@ export default function TenantActivationPage() {
         full_name: data.full_name,
         email: data.email,
         unit_code: data.unit_code,
+        identity_required: data.identity_required === true,
       });
       setFullName(data.full_name);
     } catch (cause) {
@@ -77,8 +80,8 @@ export default function TenantActivationPage() {
       setError('Passwords do not match.');
       return;
     }
-    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{12,}$/.test(password)) {
-      setError('Password must be at least 12 characters and include uppercase, lowercase, number, and special character.');
+    if (!isActivationPasswordStrong(password)) {
+      setError('Choose a password that meets all the strength requirements.');
       return;
     }
     setActivating(true);
@@ -89,19 +92,16 @@ export default function TenantActivationPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: linkToken || undefined,
-          code: linkToken ? undefined : activationCode,
+          code: activationCode,
           unitCode: linkToken ? undefined : unitCode,
           fullName,
+          nationalIdOrPassport,
           password,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to activate the tenant account.');
       setSuccess(true);
-      setTimeout(() => {
-        router.push('/tenant/dashboard');
-        router.refresh();
-      }, 1000);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to activate the tenant account.');
     } finally {
@@ -115,7 +115,10 @@ export default function TenantActivationPage() {
         <div className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-10 text-center shadow-xl">
           <CheckCircle className="mx-auto mb-6 text-emerald-600" size={42} />
           <h2 className="mb-2 text-2xl font-bold text-slate-900">Account Activated!</h2>
-          <p className="text-slate-500">Redirecting you to your tenant dashboard...</p>
+          <p className="text-slate-500">Your account is ready. Sign in when you’re ready.</p>
+          <Link href="/login?activated=1" className="mt-6 inline-flex rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white">
+            Continue to sign in
+          </Link>
         </div>
       </div>
     );
@@ -125,7 +128,7 @@ export default function TenantActivationPage() {
     <div className="flex min-h-screen flex-col justify-center bg-slate-50 py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h1 className="mt-6 text-center text-3xl font-extrabold text-slate-900">Activate Your Account</h1>
-        <p className="mt-2 text-center text-sm text-slate-600">Use the secure activation link or the code provided by your property manager.</p>
+        <p className="mt-2 text-center text-sm text-slate-600">Use the secure activation link and six-digit code sent to your email.</p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
@@ -164,18 +167,28 @@ export default function TenantActivationPage() {
                 <label className="mb-1 block text-sm font-medium text-slate-700">Full Name</label>
                 <input required value={fullName} onChange={(event) => setFullName(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="name" />
               </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Create Password</label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input required type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-4" />
+              {activation.identity_required && (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">National ID or Passport Number</label>
+                  <input required value={nationalIdOrPassport} onChange={(event) => setNationalIdOrPassport(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="off" />
                 </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Confirm Password</label>
-                <input required type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3" />
-              </div>
-              <button type="submit" disabled={activating} className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white disabled:opacity-70">
+              )}
+              {linkToken && (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Six-digit email code</label>
+                  <input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={activationCode}
+                    onChange={(event) => setActivationCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    autoComplete="one-time-code"
+                    className="w-full rounded-xl border border-slate-300 px-4 py-3 font-mono tracking-[0.3em]" />
+                </div>
+              )}
+              <ActivationPasswordFields
+                password={password}
+                confirmation={confirmPassword}
+                onPasswordChange={setPassword}
+                onConfirmationChange={setConfirmPassword}
+              />
+              <button type="submit" disabled={activating || (linkToken && activationCode.length !== 6) || !isActivationPasswordStrong(password) || password !== confirmPassword} className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white disabled:opacity-70">
                 {activating ? 'Activating...' : 'Activate Account'}
               </button>
             </form>

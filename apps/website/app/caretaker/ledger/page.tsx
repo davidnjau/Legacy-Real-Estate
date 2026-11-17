@@ -1,5 +1,5 @@
-import FinancialLedger from '../../landlord/ledger/page';
+import { redirect } from 'next/navigation';
 
 export default function CaretakerLedgerPage() {
-  return <FinancialLedger />;
+  redirect('/caretaker/dashboard');
 }

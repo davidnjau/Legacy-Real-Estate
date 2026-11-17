@@ -2,70 +2,82 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Droplets, LogOut, UserCircle, FolderUp, Megaphone, Wallet, Wrench, FileText } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
+import { ClipboardCheck, Droplets, LayoutDashboard, Wrench } from 'lucide-react';
 
 const navItems = [
-  { name: 'Room Status', href: '/caretaker/dashboard', icon: LayoutDashboard },
-  { name: 'Tenant Migration', href: '/caretaker/migration', icon: FolderUp },
-  { name: 'Billing', href: '/caretaker/billing', icon: FileText },
-  { name: 'Rent Ledger', href: '/caretaker/ledger', icon: Wallet },
-  { name: 'Maintenance', href: '/caretaker/maintenance', icon: Wrench },
-  { name: 'Announcements', href: '/caretaker/announcements', icon: Megaphone },
-  { name: 'Water Readings', href: '/caretaker/water-readings', icon: Droplets },
-  { name: 'Profile', href: '/caretaker/profile', icon: UserCircle },
+  { name: 'Site Hub', href: '/caretaker/dashboard', icon: LayoutDashboard },
+  { name: 'Checklists', href: '/caretaker/checklists', icon: ClipboardCheck },
+  { name: 'On-Site Tickets', href: '/caretaker/tickets', icon: Wrench },
 ];
 
 export function CaretakerSidebar() {
   const pathname = usePathname();
-  const router = useRouter();
+  const [hasPaidWater, setHasPaidWater] = useState(false);
 
-  const handleLogout = async () => {
-    const csrf = await fetch('/api/auth/csrf').then((response) => response.json());
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrf.csrfToken || '' },
-    });
-    router.push('/login');
-    router.refresh();
-  };
+  useEffect(() => {
+    let active = true;
+    void fetch('/api/caretaker/dashboard')
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || data.message || 'Unable to load caretaker properties.');
+        }
+        return data;
+      })
+      .then((data) => {
+        if (active) {
+          setHasPaidWater(
+            Array.isArray(data.properties) &&
+              data.properties.some((property: { has_paid_water?: boolean }) => property.has_paid_water)
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        console.error('Unable to determine caretaker water-reading access:', error);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col h-full">
-      <div className="p-6">
-        <h1 className="text-xl font-bold tracking-tight">Sunshine Apts</h1>
-        <p className="text-sm text-emerald-400 mt-1 font-medium">Caretaker Portal</p>
+    <aside className="fixed inset-x-0 bottom-0 z-50 shrink-0 border-t border-emerald-950/60 bg-[#102820] text-white md:static md:h-full md:w-64 md:border-r md:border-t-0">
+      <div className="hidden border-b border-emerald-900/40 p-5 md:block">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-sm font-black text-[#102820]">
+            L
+          </span>
+          <h1 className="text-lg font-bold tracking-tight text-white">Legacy Caretaker</h1>
+        </div>
+        <p className="mt-1 text-xs font-medium text-emerald-300">Field Operations Workspace</p>
       </div>
 
-      <nav className="flex-1 px-4 space-y-2 mt-4">
-        {navItems.map((item) => {
+      <nav
+        aria-label="Caretaker navigation"
+        className="mx-auto grid max-w-xl gap-1 px-2 py-2 md:flex md:max-w-none md:flex-col md:gap-1.5 md:px-3 md:py-4"
+        style={{ gridTemplateColumns: `repeat(${hasPaidWater ? 4 : 3}, minmax(0, 1fr))` }}
+      >
+        {[...navItems.slice(0, 1), ...(hasPaidWater ? [{ name: 'Water Meter', href: '/caretaker/meters', icon: Droplets }] : []), ...navItems.slice(1)].map((item) => {
           const isActive = pathname === item.href;
           const Icon = item.icon;
           return (
             <Link
               key={item.name}
               href={item.href}
+              aria-current={isActive ? 'page' : undefined}
               data-tour-id={`caretaker-nav-${item.name.toLowerCase().split(' ')[0]}`}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-                isActive ? 'bg-emerald-600 text-white font-bold' : 'hover:bg-slate-800 text-slate-300 font-medium'
+              className={`flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[10px] font-semibold transition-colors md:flex-row md:justify-start md:gap-2.5 md:px-3 md:py-2.5 md:text-xs ${
+                isActive ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-300 hover:bg-white/10'
               }`}
             >
-              <Icon size={20} className={isActive ? 'text-white' : 'text-slate-400'} />
-              <span>{item.name}</span>
+              <Icon size={18} className={isActive ? 'text-white' : 'text-emerald-300/80'} aria-hidden="true" />
+              <span className="truncate">{item.name}</span>
             </Link>
           );
         })}
       </nav>
-
-      <div className="p-4 border-t border-slate-800">
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-3 px-3 py-2 w-full text-left rounded-lg hover:bg-slate-800 transition-colors text-red-400"
-        >
-          <LogOut size={20} />
-          <span className="font-medium">Log Out</span>
-        </button>
-      </div>
     </aside>
   );
 }

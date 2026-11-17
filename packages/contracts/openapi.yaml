@@ -38,6 +38,10 @@ tags:
     description: Branch-scoped maintenance vendor and fundi records.
   - name: Tenancies
     description: Branch-scoped tenancy records and terms.
+  - name: Tenant portal
+    description: Tenant-scoped rental dashboard, billing history, and receipts.
+  - name: Move-outs
+    description: Notice, exit inspection, deposit settlement approval, and payout workflows.
   - name: Billing
     description: Immutable invoices and financial records.
 security:
@@ -89,7 +93,8 @@ paths:
       summary: Start a session
       description: >
         Requires the CSRF cookie and X-CSRFToken header. Finance-role users
-        must complete SMS verification before a session is established.
+        receive a challenge while their verification code is queued for SMS
+        delivery; a session is established only after successful verification.
       tags:
         - Authentication
       security: []
@@ -142,6 +147,95 @@ paths:
         "401":
           $ref: "#/components/responses/Problem"
         "403":
+          $ref: "#/components/responses/Problem"
+  /auth/password-reset:
+    post:
+      operationId: requestPasswordReset
+      summary: Request a password reset link
+      description: >
+        Sends a single-use reset link when an active account uses the supplied
+        email. The response is the same when no account matches. Requires the
+        CSRF cookie and X-CSRFToken header.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Request accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - message
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  message:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+  /auth/password-reset/confirm:
+    post:
+      operationId: confirmPasswordReset
+      summary: Set a new password with a reset token
+      description: Requires the CSRF cookie and X-CSRFToken header.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - uid
+                - token
+                - password
+              properties:
+                uid:
+                  type: string
+                token:
+                  type: string
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - message
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  message:
+                    type: string
+        "400":
           $ref: "#/components/responses/Problem"
   /auth/mfa/verify:
     post:
@@ -204,6 +298,200 @@ paths:
                     $ref: "#/components/schemas/AuthUser"
         "401":
           $ref: "#/components/responses/Problem"
+  /landlord/profile:
+    get:
+      operationId: getLandlordPortalProfile
+      summary: Get the landlord's portal profile
+      description: Returns the authenticated landlord's profile fields.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Landlord profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalProfileResponse"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateLandlordPortalProfile
+      summary: Update the landlord's portal profile
+      description: Updates profile name and Kenyan mobile number for the authenticated landlord.
+      tags:
+        - Landlords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PortalProfileUpdate"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalProfileUpdateResponse"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlord/onboarding:
+    get:
+      operationId: getLandlordOnboarding
+      summary: Get landlord onboarding state
+      description: Returns onboarding/tutorial flags and the landlord's first property name.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Onboarding state and initial property name
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - fullName
+                  - propertyName
+                  - onboardingCompleted
+                  - tutorialCompleted
+                properties:
+                  fullName:
+                    type: string
+                  propertyName:
+                    type: string
+                  onboardingCompleted:
+                    type: boolean
+                  tutorialCompleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: completeLandlordOnboarding
+      summary: Complete landlord onboarding
+      description: Marks onboarding complete and saves the submitted tutorial state.
+      tags:
+        - Landlords
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tutorialCompleted:
+                  type: boolean
+      responses:
+        "200":
+          description: Onboarding state saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalOnboardingResponse"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /caretaker/profile:
+    get:
+      operationId: getCaretakerPortalProfile
+      summary: Get the caretaker's portal profile
+      description: Returns the authenticated caretaker's profile and account status.
+      tags:
+        - Caretakers
+      responses:
+        "200":
+          description: Caretaker profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalProfileResponse"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateCaretakerPortalProfile
+      summary: Update the caretaker's portal profile
+      description: Updates the authenticated caretaker's name, email, and Kenyan mobile number.
+      tags:
+        - Caretakers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PortalProfileUpdate"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalProfileUpdateResponse"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /caretaker/onboarding:
+    get:
+      operationId: getCaretakerOnboarding
+      summary: Get caretaker onboarding state
+      description: Returns the authenticated caretaker's onboarding and tutorial flags.
+      tags:
+        - Caretakers
+      responses:
+        "200":
+          description: Onboarding state
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - fullName
+                  - tutorialCompleted
+                properties:
+                  fullName:
+                    type: string
+                  tutorialCompleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: completeCaretakerOnboarding
+      summary: Complete caretaker onboarding
+      description: Marks onboarding complete and saves the submitted tutorial state.
+      tags:
+        - Caretakers
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tutorialCompleted:
+                  type: boolean
+      responses:
+        "200":
+          description: Onboarding state saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalOnboardingResponse"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
   /auth/logout:
     post:
       operationId: logout
@@ -226,11 +514,11 @@ paths:
                     const: ok
         "401":
           $ref: "#/components/responses/Problem"
-  /auth/register-landlord:
+  /auth/register-tenant:
     post:
-      operationId: registerLandlordPortal
-      summary: Register a landlord portal account
-      description: Creates the Django account, landlord record, initial property, and session transactionally.
+      operationId: registerTenantPortal
+      summary: Create a resident portal account
+      description: Creates a tenant-role account and session without creating or assigning a tenancy.
       tags:
         - Authentication
       security: []
@@ -241,27 +529,40 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [name, email, phone, password, property_name]
+              required: [name, email, phone, password]
               properties:
                 name:
                   type: string
+                  maxLength: 255
                 email:
                   type: string
                   format: email
+                  maxLength: 150
                 phone:
                   type: string
                 password:
                   type: string
                   format: password
                   minLength: 12
-                property_name:
-                  type: string
       responses:
         "201":
-          description: Landlord account and initial property created
+          description: Resident account and session created; agency linkage is pending.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, status]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+                  status:
+                    type: string
+                    const: awaiting_agency_linkage
         "400":
           $ref: "#/components/responses/Problem"
         "409":
+          $ref: "#/components/responses/Problem"
+        "503":
           $ref: "#/components/responses/Problem"
   /caretaker-invitations:
     get:
@@ -467,11 +768,1051 @@ paths:
           $ref: "#/components/responses/Problem"
         "404":
           $ref: "#/components/responses/Problem"
+  /landlord/dashboard:
+    get:
+      operationId: getLandlordDashboard
+      summary: Get the landlord oversight dashboard
+      description: Returns current-month portfolio metrics only for properties linked to the authenticated landlord portal account. The read is audit logged.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Landlord portfolio dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordDashboard"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlord/properties:
+    get:
+      operationId: listLandlordProperties
+      summary: List the authenticated landlord's properties
+      description: Returns only properties linked to the authenticated landlord portal account, including recurring charges and the selected property. The read is audit logged.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Properties owned by the authenticated landlord
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [properties, activePropertyId]
+                properties:
+                  properties:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Property"
+                        - type: object
+                          required: [recurringCharges]
+                          properties:
+                            recurringCharges:
+                              type: array
+                              items:
+                                type: object
+                                required: [id, name, amount, is_active]
+                                properties:
+                                  id:
+                                    type: integer
+                                  name:
+                                    type: string
+                                  amount:
+                                    type: string
+                                  is_active:
+                                    type: boolean
+                  activePropertyId:
+                    type: [integer, "null"]
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createLandlordProperty
+      summary: Create a property for the authenticated landlord
+      description: Creates a property under the authenticated landlord's linked landlord record, saves its recurring charges atomically, and selects it when no valid active property is currently selected.
+      tags:
+        - Landlords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LandlordPropertyCreateInput"
+      responses:
+        "201":
+          description: The created property and active property selection
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [property, activePropertyId]
+                properties:
+                  property:
+                    allOf:
+                      - $ref: "#/components/schemas/Property"
+                      - type: object
+                        required: [recurringCharges]
+                        properties:
+                          recurringCharges:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/PropertyRecurringCharge"
+                  activePropertyId:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateLandlordProperty
+      summary: Select or update an authenticated landlord's property
+      description: Selects an owned active property, or updates an owned property's configuration and recurring charges in one atomic, audited operation.
+      tags:
+        - Landlords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LandlordPropertyUpdateInput"
+      responses:
+        "200":
+          description: The updated property or active property selection
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [activePropertyId]
+                    properties:
+                      activePropertyId:
+                        type: integer
+                  - type: object
+                    required: [property]
+                    properties:
+                      property:
+                        allOf:
+                          - $ref: "#/components/schemas/Property"
+                          - type: object
+                            required: [recurringCharges]
+                            properties:
+                              recurringCharges:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/PropertyRecurringCharge"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /landlord/billing-settings:
+    get:
+      operationId: getLandlordBillingSettings
+      summary: Get the active property's billing settings
+      description: Returns billing settings only for a property linked to the authenticated landlord portal account.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Billing settings for the active property
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings]
+                properties:
+                  settings:
+                    $ref: "#/components/schemas/PropertyBillingSettings"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateLandlordBillingSettings
+      summary: Update payment instructions for the active property
+      description: Updates paybill and account numbers for a property linked to the authenticated landlord account and records the change in the audit log.
+      tags:
+        - Landlords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paybillNumber:
+                  type: string
+                  maxLength: 32
+                accountNumber:
+                  type: string
+                  maxLength: 64
+      responses:
+        "200":
+          description: Updated billing settings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings]
+                properties:
+                  settings:
+                    $ref: "#/components/schemas/PropertyBillingSettings"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlord/units:
+    get:
+      operationId: listLandlordUnits
+      summary: List units in the authenticated landlord's properties
+      description: Returns only units belonging to properties linked to the authenticated landlord portal account. The read is audit logged.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Units in properties owned by the authenticated landlord
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [units]
+                properties:
+                  units:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Unit"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlord/move-in-units:
+    get:
+      operationId: listLandlordMoveInUnits
+      summary: List the active property's units and occupancies
+      description: Returns unit, current tenancy, and open move-in reservation details for the selected property.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Active-property units
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [units]
+                properties:
+                  units:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MoveInUnit"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlord/move-in-settlements:
+    get:
+      operationId: listLandlordMoveInSettlements
+      summary: List open move-in settlements
+      description: Returns open reservations and their associated payments for the landlord's active property.
+      tags:
+        - Tenancies
+      responses:
+        "200":
+          description: Open settlements for the active property
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settlements]
+                properties:
+                  settlements:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MoveInSettlement"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createLandlordMoveInSettlement
+      summary: Reserve a unit for a new move-in
+      description: Snapshots active recurring property charges and creates a payment-pending settlement for one vacant unit.
+      tags:
+        - Tenancies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [unitId, tenantName, tenantEmail, tenantPhone, expectedMoveInDate, rentAmount]
+              properties:
+                unitId:
+                  type: integer
+                tenantName:
+                  type: string
+                tenantEmail:
+                  type: string
+                  format: email
+                tenantPhone:
+                  type: string
+                expectedMoveInDate:
+                  type: string
+                  format: date
+                depositAmount:
+                  type: number
+                  minimum: 0
+                rentAmount:
+                  type: number
+                  exclusiveMinimum: 0
+                garbageAmount:
+                  type: number
+                  minimum: 0
+                waterDepositAmount:
+                  type: number
+                  minimum: 0
+      responses:
+        "201":
+          description: Move-in settlement created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settlement]
+                properties:
+                  settlement:
+                    $ref: "#/components/schemas/MoveInSettlement"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateLandlordMoveInSettlement
+      summary: Record payment or send tenant activation
+      description: Records a manual settlement payment or issues a tenant activation link after the settlement is fully paid.
+      tags:
+        - Tenancies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [settlementId, amount]
+                  properties:
+                    settlementId:
+                      type: integer
+                    amount:
+                      type: number
+                      exclusiveMinimum: 0
+                    mpesaReference:
+                      type: string
+                - type: object
+                  required: [settlementId, sendActivationEmail]
+                  properties:
+                    settlementId:
+                      type: integer
+                    sendActivationEmail:
+                      type: boolean
+                      const: true
+      responses:
+        "200":
+          description: Payment recorded or activation email sent
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [settlement, bookingConfirmed, activationReady]
+                    properties:
+                      settlement:
+                        $ref: "#/components/schemas/MoveInSettlement"
+                      bookingConfirmed:
+                        type: boolean
+                      activationReady:
+                        type: boolean
+                  - type: object
+                    required: [success, message, settlement]
+                    properties:
+                      success:
+                        type: boolean
+                      message:
+                        type: string
+                      settlement:
+                        type: object
+                        required: [id, activation_email_sent_at, activation_email_error]
+                        properties:
+                          id: {type: integer}
+                          activation_email_sent_at: {type: string, format: date-time}
+                          activation_email_error: {type: "null"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "502":
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: cancelLandlordMoveInSettlement
+      summary: Cancel an unactivated move-in reservation
+      description: Cancels a reservation only if it has no linked tenant account or activation email.
+      tags:
+        - Tenancies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settlementId, reason]
+              properties:
+                settlementId:
+                  type: integer
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Reservation cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settlement]
+                properties:
+                  settlement:
+                    $ref: "#/components/schemas/MoveInSettlement"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /move-in-settlements/stk-payment:
+    post:
+      operationId: createOrUpdateMoveInStkPayment
+      summary: Create, attach, or fail an STK payment attempt
+      description: Authenticated internal website flow. Payment attempts are bound to an authorized landlord or tenant and a settlement.
+      tags:
+        - Billing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [create, attach, fail]
+                settlementId:
+                  type: integer
+                amount:
+                  type: number
+                  exclusiveMinimum: 0
+                paymentId:
+                  type: integer
+                checkoutRequestId:
+                  type: string
+                description:
+                  type: string
+      responses:
+        "200":
+          description: Payment attempt updated
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [paymentId, settlementId]
+                    properties:
+                      paymentId: {type: integer}
+                      settlementId: {type: integer}
+                  - type: object
+                    required: [updated]
+                    properties:
+                      updated: {type: boolean}
+        "201":
+          description: Pending payment attempt created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paymentId, tenantPhone, settlementId]
+                properties:
+                  paymentId: {type: integer}
+                  tenantPhone: {type: string}
+                  settlementId: {type: integer}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /units/occupancy:
+    post:
+      operationId: updateUnitOccupancy
+      summary: Transition a unit's occupancy status
+      description: Changes the unit status only when the transition is valid and an active tenancy is not being improperly marked vacant.
+      tags:
+        - Properties
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [unitId, status]
+              properties:
+                unitId:
+                  type: integer
+                status:
+                  type: string
+                  enum: [vacant, occupied, offboarding, notice_given, maintenance]
+      responses:
+        "200":
+          description: Unit status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, unit]
+                properties:
+                  success: {type: boolean}
+                  unit:
+                    type: object
+                    required: [id, status]
+                    properties:
+                      id: {type: integer}
+                      status: {type: string}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /units/manage:
+    post:
+      operationId: manageUnitAction
+      summary: Apply a supported legacy unit action
+      description: Maintenance/vacancy actions use the Django unit lifecycle; retired move-out actions return 410 and direct callers to the audited move-out workflow.
+      tags:
+        - Properties
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [unitId, action]
+              properties:
+                unitId:
+                  type: integer
+                action:
+                  type: string
+                  enum: [mark_maintenance, mark_vacant, log_notice, revoke_notice, offboard_tenant, immediate_evacuation]
+      responses:
+        "200":
+          description: Unit action completed
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "410":
+          description: The move-out action has been retired.
+  /tenant/profile:
+    get:
+      operationId: getTenantPortalProfile
+      summary: Get the signed-in tenant profile and active tenancy details
+      description: Returns profile, unit, move-in date, and deposit details for the authenticated tenant.
+      tags:
+        - Tenant portal
+      responses:
+        "200":
+          description: Tenant profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [profile]
+                properties:
+                  profile:
+                    type: object
+                    required: [fullName, email, phone, moveInDate, securityDeposit, waterDeposit, deposit, unitCode, floor]
+                    properties:
+                      fullName:
+                        type: string
+                      email:
+                        type: string
+                      phone:
+                        type: string
+                      moveInDate:
+                        type: [string, "null"]
+                        format: date
+                      securityDeposit:
+                        type: number
+                      waterDeposit:
+                        type: number
+                      deposit:
+                        type: number
+                      unitCode:
+                        type: [string, "null"]
+                      floor:
+                        type: [string, "null"]
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateTenantPortalProfile
+      summary: Update the signed-in tenant profile
+      description: Updates the authenticated tenant's name, email, and phone after validating uniqueness and phone format.
+      tags:
+        - Tenant portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fullName, email, phone]
+              properties:
+                fullName:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /tenant/onboarding:
+    get:
+      operationId: getTenantOnboarding
+      summary: Read the signed-in tenant tutorial and transition state
+      description: Returns tutorial completion, migration, move-in settlement, and billing transition details.
+      tags:
+        - Tenant portal
+      responses:
+        "200":
+          description: Tenant onboarding state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fullName, tutorialCompleted, isMigrated, moveInSettlement, transitionSettings]
+                properties:
+                  fullName:
+                    type: string
+                  tutorialCompleted:
+                    type: boolean
+                  isMigrated:
+                    type: boolean
+                  moveInSettlement:
+                    oneOf:
+                      - $ref: "#/components/schemas/MoveInSettlementSummary"
+                      - type: "null"
+                  transitionSettings:
+                    oneOf:
+                      - type: object
+                        required: [first_online_billing_month]
+                        properties:
+                          first_online_billing_month:
+                            type: [string, "null"]
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: updateTenantOnboarding
+      summary: Save the signed-in tenant tutorial state
+      description: Saves whether the authenticated tenant has completed the portal tutorial.
+      tags:
+        - Tenant portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tutorialCompleted:
+                  type: boolean
+      responses:
+        "200":
+          description: Tutorial state saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /tenant/unit-status:
+    get:
+      operationId: getTenantUnitStatus
+      summary: Get the signed-in tenant's latest unit status
+      description: Returns the latest tenancy and unit status for the authenticated tenant.
+      tags:
+        - Tenant portal
+      responses:
+        "200":
+          description: Unit and tenancy status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, unitCode]
+                properties:
+                  status:
+                    type: string
+                    enum: [no_unit, vacant, booked, occupied, notice_given, deposit_pending, maintenance, archived, draft, unknown]
+                  unitCode:
+                    type: [string, "null"]
+                  assignmentStatus:
+                    type: string
+                  moveInDate:
+                    type: string
+                    format: date
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /payments/mpesa/move-in-callback:
+    post:
+      operationId: receiveMoveInMpesaCallback
+      summary: Process a move-in payment callback
+      description: Callback endpoint matches checkout ID, amount, and receipt reference. Amount mismatches are marked for reconciliation without applying funds.
+      tags:
+        - Billing
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checkout_request_id, result_code]
+              properties:
+                checkout_request_id:
+                  type: string
+                result_code:
+                  type: integer
+                amount:
+                  type: number
+                reference:
+                  type: string
+                result_description:
+                  type: string
+      responses:
+        "200":
+          description: Callback accepted or unmatched
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matched]
+                properties:
+                  matched: {type: boolean}
+                  applied: {type: boolean}
+                  duplicate: {type: boolean}
+                  reason: {type: string}
+        "400":
+          description: Invalid callback payload
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matched, error]
+                properties:
+                  matched: {type: boolean}
+                  error: {type: string}
+        "500":
+          description: Callback could not be processed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matched, applied, reason]
+                properties:
+                  matched: {type: boolean}
+                  applied: {type: boolean}
+                  reason: {type: string}
+  /landlord/statements:
+    get:
+      operationId: getLandlordStatement
+      summary: Get or export a landlord statement
+      description: Returns a date-range statement for the authenticated landlord's own linked properties. CSV exports and statement reads are audit logged. Tax is calculated only from an explicitly approved agreement configuration.
+      tags:
+        - Landlords
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        "200":
+          description: Landlord statement or downloadable CSV export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordStatement"
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /landlord/maintenance/quotations:
+    get:
+      operationId: listLandlordMaintenanceQuotationApprovals
+      summary: List landlord quotation approvals
+      description: Returns submitted maintenance quotations above the active agreement threshold for properties owned by the authenticated landlord.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Pending landlord quotation approvals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordMaintenanceQuotationApprovalList"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /landlord/maintenance/quotations/{quotation_id}/decision:
+    post:
+      operationId: decideLandlordMaintenanceQuotation
+      summary: Approve or reject a landlord maintenance quotation
+      description: Allows only the owning landlord to decide a submitted quotation above the active agreement threshold. Rejection requires a reason.
+      tags:
+        - Landlords
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LandlordMaintenanceQuotationDecision"
+      responses:
+        "200":
+          description: Quotation decision recorded
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /landlord/remittances:
+    get:
+      operationId: listLandlordRemittances
+      summary: List accessible landlord remittances
+      description: Returns branch-scoped remittances for staff or only the authenticated landlord's own remittances.
+      tags:
+        - Landlords
+      responses:
+        "200":
+          description: Remittance history and selectable landlords
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordRemittanceList"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /landlord/remittances/create:
+    post:
+      operationId: createLandlordRemittance
+      summary: Prepare a landlord remittance
+      description: Creates a period snapshot using the approved landlord statement rules. Only authorized staff may prepare a run.
+      tags:
+        - Landlords
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLandlordRemittanceRequest"
+      responses:
+        "201":
+          description: Remittance awaiting independent review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordRemittanceEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /landlord/remittances/{remittance_id}/decision:
+    post:
+      operationId: decideLandlordRemittance
+      summary: Approve or reject a landlord remittance
+      description: Requires Branch Manager or Super Admin access and an approver different from the preparer.
+      tags:
+        - Landlords
+      parameters:
+        - name: remittance_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LandlordRemittanceDecision"
+      responses:
+        "200":
+          description: Remittance decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordRemittanceEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /landlord/remittances/{remittance_id}/payout:
+    post:
+      operationId: recordLandlordRemittancePayout
+      summary: Record a manual landlord payout
+      description: Records the reference and date of an externally completed payout; no payment is sent by this endpoint.
+      tags:
+        - Landlords
+      parameters:
+        - name: remittance_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LandlordRemittancePayout"
+      responses:
+        "200":
+          description: Payout record saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LandlordRemittanceEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
   /landlords:
     get:
       operationId: listLandlords
       summary: List accessible landlords
-      description: Returns landlord records in the authenticated user's branch scope.
+      description: Returns landlord records whose home branch or linked properties are in the authenticated user's branch scope.
       tags:
         - Landlords
       responses:
@@ -527,7 +1868,7 @@ paths:
     get:
       operationId: getLandlord
       summary: Get an accessible landlord
-      description: Returns a landlord only when it belongs to the authenticated user's branch scope.
+      description: Returns a landlord only when its home branch or linked properties are in the authenticated user's branch scope.
       tags:
         - Landlords
       parameters:
@@ -597,7 +1938,7 @@ paths:
     get:
       operationId: listProperties
       summary: List accessible properties
-      description: Returns branch-scoped properties visible to the authenticated user.
+      description: "Returns properties visible to the authenticated user: branch-scoped records for authorized staff, assigned-property records for caretakers, and all properties linked to the landlord portal account."
       tags:
         - Properties
       responses:
@@ -650,7 +1991,7 @@ paths:
     get:
       operationId: getProperty
       summary: Get a property
-      description: Returns one property when it is within the authenticated user's branch scope.
+      description: Returns one property when it is within the authenticated user's role-based access scope.
       tags:
         - Properties
       parameters:
@@ -709,6 +2050,7 @@ paths:
     post:
       operationId: createCaretaker
       summary: Create a caretaker account
+      description: Creates an active caretaker account and assigns it to the caller's accessible branches.
       tags:
         - Caretakers
       requestBody:
@@ -789,6 +2131,54 @@ paths:
       responses:
         "200":
           description: Maintenance tickets
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /maintenance-ledger/months:
+    get:
+      operationId: listMaintenanceLedgerMonths
+      summary: List months with completed maintenance tickets
+      description: Returns months containing completed maintenance tickets within the authenticated user's property scope.
+      tags:
+        - Maintenance
+      responses:
+        "200":
+          description: Available ledger months
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [months]
+                properties:
+                  months:
+                    type: array
+                    items: {type: string, pattern: '^\d{4}-\d{2}$'}
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /maintenance-ledger:
+    get:
+      operationId: listMaintenanceLedger
+      summary: List completed maintenance costs for a month
+      description: Returns completed maintenance tickets, actual repair costs, and technician names within the authenticated user's property scope.
+      tags:
+        - Maintenance
+      parameters:
+        - name: month
+          in: query
+          required: false
+          schema: {type: string, pattern: '^\d{4}-\d{2}$'}
+      responses:
+        "200":
+          description: Monthly maintenance ledger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceLedger"
+        "400":
+          $ref: "#/components/responses/Problem"
         "401":
           $ref: "#/components/responses/Problem"
         "403":
@@ -990,7 +2380,7 @@ paths:
     post:
       operationId: updateMaintenanceTicketStatus
       summary: Update a maintenance ticket status
-      description: Advances a ticket through the SRS maintenance lifecycle and optionally assigns a caretaker.
+      description: Advances a ticket through the maintenance lifecycle. A caretaker may omit assigned_to when self-assigning an open ticket. Completing a ticket requires fundi_name and repair_cost.
       tags:
         - Maintenance
       parameters:
@@ -1010,6 +2400,8 @@ paths:
                   type: string
                   enum: [open, assigned, quotation, awaiting_landlord_approval, in_progress, completed, closed]
                 assigned_to: {type: integer}
+                fundi_name: {type: string, maxLength: 255}
+                repair_cost: {type: number, minimum: 0}
       responses:
         "200":
           description: Maintenance ticket updated
@@ -1020,17 +2412,42 @@ paths:
         "404":
           $ref: "#/components/responses/Problem"
   /maintenance-tickets/{ticket_id}/comments:
+    parameters:
+      - name: ticket_id
+        in: path
+        required: true
+        schema: {type: integer}
+    get:
+      operationId: listMaintenanceTicketComments
+      summary: List comments on an accessible maintenance ticket
+      description: Returns the tenant and property-team conversation for a maintenance ticket in the authenticated user's scope.
+      tags:
+        - Maintenance
+      responses:
+        "200":
+          description: Ticket comments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comments]
+                properties:
+                  comments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MaintenanceTicketComment"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
     post:
       operationId: addMaintenanceTicketComment
       summary: Add a maintenance ticket comment
       description: Adds an auditable operational comment and optional photo metadata to an accessible ticket.
       tags:
         - Maintenance
-      parameters:
-        - name: ticket_id
-          in: path
-          required: true
-          schema: {type: integer}
       requestBody:
         required: true
         content:
@@ -1046,16 +2463,59 @@ paths:
       responses:
         "201":
           description: Comment added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comment]
+                properties:
+                  comment:
+                    $ref: "#/components/schemas/MaintenanceTicketComment"
         "400":
           $ref: "#/components/responses/Problem"
         "403":
           $ref: "#/components/responses/Problem"
         "404":
           $ref: "#/components/responses/Problem"
+  /maintenance-tickets/{ticket_id}/evidence/{evidence_index}:
+    get:
+      operationId: getMaintenanceTicketEvidence
+      summary: Retrieve evidence from an accessible maintenance ticket
+      description: Streams private ticket evidence to a tenant who reported the ticket or authorized property staff.
+      tags:
+        - Maintenance
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: evidence_index
+          in: path
+          required: true
+          schema: {type: integer, minimum: 0}
+      responses:
+        "200":
+          description: Private evidence image
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+            image/webp:
+              schema: {type: string, format: binary}
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
   /properties/{property_id}/caretakers:
     get:
       operationId: listPropertyCaretakerAssignments
       summary: List caretaker assignments
+      description: Returns caretaker assignment history for a property the caller can access.
       tags:
         - Caretakers
       parameters:
@@ -1072,6 +2532,7 @@ paths:
     post:
       operationId: assignPropertyCaretaker
       summary: Assign a caretaker to a property
+      description: Assigns an active caretaker from the property's branch to the accessible property.
       tags:
         - Caretakers
       parameters:
@@ -1103,6 +2564,7 @@ paths:
     post:
       operationId: endPropertyCaretakerAssignment
       summary: End a caretaker assignment
+      description: Ends the active assignment between the specified caretaker and accessible property.
       tags:
         - Caretakers
       parameters:
@@ -1125,7 +2587,7 @@ paths:
     get:
       operationId: listUnits
       summary: List accessible units
-      description: Returns units belonging to properties in the authenticated user's branch scope.
+      description: "Returns units belonging to properties visible to the authenticated user: branch-scoped records for authorized staff, assigned-property records for caretakers, and landlord-owned records for landlord portal accounts."
       tags:
         - Properties
       responses:
@@ -1201,6 +2663,52 @@ paths:
         "403":
           $ref: "#/components/responses/Problem"
         "404":
+          $ref: "#/components/responses/Problem"
+  /public/vacancies:
+    get:
+      operationId: getPublicVacancies
+      summary: Search published vacant units
+      description: Publicly returns only units explicitly listed and currently vacant, with reduced public-safe fields.
+      tags:
+        - Properties
+      security: []
+      parameters:
+        - name: branch
+          in: query
+          schema:
+            type: string
+        - name: area
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: rent_min
+          in: query
+          schema:
+            type: number
+            minimum: 0
+        - name: rent_max
+          in: query
+          schema:
+            type: number
+            minimum: 0
+      responses:
+        "200":
+          description: Public vacancy listings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listings]
+                properties:
+                  listings:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PublicVacancy"
+        "400":
           $ref: "#/components/responses/Problem"
   /units/create:
     post:
@@ -1581,6 +3089,7 @@ paths:
     get:
       operationId: listArrears
       summary: List arrears ageing
+      description: Returns accessible issued-invoice arrears and ageing-bucket totals as of the requested date, defaulting to today.
       tags:
         - Billing
       parameters:
@@ -1600,6 +3109,7 @@ paths:
     post:
       operationId: createArrearsWaiver
       summary: Approve an arrears waiver
+      description: Records a manager-approved waiver against an accessible issued invoice, limited to its outstanding arrears.
       tags:
         - Billing
       parameters:
@@ -1631,6 +3141,7 @@ paths:
     post:
       operationId: createDemandLetter
       summary: Issue a demand letter
+      description: Issues a demand letter for an accessible issued invoice, or returns the existing letter if one was already issued.
       tags:
         - Billing
       parameters:
@@ -1648,6 +3159,7 @@ paths:
     get:
       operationId: listPaymentPlans
       summary: List arrears payment plans
+      description: Returns payment plans for tenancies in properties accessible to the caller.
       tags:
         - Billing
       responses:
@@ -1667,6 +3179,7 @@ paths:
     post:
       operationId: createPaymentPlan
       summary: Create an arrears payment plan
+      description: Creates a manager-authorized instalment schedule for an accessible tenancy that has no active payment plan.
       tags:
         - Billing
       parameters:
@@ -1697,6 +3210,7 @@ paths:
     post:
       operationId: payPaymentPlanInstalment
       summary: Record an instalment payment
+      description: Records a payment against an accessible payment-plan instalment and updates its plan balance.
       tags:
         - Billing
       parameters:
@@ -1914,6 +3428,7 @@ paths:
     get:
       operationId: getBankStatementImport
       summary: Review bank statement rows
+      description: Returns an imported bank statement and its parsed rows within the caller's branch access.
       tags:
         - Billing
       parameters:
@@ -1932,6 +3447,7 @@ paths:
     post:
       operationId: matchBankStatementRow
       summary: Manually match a bank statement row
+      description: Allocates the payment associated with a valid statement row and marks the row as matched when allocation succeeds.
       tags:
         - Billing
       parameters:
@@ -1962,6 +3478,7 @@ paths:
     get:
       operationId: getBankStatementReconciliation
       summary: Report bank statement reconciliation
+      description: Returns row counts and statement, valid, and matched totals for an imported bank statement.
       tags:
         - Billing
       parameters:
@@ -2012,6 +3529,7 @@ paths:
     post:
       operationId: updateChequeStatus
       summary: Update cheque clearing status
+      description: Marks an accessible cheque payment as cleared or bounced and records today's clearing date.
       tags:
         - Billing
       parameters:
@@ -2041,6 +3559,7 @@ paths:
     get:
       operationId: getCashCollectionReport
       summary: Report cash collections
+      description: Returns cash payment details and totals for the requested inclusive date range, defaulting to today.
       tags:
         - Billing
       parameters:
@@ -2084,6 +3603,7 @@ paths:
     get:
       operationId: getDepositAccount
       summary: Get the refundable deposit ledger
+      description: Returns the deposit balance, target, and ledger entries for an accessible tenancy with a deposit account.
       tags:
         - Billing
       parameters:
@@ -2300,6 +3820,66 @@ paths:
           description: Existing move-in package returned
         "404":
           $ref: "#/components/responses/Problem"
+  /tenancies/{tenancy_id}/move-in-status:
+    get:
+      operationId: getMoveInStatus
+      summary: Get move-in invoice payment status
+      description: Returns recorded and confirmed allocations for the issued move-in invoice and refreshes the unit's Booked-to-Occupied transition when fully paid and the tenancy start date has arrived.
+      tags:
+        - Tenancies
+      parameters:
+        - name: tenancy_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Move-in invoice payment status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenancy_id, unit_status, start_date, invoice]
+                properties:
+                  tenancy_id:
+                    type: integer
+                  unit_status:
+                    type: string
+                    enum: [vacant, booked, occupied, maintenance]
+                  start_date:
+                    type: string
+                    format: date
+                  invoice:
+                    type: object
+                    required: [id, number, total, confirmed_paid, recorded_amount, outstanding, status, payments]
+                    properties:
+                      id: {type: integer}
+                      number: {type: string}
+                      total: {type: string}
+                      confirmed_paid: {type: string}
+                      recorded_amount: {type: string}
+                      outstanding: {type: string}
+                      status:
+                        type: string
+                        enum: [unpaid, partially_paid, paid]
+                      payments:
+                        type: array
+                        items:
+                          type: object
+                          required: [reference, source, instrument_status, amount, received_at]
+                          properties:
+                            reference: {type: string}
+                            source: {type: string}
+                            instrument_status: {type: string}
+                            amount: {type: string}
+                            received_at: {type: string, format: date-time}
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
   /tenancies/{tenancy_id}/move-in-agreement.pdf:
     get:
       operationId: getMoveInAgreementPdf
@@ -2390,6 +3970,10 @@ paths:
       responses:
         "200":
           description: Tenant and unit context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantActivationContext"
         "400":
           $ref: "#/components/responses/Problem"
   /tenant-activation/verify:
@@ -2415,6 +3999,10 @@ paths:
       responses:
         "200":
           description: Tenant and unit context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantActivationContext"
         "400":
           $ref: "#/components/responses/Problem"
   /tenant-activation/complete:
@@ -2448,6 +4036,10 @@ paths:
                   format: email
                 phone:
                   type: string
+                national_id_or_passport:
+                  type: string
+                  maxLength: 100
+                  description: Required when the activation context marks a new move-in tenant as identity_required.
                 password:
                   type: string
                   minLength: 12
@@ -2457,6 +4049,425 @@ paths:
         "400":
           $ref: "#/components/responses/Problem"
         "409":
+          $ref: "#/components/responses/Problem"
+  /tenant/dashboard:
+    get:
+      operationId: getTenantDashboard
+      summary: Get the authenticated tenant's dashboard
+      description: Returns only the linked tenant's issued invoices, balances, payment history, receipts, and current tenancy context. The dashboard read is audit logged; published announcements are available through GET /announcements.
+      tags:
+        - Tenant portal
+      responses:
+        "200":
+          description: Tenant-scoped billing dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDashboard"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenant/move-out-notice:
+    get:
+      operationId: getTenantMoveOutNotice
+      summary: Get the authenticated tenant's move-out notice
+      description: Returns only the authenticated tenant's active tenancy and its latest notice.
+      tags: [Tenant portal, Move-outs]
+      responses:
+        "200":
+          description: Active tenancy and its current move-out notice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantMoveOutContext"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenant/move-out-notice/create:
+    post:
+      operationId: submitTenantMoveOutNotice
+      summary: Submit a proposed move-out date
+      description: Requires an active tenant portal tenancy and honors its configured notice period. Submission is audited.
+      tags: [Tenant portal, Move-outs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantMoveOutNoticeInput"
+      responses:
+        "201":
+          description: Notice submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutNoticeEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /tenant/move-out-notices/{notice_id}/withdraw:
+    post:
+      operationId: withdrawTenantMoveOutNotice
+      summary: Withdraw a pending tenant notice
+      description: Only the tenant who submitted a notice can withdraw it while it is still pending review.
+      tags: [Tenant portal, Move-outs]
+      parameters:
+        - name: notice_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Notice withdrawn
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutNoticeEnvelope"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /move-out-workflows:
+    get:
+      operationId: listMoveOutWorkflows
+      summary: List property-scoped move-out notices and settlements
+      description: Returns notices, settlement records, and accepted notices eligible for settlement preparation within the user's property scope.
+      tags: [Move-outs]
+      responses:
+        "200":
+          description: Move-out workflow items and settlements ready for preparation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutWorkflowList"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+  /move-out-notices/create:
+    post:
+      operationId: createStaffMoveOutNotice
+      summary: Record a move-out notice for an active tenancy
+      description: Records a proposed date for an active tenancy after validating its configured notice period.
+      tags: [Move-outs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StaffMoveOutNoticeInput"
+      responses:
+        "201":
+          description: Staff-recorded notice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutNoticeEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /move-out-notices/{notice_id}/decision:
+    post:
+      operationId: decideMoveOutNotice
+      summary: Accept, reject, or withdraw a move-out notice
+      description: Notice decisions are atomic and property-scoped; rejecting a notice requires a review note.
+      tags: [Move-outs]
+      parameters:
+        - name: notice_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveOutNoticeDecision"
+      responses:
+        "200":
+          description: Updated notice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutNoticeEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /move-out-settlements/create:
+    post:
+      operationId: createMoveOutSettlement
+      summary: Prepare a move-out settlement for independent approval
+      description: Calculates final utility charges, issued invoice arrears, itemized damage, deposit deduction, refund, and any debt shortfall server-side.
+      tags: [Move-outs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveOutSettlementInput"
+      responses:
+        "201":
+          description: Settlement awaiting approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutSettlementEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /move-out-settlements/{settlement_id}/decision:
+    post:
+      operationId: decideMoveOutSettlement
+      summary: Approve or reject a move-out settlement
+      description: The preparer cannot approve their own settlement; rejection requires a reason.
+      tags: [Move-outs]
+      parameters:
+        - name: settlement_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveOutSettlementDecision"
+      responses:
+        "200":
+          description: Reviewed settlement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutSettlementEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /move-out-settlements/{settlement_id}/payout:
+    post:
+      operationId: recordMoveOutPayout
+      summary: Record a manual deposit refund payout
+      description: Requires finance authorization. If no refund is due, this closes the approved settlement without a payout reference.
+      tags: [Move-outs]
+      parameters:
+        - name: settlement_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveOutPayoutInput"
+      responses:
+        "200":
+          description: Payout recorded and settlement closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveOutSettlementEnvelope"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /tenant/maintenance-tickets:
+    get:
+      operationId: listTenantMaintenanceTickets
+      summary: List the authenticated tenant's maintenance requests
+      description: Returns only tickets reported by the authenticated tenant portal user. Reads are audit logged.
+      tags:
+        - Tenant portal
+      responses:
+        "200":
+          description: Tenant-owned maintenance requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tickets]
+                properties:
+                  tickets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TenantMaintenanceTicket"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /tenant/maintenance-tickets/create:
+    post:
+      operationId: createTenantMaintenanceTicket
+      summary: Submit a tenant maintenance request
+      description: Creates a request for the tenant's active tenancy; property and unit are derived server-side. Optional evidence is uploaded to private object storage.
+      tags:
+        - Tenant portal
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/TenantMaintenanceTicketInput"
+            encoding:
+              evidence:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        "201":
+          description: Maintenance request created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: "#/components/schemas/TenantMaintenanceTicket"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+  /tenant/maintenance-tickets/{ticket_id}/comments:
+    parameters:
+      - name: ticket_id
+        in: path
+        required: true
+        schema: {type: integer}
+    get:
+      operationId: listTenantMaintenanceTicketComments
+      summary: List comments visible to the tenant
+      description: Returns comments for a ticket reported by the authenticated tenant, limited to tenant and property-team authors.
+      tags:
+        - Tenant portal
+      responses:
+        "200":
+          description: Tenant-visible request comments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comments]
+                properties:
+                  comments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TenantMaintenanceComment"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: addTenantMaintenanceTicketComment
+      summary: Reply to a tenant maintenance request
+      description: Adds an auditable tenant comment to one of the tenant's open maintenance requests.
+      tags:
+        - Tenant portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: {type: string, minLength: 1, maxLength: 5000}
+      responses:
+        "201":
+          description: Comment added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [comment]
+                properties:
+                  comment:
+                    $ref: "#/components/schemas/TenantMaintenanceComment"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+  /tenant/maintenance-tickets/{ticket_id}/evidence/{evidence_index}:
+    get:
+      operationId: getTenantMaintenanceEvidence
+      summary: Retrieve private evidence from the tenant's maintenance request
+      description: Streams an evidence image only when the authenticated tenant reported the parent ticket.
+      tags:
+        - Tenant portal
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: evidence_index
+          in: path
+          required: true
+          schema: {type: integer, minimum: 0}
+      responses:
+        "200":
+          description: Private evidence image
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+            image/webp:
+              schema: {type: string, format: binary}
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
           $ref: "#/components/responses/Problem"
   /tenants/create:
     post:
@@ -2506,8 +4517,8 @@ paths:
   /tenants/{tenant_id}/documents:
     post:
       operationId: createTenantDocument
-      summary: Add tenant KYC document metadata
-      description: Records tenant document metadata and an object-storage key.
+      summary: Upload a private tenant document
+      description: Uploads a PDF, JPEG, PNG, or WebP tenant document to private object storage. The server generates the storage key and never returns it.
       tags:
         - Properties
       parameters:
@@ -2519,15 +4530,90 @@ paths:
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
-              $ref: "#/components/schemas/TenantDocumentInput"
+              type: object
+              required: [document_type, name, file]
+              properties:
+                document_type:
+                  type: string
+                  enum: [signed_agreement, identity_document, proof_of_payment, other]
+                name:
+                  type: string
+                  maxLength: 255
+                tenancy_id:
+                  type: integer
+                file:
+                  type: string
+                  format: binary
       responses:
         "201":
-          description: Document metadata created
+          description: Document uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document:
+                    type: object
+                    required: [id, document_type, name, download_path]
+                    properties:
+                      id: {type: integer}
+                      document_type: {type: string}
+                      name: {type: string}
+                      download_path: {type: string}
         "400":
           $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
         "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+  /tenants/{tenant_id}/documents/{document_id}:
+    get:
+      operationId: getTenantDocument
+      summary: Download a private tenant document
+      description: Streams a tenant document only to authorized staff within the tenant's property scope.
+      tags:
+        - Properties
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Private tenant document
+          headers:
+            Cache-Control:
+              schema: {type: string}
+            X-Content-Type-Options:
+              schema: {type: string}
+          content:
+            application/pdf:
+              schema: {type: string, format: binary}
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+            image/webp:
+              schema: {type: string, format: binary}
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
           $ref: "#/components/responses/Problem"
   /inspections:
     get:
@@ -2867,10 +4953,49 @@ components:
       allOf:
         - $ref: "#/components/schemas/PropertyInput"
         - type: object
-          required: [id, branch_id]
+          required:
+            - id
+            - branch_id
+            - landlord_id
+            - address
+            - currency_code
+            - timezone
+            - rent_due_day
+            - billing_mode
+            - default_rent
+            - security_deposit
+            - water_deposit
+            - default_garbage_charge
+            - default_water_rate
           properties:
             id:
               type: integer
+            landlord_id:
+              type: [integer, "null"]
+            address:
+              type: [string, "null"]
+            currency_code:
+              type: string
+              pattern: "^[A-Z]{3}$"
+            timezone:
+              type: string
+            rent_due_day:
+              type: integer
+              minimum: 1
+              maximum: 28
+            billing_mode:
+              type: string
+              enum: [metered_water, fixed_utilities]
+            default_rent:
+              type: string
+            security_deposit:
+              type: string
+            water_deposit:
+              type: string
+            default_garbage_charge:
+              type: string
+            default_water_rate:
+              type: string
             blocks:
               type: array
               items:
@@ -2887,6 +5012,216 @@ components:
               type: array
               items:
                 type: object
+    PropertyBillingSettings:
+      type: object
+      required:
+        - paybill_number
+        - account_number
+        - universal_security_deposit
+        - universal_water_deposit
+        - first_online_billing_month
+      properties:
+        paybill_number:
+          type: string
+          maxLength: 32
+        account_number:
+          type: string
+          maxLength: 64
+        universal_security_deposit:
+          type: string
+        universal_water_deposit:
+          type: string
+        first_online_billing_month:
+          type: [string, "null"]
+          pattern: "^\\d{4}-(0[1-9]|1[0-2])$"
+    PropertyRecurringCharge:
+      type: object
+      required: [id, name, amount, is_active]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          maxLength: 80
+        amount:
+          type: string
+        is_active:
+          type: boolean
+    PropertyRecurringChargeInput:
+      type: object
+      required: [name, amount]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        amount:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: string
+              pattern: "^\\d+(\\.\\d{1,2})?$"
+        isActive:
+          type: boolean
+    LandlordPropertyCreateInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        address:
+          type: string
+          maxLength: 255
+        location:
+          type: string
+          maxLength: 255
+        propertyType:
+          type: string
+          maxLength: 100
+          default: residential
+        currencyCode:
+          type: string
+          pattern: "^[A-Za-z]{3}$"
+          default: KES
+        timezone:
+          type: string
+          maxLength: 64
+          default: Africa/Nairobi
+        rentDueDay:
+          type: integer
+          minimum: 1
+          maximum: 28
+          default: 10
+        billingMode:
+          type: string
+          enum: [metered_water, fixed_utilities]
+          default: metered_water
+        defaultRent:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: string
+              pattern: "^\\d+(\\.\\d{1,2})?$"
+        securityDeposit:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: string
+              pattern: "^\\d+(\\.\\d{1,2})?$"
+        waterDeposit:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: string
+              pattern: "^\\d+(\\.\\d{1,2})?$"
+        garbageCharge:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: string
+              pattern: "^\\d+(\\.\\d{1,2})?$"
+        waterRate:
+          oneOf:
+            - type: number
+              minimum: 0
+            - type: string
+              pattern: "^\\d+(\\.\\d{1,4})?$"
+        recurringCharges:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/PropertyRecurringChargeInput"
+    LandlordPropertyUpdateInput:
+      oneOf:
+        - type: object
+          required: [activePropertyId]
+          additionalProperties: false
+          properties:
+            activePropertyId:
+              type: integer
+        - type: object
+          required: [propertyId]
+          anyOf:
+            - required: [name]
+            - required: [address]
+            - required: [location]
+            - required: [propertyType]
+            - required: [currencyCode]
+            - required: [timezone]
+            - required: [rentDueDay]
+            - required: [billingMode]
+            - required: [defaultRent]
+            - required: [securityDeposit]
+            - required: [waterDeposit]
+            - required: [garbageCharge]
+            - required: [waterRate]
+            - required: [recurringCharges]
+          properties:
+            propertyId:
+              type: integer
+            name:
+              type: string
+              minLength: 1
+              maxLength: 120
+            address:
+              type: string
+              maxLength: 255
+            location:
+              type: string
+              maxLength: 255
+            propertyType:
+              type: string
+              maxLength: 100
+            currencyCode:
+              type: string
+              pattern: "^[A-Za-z]{3}$"
+            timezone:
+              type: string
+              maxLength: 64
+            rentDueDay:
+              type: integer
+              minimum: 1
+              maximum: 28
+            billingMode:
+              type: string
+              enum: [metered_water, fixed_utilities]
+            defaultRent:
+              oneOf:
+                - type: number
+                  minimum: 0
+                - type: string
+                  pattern: "^\\d+(\\.\\d{1,2})?$"
+            securityDeposit:
+              oneOf:
+                - type: number
+                  minimum: 0
+                - type: string
+                  pattern: "^\\d+(\\.\\d{1,2})?$"
+            waterDeposit:
+              oneOf:
+                - type: number
+                  minimum: 0
+                - type: string
+                  pattern: "^\\d+(\\.\\d{1,2})?$"
+            garbageCharge:
+              oneOf:
+                - type: number
+                  minimum: 0
+                - type: string
+                  pattern: "^\\d+(\\.\\d{1,2})?$"
+            waterRate:
+              oneOf:
+                - type: number
+                  minimum: 0
+                - type: string
+                  pattern: "^\\d+(\\.\\d{1,4})?$"
+            recurringCharges:
+              type: array
+              maxItems: 20
+              items:
+                $ref: "#/components/schemas/PropertyRecurringChargeInput"
     CaretakerInput:
       type: object
       required: [email, name, password, branch_ids]
@@ -2941,6 +5276,98 @@ components:
           type: array
           items: {type: object}
         vendor_id: {type: integer}
+    TenantMaintenanceTicketInput:
+      type: object
+      required: [category, description, priority]
+      properties:
+        category:
+          type: string
+          enum: [plumbing, electrical, structural, security, other]
+        description:
+          type: string
+          minLength: 1
+          maxLength: 5000
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          default: normal
+        evidence:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+            format: binary
+          description: Each image may be up to 5 MB; total evidence is limited to 20 MB.
+    TenantMaintenanceTicket:
+      type: object
+      required: [id, title, description, category, priority, status, created_at, updated_at, evidence]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        description: {type: string}
+        category: {type: string, enum: [plumbing, electrical, structural, security, other]}
+        priority: {type: string, enum: [low, normal, high, urgent]}
+        status:
+          type: string
+          enum: [open, assigned, quotation, awaiting_landlord_approval, in_progress, completed, closed]
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        evidence:
+          type: array
+          items:
+            type: object
+            required: [name, content_type, size_bytes, download_path]
+            properties:
+              name: {type: string}
+              content_type: {type: string, enum: [image/jpeg, image/png, image/webp]}
+              size_bytes: {type: integer, minimum: 1, maximum: 5242880}
+              download_path: {type: string}
+    TenantMaintenanceComment:
+      type: object
+      required: [id, sender_role, sender_name, message, created_at]
+      properties:
+        id: {type: integer}
+        sender_role: {type: string, enum: [tenant, staff]}
+        sender_name: {type: string}
+        message: {type: string}
+        created_at: {type: string, format: date-time}
+    MaintenanceTicketComment:
+      type: object
+      required: [id, sender_role, sender_name, message, created_at]
+      properties:
+        id: {type: integer}
+        sender_role: {type: string, enum: [tenant, landlord, caretaker]}
+        sender_name: {type: string}
+        message: {type: string}
+        created_at: {type: string, format: date-time}
+    MaintenanceLedgerEntry:
+      type: object
+      required: [id, ticket_id, unit_code, tenant_name, category, description, fundi_name, cost, resolved_at]
+      properties:
+        id: {type: integer}
+        ticket_id: {type: string}
+        unit_code: {type: string}
+        tenant_name: {type: string}
+        category: {type: string}
+        description: {type: string}
+        fundi_name: {type: string}
+        cost: {type: string, nullable: true, pattern: '^\d+(\.\d{1,2})?$'}
+        resolved_at: {type: string, format: date-time}
+    MaintenanceLedger:
+      type: object
+      required: [month, summary, ledger]
+      properties:
+        month: {type: string, pattern: '^\d{4}-\d{2}$'}
+        summary:
+          type: object
+          required: [total_spend, total_repairs]
+          properties:
+            total_spend: {type: string, pattern: '^\d+(\.\d{1,2})?$'}
+            total_repairs: {type: integer, minimum: 0}
+        ledger:
+          type: array
+          items:
+            $ref: "#/components/schemas/MaintenanceLedgerEntry"
     VendorInput:
       type: object
       required: [branch_id, name, trade, phone]
@@ -3059,6 +5486,106 @@ components:
         status:
           type: string
           enum: [Draft, Vacant, Occupied, Notice Given, Maintenance, Archived]
+    MoveInUnit:
+      type: object
+      required: [id, unitCode, roomName, floor, status, rentAmount, garbageAmount, depositAmount, securityDeposit, waterDeposit, monthlyWaterRate, tenantId, currentTenant, tenantEmail, tenantPhone, tenantStatus, currentTenantName, moveInDate, expectedMoveOutDate]
+      properties:
+        id: {type: integer}
+        unitCode: {type: string}
+        roomName: {type: string}
+        floor: {type: string}
+        status:
+          type: string
+          enum: [vacant, booked, occupied, notice_given, deposit_pending, maintenance, archived, draft, unknown]
+        rentAmount: {type: number}
+        garbageAmount: {type: number}
+        depositAmount: {type: number}
+        securityDeposit: {type: number}
+        waterDeposit: {type: number}
+        monthlyWaterRate: {type: number}
+        tenantId: {type: [integer, "null"]}
+        currentTenant: {type: string}
+        tenantEmail: {type: string}
+        tenantPhone: {type: string}
+        tenantStatus: {type: [string, "null"], enum: [active, dormant, null]}
+        currentTenantName: {type: string}
+        moveInDate: {type: string}
+        expectedMoveOutDate: {type: [string, "null"], format: date}
+    MoveInSettlement:
+      type: object
+      required: [id, unit_id, tenant_id, tenant_name, tenant_email, tenant_phone, deposit_amount, rent_amount, garbage_amount, water_deposit_amount, utility_charges, total_required, total_paid, deposit_paid_amount, outstanding_balance, expected_move_in_date, status, activation_email_sent_at, activation_email_error, cancellation_reason, booked_at, activated_at, created_at, updated_at, units, payments]
+      properties:
+        id: {type: integer}
+        unit_id: {type: integer}
+        tenant_id: {type: [integer, "null"]}
+        tenant_name: {type: string}
+        tenant_email: {type: string, format: email}
+        tenant_phone: {type: string}
+        deposit_amount: {type: number}
+        rent_amount: {type: number}
+        garbage_amount: {type: number}
+        water_deposit_amount: {type: number}
+        utility_charges:
+          type: array
+          items:
+            type: object
+            required: [name, amount]
+            properties:
+              name: {type: string}
+              amount: {type: string}
+        total_required: {type: number}
+        total_paid: {type: number}
+        deposit_paid_amount: {type: number}
+        outstanding_balance: {type: number}
+        expected_move_in_date: {type: string, format: date}
+        status: {type: string}
+        activation_email_sent_at: {type: [string, "null"], format: date-time}
+        activation_email_error: {type: [string, "null"]}
+        cancellation_reason: {type: [string, "null"]}
+        booked_at: {type: [string, "null"], format: date-time}
+        activated_at: {type: [string, "null"], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        units:
+          type: object
+          required: [unit_code]
+          properties:
+            unit_code: {type: string}
+        payments:
+          type: array
+          items:
+            type: object
+            required: [id, amount, method, mpesa_reference, status, created_at]
+            properties:
+              id: {type: integer}
+              amount: {type: number}
+              method: {type: string}
+              mpesa_reference: {type: [string, "null"]}
+              status: {type: string}
+              created_at: {type: string, format: date-time}
+    MoveInSettlementSummary:
+      type: object
+      required: [status, total_required, total_paid, outstanding_balance, deposit_amount, rent_amount, garbage_amount, water_deposit_amount]
+      properties:
+        status: {type: string}
+        total_required: {type: number}
+        total_paid: {type: number}
+        outstanding_balance: {type: number}
+        deposit_amount: {type: number}
+        rent_amount: {type: number}
+        garbage_amount: {type: number}
+        water_deposit_amount: {type: number}
+    TenantActivationContext:
+      type: object
+      required: [tenant_id, full_name, email, unit_code, property_name, identity_required, expires_at]
+      properties:
+        tenant_id: {type: integer}
+        full_name: {type: string}
+        email: {type: string}
+        unit_code: {type: string}
+        property_name: {type: string}
+        identity_required: {type: boolean}
+        expires_at: {type: string, format: date-time}
     Unit:
       allOf:
         - $ref: "#/components/schemas/UnitInput"
@@ -3085,6 +5612,22 @@ components:
             rent_charge_id:
               type: integer
               nullable: true
+    PublicVacancy:
+      type: object
+      required: [code, unit_type, bedrooms, property_name, branch, town, location, rent, deposit, photos]
+      properties:
+        code: {type: string}
+        unit_type: {type: string}
+        bedrooms: {type: integer}
+        property_name: {type: string}
+        branch: {type: string}
+        town: {type: string}
+        location: {type: string}
+        rent: {type: string}
+        deposit: {type: string}
+        photos:
+          type: array
+          items: {type: string, format: uri}
     AuditHistoryEvent:
       type: object
       required: [id, action, entity, old_values, new_values, user_id, timestamp]
@@ -3456,19 +5999,27 @@ components:
             documents:
               type: array
               items:
-                type: object
-    TenantDocumentInput:
+                $ref: "#/components/schemas/TenantDocument"
+    TenantDocument:
       type: object
-      required: [document_type, name, storage_key]
+      required: [id, document_type, name, metadata, uploaded_by, created_at, download_path]
       properties:
+        id:
+          type: integer
         document_type:
           type: string
         name:
           type: string
-        storage_key:
-          type: string
         metadata:
           type: object
+        uploaded_by:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        download_path:
+          type: string
     TenancyInput:
       type: object
       required: [unit_id, tenant_id, tenancy_type, start_date, due_day]
@@ -3503,13 +6054,19 @@ components:
       allOf:
         - $ref: "#/components/schemas/TenancyInput"
         - type: object
-          required: [id, status]
+          required: [id, status, unit_code, property_name, tenant_name]
           properties:
             id:
               type: integer
             status:
               type: string
               enum: [active, ended, cancelled]
+            unit_code:
+              type: string
+            property_name:
+              type: string
+            tenant_name:
+              type: string
     InvoiceLine:
       type: object
       required: [id, invoice_id, charge_type, description, amount, metadata]
@@ -3559,6 +6116,284 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/InvoiceLine"
+    TenantDashboard:
+      type: object
+      additionalProperties: false
+      required: [tenant, summary, invoices, payments]
+      properties:
+        tenant:
+          $ref: "#/components/schemas/TenantDashboardProfile"
+        summary:
+          $ref: "#/components/schemas/TenantDashboardSummary"
+        invoices:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantDashboardInvoice"
+        payments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantDashboardPayment"
+    TenantDashboardProfile:
+      type: object
+      additionalProperties: false
+      required: [id, name, email, phone, unit_code, property_name, move_in_date]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        email: {type: string}
+        phone: {type: string}
+        unit_code: {type: string, nullable: true}
+        property_name: {type: string, nullable: true}
+        paybill_number: {type: string, nullable: true}
+        move_in_date: {type: string, format: date, nullable: true}
+    TenantDashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [balance_due, next_due_date]
+      properties:
+        balance_due:
+          type: string
+          description: Sum of outstanding issued invoices and applicable overdue penalties after valid allocations and approved waivers.
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        next_due_date:
+          type: string
+          format: date
+          nullable: true
+    TenantDashboardInvoice:
+      type: object
+      additionalProperties: false
+      required: [id, number, period_start, period_end, due_date, status, total, amount_paid, waived_amount, penalty, balance_due, lines]
+      properties:
+        id: {type: integer}
+        number: {type: string}
+        period_start: {type: string, format: date}
+        period_end: {type: string, format: date}
+        due_date: {type: string, format: date}
+        status: {type: string, enum: [settled, partial, unpaid]}
+        total: {type: string}
+        amount_paid: {type: string}
+        waived_amount: {type: string}
+        penalty: {type: string}
+        balance_due: {type: string}
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantDashboardInvoiceLine"
+    TenantDashboardInvoiceLine:
+      type: object
+      additionalProperties: false
+      required: [id, charge_type, description, amount]
+      properties:
+        id: {type: integer}
+        charge_type: {type: string}
+        description: {type: string}
+        amount: {type: string}
+    TenantDashboardPayment:
+      type: object
+      additionalProperties: false
+      required: [id, amount, reference, source, status, instrument_status, received_at, allocations, receipt]
+      properties:
+        id: {type: integer}
+        amount: {type: string}
+        reference: {type: string}
+        source: {type: string}
+        status: {type: string}
+        instrument_status: {type: string}
+        received_at: {type: string, format: date-time}
+        allocations:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantDashboardAllocation"
+        receipt:
+          oneOf:
+            - $ref: "#/components/schemas/Receipt"
+            - type: "null"
+    TenantDashboardAllocation:
+      type: object
+      additionalProperties: false
+      required: [invoice_id, invoice_number, amount]
+      properties:
+        invoice_id: {type: integer}
+        invoice_number: {type: string}
+        amount: {type: string}
+    TenantMoveOutContext:
+      type: object
+      required: [tenancy_id, unit_code, property_name, notice_period_days, notice]
+      properties:
+        tenancy_id: {type: integer}
+        unit_code: {type: string}
+        property_name: {type: string}
+        notice_period_days: {type: integer}
+        notice:
+          oneOf:
+            - $ref: "#/components/schemas/MoveOutNotice"
+            - type: "null"
+    TenantMoveOutNoticeInput:
+      type: object
+      required: [proposed_move_out_date]
+      properties:
+        proposed_move_out_date: {type: string, format: date}
+        reason: {type: string, maxLength: 2000}
+    StaffMoveOutNoticeInput:
+      type: object
+      required: [tenancy_id, proposed_move_out_date]
+      properties:
+        tenancy_id: {type: integer}
+        proposed_move_out_date: {type: string, format: date}
+        reason: {type: string, maxLength: 2000}
+    MoveOutNoticeDecision:
+      type: object
+      required: [action]
+      properties:
+        action: {type: string, enum: [accept, reject, withdraw]}
+        review_note: {type: string}
+    MoveOutNoticeEnvelope:
+      type: object
+      required: [notice]
+      properties:
+        notice:
+          $ref: "#/components/schemas/MoveOutNotice"
+    MoveOutNotice:
+      type: object
+      required: [id, tenancy_id, tenant_name, property_id, property_name, unit_id, unit_code, requested_by, proposed_move_out_date, previous_tenancy_end_date, notice_period_days, reason, status, reviewed_by, reviewed_at, review_note, created_at]
+      properties:
+        id: {type: integer}
+        tenancy_id: {type: integer}
+        tenant_name: {type: string}
+        property_id: {type: integer}
+        property_name: {type: string}
+        unit_id: {type: integer}
+        unit_code: {type: string}
+        requested_by: {type: integer}
+        proposed_move_out_date: {type: string, format: date}
+        previous_tenancy_end_date: {type: string, format: date, nullable: true}
+        notice_period_days: {type: integer}
+        reason: {type: string}
+        status: {type: string, enum: [submitted, accepted, rejected, withdrawn]}
+        reviewed_by: {type: integer, nullable: true}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        review_note: {type: string}
+        created_at: {type: string, format: date-time}
+    MoveOutSettlementInput:
+      type: object
+      required: [tenancy_id, notice_id, exit_inspection_id, actual_move_out_date, final_readings, damage_items]
+      properties:
+        tenancy_id: {type: integer}
+        notice_id: {type: integer}
+        exit_inspection_id: {type: integer}
+        actual_move_out_date: {type: string, format: date}
+        final_readings:
+          type: array
+          items:
+            type: object
+            required: [utility_type, current_value]
+            properties:
+              utility_type: {type: string}
+              current_value: {oneOf: [{type: string}, {type: number}]}
+        damage_items:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [description, amount]
+            properties:
+              description: {type: string, minLength: 1, maxLength: 255}
+              amount: {oneOf: [{type: string}, {type: number}]}
+    MoveOutSettlementDecision:
+      type: object
+      required: [action]
+      properties:
+        action: {type: string, enum: [approve, reject]}
+        review_note: {type: string}
+    MoveOutPayoutInput:
+      type: object
+      required: [payout_date]
+      properties:
+        payout_reference: {type: string, maxLength: 100}
+        payout_date: {type: string, format: date}
+    MoveOutSettlementEnvelope:
+      type: object
+      required: [settlement]
+      properties:
+        settlement:
+          $ref: "#/components/schemas/MoveOutSettlement"
+    MoveOutSettlement:
+      type: object
+      required: [id, tenancy_id, notice_id, exit_inspection_id, property_id, property_name, unit_id, unit_code, tenant_id, tenant_name, actual_move_out_date, final_readings, damage_items, deposit_balance, arrears_amount, utility_amount, damages_amount, deduction_from_deposit, refund_amount, shortfall_amount, status, prepared_by, reviewed_by, reviewed_at, rejection_reason, payout_reference, payout_date, payout_recorded_by, created_at]
+      properties:
+        id: {type: integer}
+        tenancy_id: {type: integer}
+        notice_id: {type: integer}
+        exit_inspection_id: {type: integer}
+        property_id: {type: integer}
+        property_name: {type: string}
+        unit_id: {type: integer}
+        unit_code: {type: string}
+        tenant_id: {type: integer}
+        tenant_name: {type: string}
+        actual_move_out_date: {type: string, format: date}
+        final_readings: {type: array, items: {type: object}}
+        damage_items: {type: array, items: {type: object}}
+        deposit_balance: {type: string}
+        arrears_amount: {type: string}
+        utility_amount: {type: string}
+        damages_amount: {type: string}
+        deduction_from_deposit: {type: string}
+        refund_amount: {type: string}
+        shortfall_amount: {type: string, description: Remaining move-out costs not covered by the deposit; remains recorded as tenant debt.}
+        status: {type: string, enum: [awaiting_approval, rejected, approved, paid]}
+        prepared_by: {type: integer}
+        reviewed_by: {type: integer, nullable: true}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        rejection_reason: {type: string}
+        payout_reference: {type: string, nullable: true}
+        payout_date: {type: string, format: date, nullable: true}
+        payout_recorded_by: {type: integer, nullable: true}
+        created_at: {type: string, format: date-time}
+    MoveOutWorkflowList:
+      type: object
+      required: [notices, settlements, eligible_tenancies]
+      properties:
+        notices:
+          type: array
+          items: {$ref: "#/components/schemas/MoveOutNotice"}
+        settlements:
+          type: array
+          items: {$ref: "#/components/schemas/MoveOutSettlement"}
+        eligible_tenancies:
+          type: array
+          items:
+            type: object
+            required: [tenancy_id, unit_id, notice_id, tenant_name, property_name, unit_code, move_out_date, deposit_balance, arrears_amount, metered_utilities]
+            properties:
+              tenancy_id: {type: integer}
+              unit_id: {type: integer}
+              notice_id: {type: integer}
+              tenant_name: {type: string}
+              property_name: {type: string}
+              unit_code: {type: string}
+              move_out_date: {type: string, format: date}
+              deposit_balance: {type: string}
+              arrears_amount: {type: string}
+              metered_utilities:
+                type: array
+                items:
+                  type: object
+                  required: [utility_type, name, meter, rate_per_unit, minimum_charge, previous_reading]
+                  properties:
+                    utility_type: {type: string}
+                    name: {type: string}
+                    meter: {type: string, nullable: true}
+                    rate_per_unit: {type: string}
+                    minimum_charge: {type: string}
+                    previous_reading:
+                      oneOf:
+                        - type: object
+                          required: [period, current_value]
+                          properties:
+                            period: {type: string, format: date}
+                            current_value: {type: string}
+                        - type: "null"
     MoveInCharge:
       type: object
       required: [id, charge_type, description, amount, calculation]
@@ -3750,6 +6585,492 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ManagementAgreement"
+    LandlordDashboard:
+      type: object
+      additionalProperties: false
+      required: [period_start, period_end, summary, properties]
+      properties:
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        summary:
+          $ref: "#/components/schemas/LandlordDashboardMetrics"
+        properties:
+          type: array
+          items:
+            $ref: "#/components/schemas/LandlordDashboardProperty"
+    LandlordDashboardMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - total_units
+        - occupied_units
+        - expected_rent
+        - collected_rent
+        - arrears
+        - approved_expenses
+        - pending_expenses
+        - pending_expense_count
+        - open_maintenance_count
+        - occupancy_rate
+      properties:
+        total_units:
+          type: integer
+          minimum: 0
+        occupied_units:
+          type: integer
+          minimum: 0
+        expected_rent:
+          type: string
+          description: Current-month issued invoice total, including rent and billed charges.
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        collected_rent:
+          type: string
+          description: Valid payment allocations to current-month invoices; amounts are not split by invoice line.
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        arrears:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        approved_expenses:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        pending_expenses:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        pending_expense_count:
+          type: integer
+          minimum: 0
+        open_maintenance_count:
+          type: integer
+          minimum: 0
+        occupancy_rate:
+          type: number
+          minimum: 0
+          maximum: 100
+    LandlordDashboardProperty:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - location
+        - total_units
+        - occupied_units
+        - expected_rent
+        - collected_rent
+        - arrears
+        - approved_expenses
+        - pending_expenses
+        - pending_expense_count
+        - open_maintenance_count
+        - occupancy_rate
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        location:
+          type: string
+        total_units:
+          type: integer
+          minimum: 0
+        occupied_units:
+          type: integer
+          minimum: 0
+        expected_rent:
+          type: string
+          description: Current-month issued invoice total, including rent and billed charges.
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        collected_rent:
+          type: string
+          description: Valid payment allocations to current-month invoices; amounts are not split by invoice line.
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        arrears:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        approved_expenses:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        pending_expenses:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        pending_expense_count:
+          type: integer
+          minimum: 0
+        open_maintenance_count:
+          type: integer
+          minimum: 0
+        occupancy_rate:
+          type: number
+          minimum: 0
+          maximum: 100
+    LandlordStatement:
+      type: object
+      additionalProperties: false
+      required:
+        - landlord
+        - period_start
+        - period_end
+        - commission_basis
+        - commission_status
+        - tax_status
+        - summary
+        - properties
+        - maintenance_cost_allocations
+      properties:
+        landlord:
+          type: object
+          required: [id, name]
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        commission_basis:
+          type: string
+          const: collected_invoice_allocations
+        commission_status:
+          type: string
+          enum: [configured, not_configured]
+        tax_status:
+          type: string
+          enum: [configured, not_configured, not_applicable]
+        summary:
+          type: object
+          additionalProperties: false
+          required:
+            - billed_rent
+            - collected_invoice_allocations
+            - arrears
+            - commission
+            - expenses
+            - maintenance_costs
+            - tax
+            - net_payout
+          properties:
+            billed_rent:
+              type: string
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            collected_invoice_allocations:
+              type: string
+              description: Payments allocated to invoices, including non-rent charges where present.
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            arrears:
+              type: string
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            commission:
+              type: string
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            expenses:
+              type: string
+              description: Approved expenses with an effective date in the statement period.
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            maintenance_costs:
+              type: string
+              description: Approved quotation allocations charged to the landlord during the statement period.
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            tax:
+              type:
+                - string
+                - "null"
+              pattern: "^[0-9]+\\.[0-9]{2}$"
+            net_payout:
+              type:
+                - string
+                - "null"
+              description: Null when commission or applicable tax configuration is incomplete.
+              pattern: "^-?[0-9]+\\.[0-9]{2}$"
+        properties:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - property_id
+              - property
+              - billed_rent
+              - collected_invoice_allocations
+              - arrears
+              - expenses
+              - maintenance_costs
+            properties:
+              property_id:
+                type: integer
+              property:
+                type: string
+              billed_rent:
+                type: string
+                pattern: "^[0-9]+\\.[0-9]{2}$"
+              collected_invoice_allocations:
+                type: string
+                pattern: "^[0-9]+\\.[0-9]{2}$"
+              arrears:
+                type: string
+                pattern: "^[0-9]+\\.[0-9]{2}$"
+              expenses:
+                type: string
+                pattern: "^[0-9]+\\.[0-9]{2}$"
+              maintenance_costs:
+                type: string
+                pattern: "^[0-9]+\\.[0-9]{2}$"
+        maintenance_cost_allocations:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - quotation_id
+              - ticket_id
+              - ticket_title
+              - property_id
+              - property
+              - unit_code
+              - vendor
+              - description
+              - reason
+              - amount
+              - allocated_at
+            properties:
+              id: {type: integer}
+              quotation_id: {type: integer}
+              ticket_id: {type: integer}
+              ticket_title: {type: string}
+              property_id: {type: integer}
+              property: {type: string}
+              unit_code:
+                type:
+                  - string
+                  - "null"
+              vendor: {type: string}
+              description: {type: string}
+              reason: {type: string}
+              amount:
+                type: string
+                pattern: "^[0-9]+\\.[0-9]{2}$"
+              allocated_at:
+                type: string
+                format: date-time
+    LandlordMaintenanceQuotationApprovalList:
+      type: object
+      additionalProperties: false
+      required: [quotations]
+      properties:
+        quotations:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - ticket_id
+              - ticket_title
+              - ticket_description
+              - property_id
+              - property_name
+              - unit_code
+              - vendor_name
+              - vendor_trade
+              - description
+              - amount
+              - approval_threshold
+              - valid_until
+              - submitted_at
+            properties:
+              id: {type: integer}
+              ticket_id: {type: integer}
+              ticket_title: {type: string}
+              ticket_description: {type: string}
+              property_id: {type: integer}
+              property_name: {type: string}
+              unit_code:
+                type:
+                  - string
+                  - "null"
+              vendor_name: {type: string}
+              vendor_trade: {type: string}
+              description: {type: string}
+              amount: {type: string, pattern: "^[0-9]+\\.[0-9]{2}$"}
+              approval_threshold: {type: string, pattern: "^[0-9]+\\.[0-9]{2}$"}
+              valid_until:
+                type:
+                  - string
+                  - "null"
+                format: date
+              submitted_at:
+                type: string
+                format: date-time
+    LandlordMaintenanceQuotationDecision:
+      type: object
+      additionalProperties: false
+      required: [approved]
+      properties:
+        approved:
+          type: boolean
+        rejection_reason:
+          type: string
+    CreateLandlordRemittanceRequest:
+      type: object
+      additionalProperties: false
+      required: [landlord_id, period_start, period_end]
+      properties:
+        landlord_id:
+          type: integer
+          minimum: 1
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+    LandlordRemittanceDecision:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, reject]
+        review_note:
+          type: string
+    LandlordRemittancePayout:
+      type: object
+      additionalProperties: false
+      required: [payout_reference, payout_date]
+      properties:
+        payout_reference:
+          type: string
+          minLength: 1
+          maxLength: 100
+        payout_date:
+          type: string
+          format: date
+    LandlordRemittanceList:
+      type: object
+      additionalProperties: false
+      required: [landlords, remittances]
+      properties:
+        landlords:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+        remittances:
+          type: array
+          items:
+            $ref: "#/components/schemas/LandlordRemittance"
+    LandlordRemittanceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [remittance]
+      properties:
+        remittance:
+          $ref: "#/components/schemas/LandlordRemittance"
+    LandlordRemittance:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - landlord
+        - period_start
+        - period_end
+        - revision
+        - summary
+        - commission_status
+        - tax_status
+        - status
+        - prepared_by
+        - reviewed_by
+        - rejection_reason
+        - payout_reference
+        - payout_date
+        - payout_recorded_by
+        - created_at
+      properties:
+        id:
+          type: integer
+        landlord:
+          type: object
+          required: [id, name]
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        revision:
+          type: integer
+          minimum: 1
+        summary:
+          type: object
+          additionalProperties: false
+          required:
+            - billed_rent
+            - collected_invoice_allocations
+            - arrears
+            - commission
+            - expenses
+            - tax
+            - net_payout
+          properties:
+            billed_rent:
+              type: string
+            collected_invoice_allocations:
+              type: string
+            arrears:
+              type: string
+            commission:
+              type: string
+            expenses:
+              type: string
+            tax:
+              type: [string, "null"]
+            net_payout:
+              type: string
+        commission_status:
+          type: string
+          enum: [configured, not_configured]
+        tax_status:
+          type: string
+          enum: [configured, not_configured, not_applicable]
+        status:
+          type: string
+          enum: [awaiting_approval, rejected, approved, paid, no_payout]
+        prepared_by:
+          type: integer
+        reviewed_by:
+          type: [integer, "null"]
+        rejection_reason:
+          type: string
+        payout_reference:
+          type: [string, "null"]
+        payout_date:
+          type: [string, "null"]
+          format: date
+        payout_recorded_by:
+          type: [integer, "null"]
+        created_at:
+          type: string
+          format: date-time
     LandlordInput:
       type: object
       additionalProperties: false
@@ -3819,6 +7140,63 @@ components:
                 type: string
               town:
                 type: string
+    PortalProfileResponse:
+      type: object
+      required:
+        - profile
+      properties:
+        profile:
+          type: object
+          required:
+            - full_name
+            - email
+            - phone
+          properties:
+            full_name:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: string
+            role:
+              type: string
+            status:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+    PortalProfileUpdate:
+      type: object
+      required:
+        - fullName
+        - phone
+      properties:
+        fullName:
+          type: string
+          maxLength: 120
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+    PortalProfileUpdateResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+    PortalOnboardingResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
     HealthResponse:
       type: object
       additionalProperties: false

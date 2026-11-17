@@ -1,8 +1,53 @@
 from django.contrib.auth.models import Group, Permission
-from django.db.models.signals import post_migrate
+from django.db.models.signals import m2m_changed, post_migrate
 from django.dispatch import receiver
 
-from users.roles import SUPER_ADMIN_ROLE
+from users.models import AgencyMembership, Branch, UserProfile
+from users.roles import ROLE_NAMES, SUPER_ADMIN_ROLE
+
+
+@receiver(m2m_changed, sender=UserProfile.branches.through)
+def create_agency_memberships_for_branch_assignments(
+    sender,
+    instance,
+    action,
+    reverse,
+    model,
+    pk_set,
+    using,
+    **kwargs,
+):
+    if reverse:
+        return
+
+    if action == "post_clear":
+        for membership in instance.agency_memberships.using(using).all():
+            membership.branches.clear()
+        return
+    if action not in {"post_add", "post_remove"} or not pk_set:
+        return
+
+    branches = Branch.objects.using(using).filter(pk__in=pk_set).only("pk", "agency_id")
+    existing_membership_agency_ids = set(
+        instance.agency_memberships.using(using).values_list("agency_id", flat=True)
+    )
+    for branch in branches:
+        if action == "post_remove":
+            membership = instance.agency_memberships.using(using).filter(
+                agency_id=branch.agency_id
+            ).first()
+            if membership:
+                membership.branches.remove(branch)
+            continue
+
+        membership, created = AgencyMembership.objects.using(using).get_or_create(
+            profile=instance,
+            agency_id=branch.agency_id,
+        )
+        if created and not existing_membership_agency_ids:
+            membership.roles.add(*instance.user.groups.using(using).all())
+        membership.branches.add(branch)
+        existing_membership_agency_ids.add(branch.agency_id)
 
 
 @receiver(post_migrate)
@@ -10,7 +55,11 @@ def configure_super_admin_permissions(sender, using, **kwargs):
     if sender.label != "users":
         return
 
-    group, _ = Group.objects.using(using).get_or_create(name=SUPER_ADMIN_ROLE)
+    groups = {
+        role_name: Group.objects.using(using).get_or_create(name=role_name)[0]
+        for role_name in ROLE_NAMES
+    }
+    group = groups[SUPER_ADMIN_ROLE]
     permissions = Permission.objects.using(using).filter(
         content_type__app_label__in={"auth", "users"},
         codename__in={

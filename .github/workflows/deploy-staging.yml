@@ -4,18 +4,46 @@ on:
   push:
     branches: [staging]
   workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: Deploy the selected branch to the shared staging VPS
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: staging-deployment
   cancel-in-progress: false
 
 jobs:
+  checks:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/staging') ||
+      (github.event_name == 'workflow_dispatch' && inputs.confirm_deploy)
+    uses: ./.github/workflows/packages.yml
+
   deploy:
+    needs: checks
+    if: >-
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/staging') ||
+        (github.event_name == 'workflow_dispatch' && inputs.confirm_deploy)
+      ) &&
+      needs.checks.result == 'success'
+    name: Deploy staging from ${{ github.ref_name }}
     runs-on: ubuntu-latest
     environment: staging
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Show deployment source
+        run: |
+          echo "Deploying ref: $GITHUB_REF"
+          echo "Commit: $(git rev-parse --short HEAD)"
 
       - name: Create deployment archive
         run: git archive --format=tar.gz --output=legacy-real-estate.tar.gz HEAD

@@ -1,4 +1,4 @@
-import MaintenanceBoard from '../../landlord/maintenance/page';
+import MaintenanceBoard from '../../../components/maintenance/MaintenanceBoard';
 
 export default function CaretakerMaintenancePage() {
   return <MaintenanceBoard />;

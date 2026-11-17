@@ -42,7 +42,7 @@ export async function PUT(request: Request) {
       body: {},
     });
   } catch (error) {
-    return djangoProxyFailure(error, 'Unable to regenerate the caretaker invitation link.');
+    return djangoProxyFailure(error, 'Unable to resend the caretaker activation email.');
   }
 }
 

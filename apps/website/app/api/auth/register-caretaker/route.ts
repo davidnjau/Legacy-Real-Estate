@@ -7,6 +7,7 @@ export async function POST(request: Request) {
       method: 'POST',
       body: {
         token: body.token,
+        code: body.code,
         name: body.fullName,
         phone: body.phone,
         password: body.password,

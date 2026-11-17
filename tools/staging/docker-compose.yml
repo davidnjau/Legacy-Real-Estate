@@ -16,6 +16,21 @@ services:
     volumes:
       - redis_data:/data
 
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?Set RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?Set RABBITMQ_ERLANG_COOKIE}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   minio:
     build:
       context: ../..
@@ -27,6 +42,11 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   core:
     build:
@@ -38,21 +58,149 @@ services:
       DJANGO_DEBUG: ${DJANGO_DEBUG}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-https://${STAGING_DOMAIN}}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
+      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Legacy Real Estate}
       AUTH_SMS_BACKEND: ${AUTH_SMS_BACKEND}
+      SOFTLINK_SMS_API_URL: ${SOFTLINK_SMS_API_URL:-https://api.softlinksms.co.ke/api/v1/sms}
+      SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
+      SOFTLINK_SMS_TRAFFIC_CLASS: ${SOFTLINK_SMS_TRAFFIC_CLASS:-promotional}
+      SOFTLINK_SMS_TIMEOUT_SECONDS: ${SOFTLINK_SMS_TIMEOUT_SECONDS:-10}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:?Set RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS}@rabbitmq:5672//
+      OBJECT_STORAGE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-legacy-private}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-us-east-1}
+      OBJECT_STORAGE_AUTO_CREATE_BUCKET: "0"
     command: >
       sh -c "python manage.py migrate --noinput &&
       python manage.py collectstatic --noinput &&
       gunicorn config.wsgi:application --bind 0.0.0.0:8000
       --workers 3 --timeout 60"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  sms-worker:
+    build:
+      context: ../..
+      dockerfile: apps/core/Dockerfile.staging
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      AUTH_SMS_BACKEND: ${AUTH_SMS_BACKEND}
+      SOFTLINK_SMS_API_URL: ${SOFTLINK_SMS_API_URL:-https://api.softlinksms.co.ke/api/v1/sms}
+      SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
+      SOFTLINK_SMS_TRAFFIC_CLASS: ${SOFTLINK_SMS_TRAFFIC_CLASS:-promotional}
+      SOFTLINK_SMS_TIMEOUT_SECONDS: ${SOFTLINK_SMS_TIMEOUT_SECONDS:-10}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+    command: python manage.py dispatch_sms_deliveries --watch
+    depends_on:
+      postgres:
+        condition: service_started
+      core:
+        condition: service_started
+
+  move-in-occupancy-scheduler:
+    build:
+      context: ../..
+      dockerfile: apps/core/Dockerfile.staging
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    command:
+      - sh
+      - -c
+      - while true; do python manage.py sync_move_in_occupancy; sleep 86400; done
+    depends_on:
+      postgres:
+        condition: service_started
+      core:
+        condition: service_started
+
+  celery-worker:
+    build:
+      context: ../..
+      dockerfile: apps/core/Dockerfile.staging
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      AUTH_SMS_BACKEND: ${AUTH_SMS_BACKEND}
+      SOFTLINK_SMS_API_URL: ${SOFTLINK_SMS_API_URL:-https://api.softlinksms.co.ke/api/v1/sms}
+      SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
+      SOFTLINK_SMS_TRAFFIC_CLASS: ${SOFTLINK_SMS_TRAFFIC_CLASS:-promotional}
+      SOFTLINK_SMS_TIMEOUT_SECONDS: ${SOFTLINK_SMS_TIMEOUT_SECONDS:-10}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:?Set RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS}@rabbitmq:5672//
+    command: celery -A config worker --loglevel=INFO
+    depends_on:
+      postgres:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      core:
+        condition: service_started
+
+  celery-beat:
+    build:
+      context: ../..
+      dockerfile: apps/core/Dockerfile.staging
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      AUTH_SMS_BACKEND: ${AUTH_SMS_BACKEND}
+      SOFTLINK_SMS_API_URL: ${SOFTLINK_SMS_API_URL:-https://api.softlinksms.co.ke/api/v1/sms}
+      SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
+      SOFTLINK_SMS_TRAFFIC_CLASS: ${SOFTLINK_SMS_TRAFFIC_CLASS:-promotional}
+      SOFTLINK_SMS_TIMEOUT_SECONDS: ${SOFTLINK_SMS_TIMEOUT_SECONDS:-10}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672//
+    command: celery -A config beat --loglevel=INFO
+    depends_on:
+      core:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
 
   website:
     build:
@@ -61,15 +209,10 @@ services:
       args:
         NEXT_PUBLIC_API_BASE_URL: https://${STAGING_DOMAIN}/api/v1
         NEXT_PUBLIC_API_MODE: local
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_BASE_URL: https://${STAGING_DOMAIN}/api/v1
       NEXT_PUBLIC_API_MODE: local
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
     depends_on:
       - core
 
@@ -92,6 +235,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:
   minio_data:
   caddy_data:
   caddy_config:

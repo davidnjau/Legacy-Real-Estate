@@ -22,10 +22,31 @@ AUTH_SMS_BACKEND = os.environ.get(
     "AUTH_SMS_BACKEND",
     "users.sms.ConsoleSMSBackend" if DEBUG else "",
 )
+SOFTLINK_SMS_API_URL = os.environ.get(
+    "SOFTLINK_SMS_API_URL",
+    "https://api.softlinksms.co.ke/api/v1/sms",
+)
+SOFTLINK_SMS_API_KEY = os.environ.get("SOFTLINK_SMS_API_KEY", "")
+SOFTLINK_SMS_TRAFFIC_CLASS = os.environ.get(
+    "SOFTLINK_SMS_TRAFFIC_CLASS",
+    "promotional",
+)
+SOFTLINK_SMS_TIMEOUT_SECONDS = int(os.environ.get("SOFTLINK_SMS_TIMEOUT_SECONDS", "10"))
 AUTH_SMS_CODE_LIFETIME_SECONDS = int(os.environ.get("AUTH_SMS_CODE_LIFETIME_SECONDS", "300"))
 AUTH_SMS_MAX_ATTEMPTS = int(os.environ.get("AUTH_SMS_MAX_ATTEMPTS", "5"))
+AUTH_MFA_CHALLENGE_TTL_SECONDS = int(os.environ.get("AUTH_MFA_CHALLENGE_TTL_SECONDS", "300"))
+AUTH_MFA_MAX_ATTEMPTS = int(os.environ.get("AUTH_MFA_MAX_ATTEMPTS", "5"))
+AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS = int(
+    os.environ.get("AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS", "900")
+)
+AUTH_SMS_MAX_DELIVERY_ATTEMPTS = int(
+    os.environ.get("AUTH_SMS_MAX_DELIVERY_ATTEMPTS", "5")
+)
 AUTH_LOGIN_MAX_ATTEMPTS = int(os.environ.get("AUTH_LOGIN_MAX_ATTEMPTS", "5"))
 AUTH_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("AUTH_LOGIN_LOCKOUT_SECONDS", "900"))
+SESSION_COOKIE_AGE = int(os.environ.get("AUTH_SESSION_AGE_SECONDS", "28800"))
+if SESSION_COOKIE_AGE <= 0:
+    raise ImproperlyConfigured("AUTH_SESSION_AGE_SECONDS must be a positive integer.")
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
@@ -95,6 +116,33 @@ DATABASES = {
     }
 }
 
+OBJECT_STORAGE_ENDPOINT_URL = os.environ.get(
+    "OBJECT_STORAGE_ENDPOINT_URL",
+    "http://localhost:9000" if DEBUG else "",
+)
+OBJECT_STORAGE_ACCESS_KEY = os.environ.get("OBJECT_STORAGE_ACCESS_KEY", "")
+OBJECT_STORAGE_SECRET_KEY = os.environ.get("OBJECT_STORAGE_SECRET_KEY", "")
+OBJECT_STORAGE_BUCKET = os.environ.get("OBJECT_STORAGE_BUCKET", "legacy-private")
+OBJECT_STORAGE_REGION = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1")
+OBJECT_STORAGE_AUTO_CREATE_BUCKET = os.environ.get(
+    "OBJECT_STORAGE_AUTO_CREATE_BUCKET",
+    "1" if DEBUG else "0",
+).lower() in {"1", "true", "yes"}
+PUBLIC_SITE_URL = os.environ.get(
+    "PUBLIC_SITE_URL",
+    "http://localhost:3000" if DEBUG else "",
+).rstrip("/")
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
+BREVO_SENDER_EMAIL = os.environ.get("BREVO_SENDER_EMAIL", "")
+BREVO_SENDER_NAME = os.environ.get("BREVO_SENDER_NAME", "Property Management")
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "mailpit" if DEBUG else "localhost")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "1025" if DEBUG else "25"))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "0").lower() in {"1", "true", "yes"}
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+DATA_UPLOAD_MAX_MEMORY_SIZE = 25 * 1024 * 1024
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -111,6 +159,18 @@ LANGUAGE_CODE = "en"
 TIME_ZONE = "Africa/Nairobi"
 USE_I18N = True
 USE_TZ = True
+CELERY_BROKER_URL = os.environ.get(
+    "CELERY_BROKER_URL",
+    "amqp://guest:guest@rabbitmq:5672//",
+)
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_BEAT_SCHEDULE = {
+    "run-monthly-billing-cycle": {
+        "task": "users.tasks.run_monthly_billing_cycle",
+        "schedule": 60.0,
+    },
+}
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

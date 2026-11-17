@@ -1,4 +1,5 @@
 import builtins
+import re
 import uuid
 from datetime import date
 
@@ -6,20 +7,100 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
 from users.roles import SUPER_ADMIN_ROLE
 
 
+class Agency(models.Model):
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=100, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+
+    def __str__(self):
+        return self.name
+
+
+class AgencySettings(models.Model):
+    agency = models.OneToOneField(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name="settings",
+    )
+    mri_tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=7.50)
+    commission_vat_enabled = models.BooleanField(default=True)
+    commission_vat_rate = models.DecimalField(max_digits=5, decimal_places=2, default=16.00)
+    grace_period_days = models.PositiveSmallIntegerField(default=5)
+    penalty_type = models.CharField(
+        max_length=12,
+        choices=(("percentage", "Percentage"), ("flat", "Flat fee")),
+        default="percentage",
+    )
+    penalty_rate = models.DecimalField(max_digits=7, decimal_places=4, default=0)
+    penalty_flat_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    sms_templates = models.JSONField(default=dict, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="updated_agency_settings",
+        blank=True,
+        null=True,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(mri_tax_rate__gte=0)
+                    & models.Q(mri_tax_rate__lte=100)
+                    & models.Q(commission_vat_rate__gte=0)
+                    & models.Q(commission_vat_rate__lte=100)
+                    & models.Q(penalty_rate__gte=0)
+                    & models.Q(penalty_rate__lte=100)
+                    & models.Q(penalty_flat_fee__gte=0)
+                    & models.Q(grace_period_days__lte=365)
+                ),
+                name="users_agency_settings_values_valid",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.penalty_type not in {"percentage", "flat"}:
+            raise ValidationError({"penalty_type": "Choose percentage or flat fee."})
+        if not isinstance(self.sms_templates, dict):
+            raise ValidationError({"sms_templates": "SMS templates must be an object."})
+
+    def __str__(self):
+        return f"Settings for {self.agency}"
+
+
 class Branch(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.PROTECT,
+        related_name="branches",
+    )
+    name = models.CharField(max_length=100)
     town = models.CharField(max_length=100)
     paybill_numbers = models.JSONField(default=list, blank=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["agency__name", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["agency", "name"],
+                name="users_branch_agency_name_unique",
+            )
+        ]
 
     def __str__(self):
         return self.name
@@ -115,7 +196,126 @@ class ManagementAgreement(models.Model):
         return f"{self.landlord} agreement from {self.effective_from}"
 
 
+class LandlordRemittance(models.Model):
+    STATUS_AWAITING_APPROVAL = "awaiting_approval"
+    STATUS_REJECTED = "rejected"
+    STATUS_APPROVED = "approved"
+    STATUS_PAID = "paid"
+    STATUS_NO_PAYOUT = "no_payout"
+    STATUS_CHOICES = (
+        (STATUS_AWAITING_APPROVAL, "Awaiting approval"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_PAID, "Paid"),
+        (STATUS_NO_PAYOUT, "No payout due"),
+    )
+
+    landlord = models.ForeignKey(
+        Landlord,
+        on_delete=models.PROTECT,
+        related_name="remittances",
+    )
+    period_start = models.DateField()
+    period_end = models.DateField()
+    revision = models.PositiveSmallIntegerField(default=1)
+    statement_snapshot = models.JSONField()
+    collected_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    commission_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    expenses_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    net_payout = models.DecimalField(max_digits=12, decimal_places=2)
+    status = models.CharField(
+        max_length=30,
+        choices=STATUS_CHOICES,
+        default=STATUS_AWAITING_APPROVAL,
+    )
+    prepared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="prepared_landlord_remittances",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reviewed_landlord_remittances",
+        blank=True,
+        null=True,
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    rejection_reason = models.TextField(blank=True)
+    payout_reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    payout_date = models.DateField(blank=True, null=True)
+    payout_recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_landlord_remittances",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-period_end", "-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["landlord", "period_start", "period_end", "revision"],
+                name="users_landlordremittance_period_revision_unique",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(period_end__gte=models.F("period_start")),
+                name="users_landlordremittance_period_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(collected_amount__gte=0)
+                    & models.Q(commission_amount__gte=0)
+                    & models.Q(expenses_amount__gte=0)
+                    & models.Q(net_payout__gte=0)
+                    & (
+                        models.Q(tax_amount__isnull=True)
+                        | models.Q(tax_amount__gte=0)
+                    )
+                ),
+                name="users_landlordremittance_amounts_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.period_end < self.period_start:
+            raise ValidationError({"period_end": "The remittance period end cannot precede its start."})
+        if self.status in {
+            self.STATUS_REJECTED,
+            self.STATUS_APPROVED,
+            self.STATUS_PAID,
+            self.STATUS_NO_PAYOUT,
+        } and (self.reviewed_by_id is None or self.reviewed_at is None):
+            raise ValidationError({"reviewed_by": "Reviewed remittances require an approver and approval time."})
+        if self.status == self.STATUS_REJECTED and not self.rejection_reason.strip():
+            raise ValidationError({"rejection_reason": "Rejected remittances require a reason."})
+        if self.status == self.STATUS_PAID and (
+            self.net_payout <= 0
+            or not self.payout_reference
+            or self.payout_date is None
+            or self.payout_recorded_by_id is None
+        ):
+            raise ValidationError({"payout_reference": "Paid remittances require payout details."})
+        if self.status == self.STATUS_NO_PAYOUT and self.net_payout != 0:
+            raise ValidationError({"status": "Only zero-value remittances can be closed without a payout."})
+
+    def __str__(self):
+        return f"{self.landlord} remittance {self.period_start} to {self.period_end} (revision {self.revision})"
+
+
 class Property(models.Model):
+    BILLING_MODE_METERED_WATER = "metered_water"
+    BILLING_MODE_FIXED_UTILITIES = "fixed_utilities"
+    BILLING_MODE_CHOICES = (
+        (BILLING_MODE_METERED_WATER, "Metered water"),
+        (BILLING_MODE_FIXED_UTILITIES, "Fixed utilities"),
+    )
+
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="properties")
     landlord = models.ForeignKey(
         Landlord,
@@ -127,6 +327,26 @@ class Property(models.Model):
     name = models.CharField(max_length=255)
     property_type = models.CharField(max_length=100)
     location = models.CharField(max_length=255)
+    address = models.CharField(max_length=255, blank=True)
+    currency_code = models.CharField(
+        max_length=3,
+        default="KES",
+        validators=[RegexValidator(r"^[A-Z]{3}$")],
+    )
+    timezone = models.CharField(max_length=64, default="Africa/Nairobi")
+    rent_due_day = models.PositiveSmallIntegerField(default=10)
+    billing_mode = models.CharField(
+        max_length=20,
+        choices=BILLING_MODE_CHOICES,
+        default=BILLING_MODE_METERED_WATER,
+    )
+    expected_unit_count = models.PositiveSmallIntegerField(default=0)
+    default_unit_type = models.CharField(max_length=100, blank=True)
+    default_rent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    security_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    water_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    default_garbage_charge = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    default_water_rate = models.DecimalField(max_digits=12, decimal_places=4, default=0)
     gps_coordinates = models.JSONField(default=dict, blank=True)
     amenities = models.JSONField(default=list, blank=True)
     house_rules = models.JSONField(default=dict, blank=True)
@@ -141,14 +361,227 @@ class Property(models.Model):
 
     class Meta:
         ordering = ["name", "id"]
-
-    def clean(self):
-        super().clean()
-        if self.landlord_id and self.landlord.branch_id != self.branch_id:
-            raise ValidationError({"landlord": "The landlord must belong to the property's branch."})
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(rent_due_day__gte=1)
+                    & models.Q(rent_due_day__lte=28)
+                    & models.Q(default_rent__gte=0)
+                    & models.Q(security_deposit__gte=0)
+                    & models.Q(water_deposit__gte=0)
+                    & models.Q(default_garbage_charge__gte=0)
+                    & models.Q(default_water_rate__gte=0)
+                ),
+                name="users_property_billing_defaults_valid",
+            ),
+        ]
 
     def __str__(self):
         return self.name
+
+
+class PropertyBillingSettings(models.Model):
+    property = models.OneToOneField(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="billing_settings",
+    )
+    paybill_number = models.CharField(max_length=32, blank=True)
+    account_number = models.CharField(max_length=64, blank=True)
+    universal_security_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=8000)
+    universal_water_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=500)
+    first_online_billing_month = models.CharField(
+        max_length=7,
+        blank=True,
+        validators=[RegexValidator(r"^\d{4}-(0[1-9]|1[0-2])$")],
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="updated_property_billing_settings",
+        blank=True,
+        null=True,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(universal_security_deposit__gte=0)
+                & models.Q(universal_water_deposit__gte=0),
+                name="users_property_billing_deposits_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.first_online_billing_month and not re.fullmatch(
+            r"\d{4}-(0[1-9]|1[0-2])", self.first_online_billing_month
+        ):
+            raise ValidationError(
+                {"first_online_billing_month": "Use a valid YYYY-MM billing month."}
+            )
+
+    def __str__(self):
+        return f"Billing settings for {self.property}"
+
+
+class PropertyRecurringCharge(models.Model):
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="recurring_charges",
+    )
+    name = models.CharField(max_length=80)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                "property",
+                Lower("name"),
+                name="users_property_recurring_charge_name_ci_unique",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gte=0),
+                name="users_property_recurring_charge_amount_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not self.name.strip():
+            raise ValidationError({"name": "A recurring charge name is required."})
+        if self.amount < 0:
+            raise ValidationError({"amount": "Recurring charges cannot be negative."})
+
+    def __str__(self):
+        return f"{self.property} - {self.name}"
+
+
+class PropertyUnitType(models.Model):
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="unit_types",
+    )
+    name = models.CharField(max_length=100)
+    unit_count = models.PositiveSmallIntegerField(default=0)
+    monthly_rent = models.DecimalField(max_digits=12, decimal_places=2)
+    security_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                "property",
+                Lower("name"),
+                name="users_property_unit_type_name_ci_unique",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(monthly_rent__gte=0)
+                & models.Q(security_deposit__gte=0),
+                name="users_property_unit_type_amounts_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValidationError({"name": "A unit type name is required."})
+        if self.monthly_rent < 0 or self.security_deposit < 0:
+            raise ValidationError("Rent and security deposits cannot be negative.")
+
+    def __str__(self):
+        return f"{self.property} - {self.name}"
+
+
+class PropertyUnitTypeUtility(models.Model):
+    UTILITY_WATER = "water"
+    UTILITY_ELECTRICITY = "electricity"
+    UTILITY_OTHER = "other"
+    UTILITY_CHOICES = (
+        (UTILITY_WATER, "Water"),
+        (UTILITY_ELECTRICITY, "Electricity"),
+        (UTILITY_OTHER, "Other"),
+    )
+    METHOD_FIXED = "fixed"
+    METHOD_METERED = "metered"
+    BILLING_METHOD_CHOICES = (
+        (METHOD_FIXED, "Fixed"),
+        (METHOD_METERED, "Metered"),
+    )
+
+    unit_type = models.ForeignKey(
+        PropertyUnitType,
+        on_delete=models.PROTECT,
+        related_name="utilities",
+    )
+    utility_type = models.CharField(max_length=30, choices=UTILITY_CHOICES)
+    name = models.CharField(max_length=100)
+    billing_method = models.CharField(max_length=20, choices=BILLING_METHOD_CHOICES)
+    fixed_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    rate_per_unit = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    deposit_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["utility_type", "name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                "unit_type",
+                Lower("name"),
+                name="users_property_unit_type_utility_name_ci_unique",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(fixed_amount__isnull=True)
+                    | models.Q(fixed_amount__gte=0)
+                )
+                & (
+                    models.Q(rate_per_unit__isnull=True)
+                    | models.Q(rate_per_unit__gte=0)
+                )
+                & (
+                    models.Q(deposit_amount__isnull=True)
+                    | models.Q(deposit_amount__gte=0)
+                ),
+                name="users_property_unit_type_utility_amounts_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValidationError({"name": "A utility name is required."})
+        if self.billing_method == self.METHOD_FIXED:
+            if self.fixed_amount is None or self.fixed_amount < 0:
+                raise ValidationError(
+                    {"fixed_amount": "Fixed utilities need a non-negative monthly amount."}
+                )
+            if self.rate_per_unit is not None:
+                raise ValidationError(
+                    {"rate_per_unit": "Fixed utilities cannot have a metered rate."}
+                )
+        elif self.billing_method == self.METHOD_METERED:
+            if self.rate_per_unit is None or self.rate_per_unit < 0:
+                raise ValidationError(
+                    {"rate_per_unit": "Metered utilities need a non-negative rate per unit."}
+                )
+            if self.fixed_amount is not None:
+                raise ValidationError(
+                    {"fixed_amount": "Metered utilities cannot have a fixed monthly amount."}
+                )
+        if self.deposit_amount is not None and self.deposit_amount < 0:
+            raise ValidationError({"deposit_amount": "Utility deposits cannot be negative."})
+
+    def __str__(self):
+        return f"{self.unit_type} - {self.name}"
 
 
 class PropertyCaretakerAssignment(models.Model):
@@ -206,7 +639,15 @@ class CaretakerInvitation(models.Model):
         related_name="caretaker_invitations",
     )
     email = models.EmailField()
+    full_name = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=12, blank=True)
+    id_or_registration_number = models.CharField(max_length=100, blank=True)
+    kra_pin = models.CharField(max_length=20, blank=True)
     token_hash = models.CharField(max_length=64, unique=True)
+    code_hash = models.CharField(max_length=128, blank=True, null=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    email_sent_at = models.DateTimeField(blank=True, null=True)
+    email_delivery_error = models.CharField(max_length=500, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -344,7 +785,7 @@ class MaintenanceTicket(models.Model):
         STATUS_OPEN: {STATUS_ASSIGNED},
         STATUS_ASSIGNED: {STATUS_QUOTATION, STATUS_IN_PROGRESS},
         STATUS_QUOTATION: {STATUS_AWAITING_LANDLORD_APPROVAL, STATUS_IN_PROGRESS},
-        STATUS_AWAITING_LANDLORD_APPROVAL: {STATUS_IN_PROGRESS},
+        STATUS_AWAITING_LANDLORD_APPROVAL: {STATUS_QUOTATION, STATUS_IN_PROGRESS},
         STATUS_IN_PROGRESS: {STATUS_COMPLETED},
         STATUS_COMPLETED: {STATUS_CLOSED},
         STATUS_CLOSED: set(),
@@ -384,6 +825,8 @@ class MaintenanceTicket(models.Model):
     status = models.CharField(max_length=40, choices=STATUS_CHOICES, default=STATUS_OPEN)
     photos = models.JSONField(default=list, blank=True)
     resolution_notes = models.TextField(blank=True)
+    resolution_fundi_name = models.CharField(max_length=255, blank=True)
+    repair_cost = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(blank=True, null=True)
@@ -394,6 +837,12 @@ class MaintenanceTicket(models.Model):
         indexes = [
             models.Index(fields=["property", "status"]),
             models.Index(fields=["assigned_to", "status"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(repair_cost__isnull=True) | models.Q(repair_cost__gte=0),
+                name="users_maintenanceticket_repair_cost_nonnegative",
+            ),
         ]
 
     def clean(self):
@@ -574,8 +1023,10 @@ class MaintenanceCostAllocation(models.Model):
         if self.target == self.TARGET_LANDLORD:
             if self.landlord_id is None or self.tenant_id is not None:
                 raise ValidationError({"landlord": "Landlord allocations require only a landlord."})
-            if self.landlord.branch_id != self.quotation.ticket.property.branch_id:
-                raise ValidationError({"landlord": "The landlord must belong to the ticket branch."})
+            if self.landlord_id != self.quotation.ticket.property.landlord_id:
+                raise ValidationError(
+                    {"landlord": "The landlord must own the ticket property."}
+                )
         elif self.target == self.TARGET_TENANT:
             if self.tenant_id is None or self.landlord_id is not None:
                 raise ValidationError({"tenant": "Tenant allocations require only a tenant."})
@@ -830,6 +1281,10 @@ class PropertyInspection(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SCHEDULED)
     checklist = models.JSONField(default=list, blank=True)
     photos = models.JSONField(default=list, blank=True)
+    actual_move_out_date = models.DateField(blank=True, null=True)
+    final_readings = models.JSONField(default=list, blank=True)
+    damage_items = models.JSONField(default=list, blank=True)
+    maintenance_required = models.BooleanField(default=False)
     findings = models.TextField(blank=True)
     recommendations = models.TextField(blank=True)
     completed_at = models.DateTimeField(blank=True, null=True)
@@ -863,28 +1318,47 @@ class PropertyInspection(models.Model):
 class Unit(models.Model):
     STATUS_DRAFT = "Draft"
     STATUS_VACANT = "Vacant"
+    STATUS_BOOKED = "Booked"
     STATUS_OCCUPIED = "Occupied"
     STATUS_NOTICE_GIVEN = "Notice Given"
+    STATUS_DEPOSIT_PENDING = "Deposit Pending"
     STATUS_MAINTENANCE = "Maintenance"
     STATUS_ARCHIVED = "Archived"
     STATUS_CHOICES = (
         (STATUS_DRAFT, "Draft"),
         (STATUS_VACANT, "Vacant"),
+        (STATUS_BOOKED, "Booked"),
         (STATUS_OCCUPIED, "Occupied"),
         (STATUS_NOTICE_GIVEN, "Notice Given"),
+        (STATUS_DEPOSIT_PENDING, "Deposit Pending"),
         (STATUS_MAINTENANCE, "Maintenance"),
         (STATUS_ARCHIVED, "Archived"),
     )
     ALLOWED_STATUS_TRANSITIONS = {
         STATUS_DRAFT: {STATUS_VACANT, STATUS_ARCHIVED},
-        STATUS_VACANT: {STATUS_OCCUPIED, STATUS_NOTICE_GIVEN, STATUS_MAINTENANCE, STATUS_ARCHIVED},
+        STATUS_VACANT: {STATUS_BOOKED, STATUS_OCCUPIED, STATUS_NOTICE_GIVEN, STATUS_MAINTENANCE, STATUS_ARCHIVED},
+        STATUS_BOOKED: {STATUS_VACANT, STATUS_OCCUPIED, STATUS_MAINTENANCE, STATUS_ARCHIVED},
         STATUS_OCCUPIED: {STATUS_NOTICE_GIVEN, STATUS_MAINTENANCE, STATUS_ARCHIVED},
-        STATUS_NOTICE_GIVEN: {STATUS_VACANT, STATUS_OCCUPIED, STATUS_MAINTENANCE, STATUS_ARCHIVED},
+        STATUS_NOTICE_GIVEN: {
+            STATUS_VACANT,
+            STATUS_OCCUPIED,
+            STATUS_DEPOSIT_PENDING,
+            STATUS_MAINTENANCE,
+            STATUS_ARCHIVED,
+        },
+        STATUS_DEPOSIT_PENDING: {STATUS_VACANT, STATUS_MAINTENANCE, STATUS_ARCHIVED},
         STATUS_MAINTENANCE: {STATUS_VACANT, STATUS_OCCUPIED, STATUS_ARCHIVED},
         STATUS_ARCHIVED: set(),
     }
 
     property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="units")
+    unit_type_definition = models.ForeignKey(
+        PropertyUnitType,
+        on_delete=models.PROTECT,
+        related_name="units",
+        blank=True,
+        null=True,
+    )
     floor = models.ForeignKey(
         Floor,
         on_delete=models.PROTECT,
@@ -898,6 +1372,7 @@ class Unit(models.Model):
     characteristics = models.JSONField(default=dict, blank=True)
     meters = models.JSONField(default=dict, blank=True)
     listing_enabled = models.BooleanField(default=False)
+    is_migrated = models.BooleanField(default=False)
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_DRAFT)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -913,6 +1388,13 @@ class Unit(models.Model):
 
     def clean(self):
         super().clean()
+        if (
+            self.unit_type_definition_id
+            and self.unit_type_definition.property_id != self.property_id
+        ):
+            raise ValidationError(
+                {"unit_type_definition": "The unit type definition must belong to the unit's property."}
+            )
         if self.floor_id and self.floor.block.property_id != self.property_id:
             raise ValidationError({"floor": "The floor must belong to the unit's property."})
         if self.listing_enabled and self.status not in {
@@ -1196,6 +1678,63 @@ class UnitReservation(models.Model):
         return f"{self.unit} reserved for {self.applicant} ({self.status})"
 
 
+class MeterReadingDraft(models.Model):
+    unit = models.ForeignKey(Unit, on_delete=models.PROTECT, related_name="meter_reading_drafts")
+    meter = models.CharField(max_length=100)
+    period = models.DateField()
+    previous_value = models.DecimalField(max_digits=14, decimal_places=4)
+    current_value = models.DecimalField(max_digits=14, decimal_places=4)
+    photo_key = models.CharField(max_length=500, blank=True)
+    photo_metadata = models.JSONField(default=dict, blank=True)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="meter_reading_drafts",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["unit__property_id", "unit__code", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["unit", "meter", "period"],
+                name="users_meterreadingdraft_unit_meter_period_unique",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(previous_value__gte=0)
+                & models.Q(current_value__gte=models.F("previous_value")),
+                name="users_meterreadingdraft_values_valid",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not self.meter.strip():
+            raise ValidationError({"meter": "A meter identifier is required."})
+        if not self.previous_value.is_finite() or not self.current_value.is_finite():
+            raise ValidationError({"current_value": "Meter values must be finite numbers."})
+        if self.previous_value < 0 or self.current_value < self.previous_value:
+            raise ValidationError(
+                {"current_value": "The current reading cannot be lower than the previous reading."}
+            )
+        if self.photo_key:
+            content_type = self.photo_metadata.get("content_type")
+            if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+                raise ValidationError(
+                    {"photo_metadata": "Meter evidence must be a JPEG, PNG, or WebP image."}
+                )
+            size_bytes = self.photo_metadata.get("size_bytes")
+            if (
+                not isinstance(size_bytes, int)
+                or isinstance(size_bytes, bool)
+                or size_bytes < 1
+                or size_bytes > 5 * 1024 * 1024
+            ):
+                raise ValidationError(
+                    {"photo_metadata": "Meter evidence size must be an integer from 1 byte to 5 MB."}
+                )
+
+
 class Tenancy(models.Model):
     TYPE_FIXED_TERM = "fixed_term"
     TYPE_MONTH_TO_MONTH = "month_to_month"
@@ -1217,6 +1756,12 @@ class Tenancy(models.Model):
     tenancy_type = models.CharField(max_length=30, choices=TENANCY_TYPE_CHOICES)
     start_date = models.DateField()
     end_date = models.DateField(blank=True, null=True)
+    base_water_meter_reading = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        blank=True,
+        null=True,
+    )
     due_day = models.PositiveSmallIntegerField(default=1)
     grace_period_days = models.PositiveSmallIntegerField(default=0)
     notice_period_days = models.PositiveSmallIntegerField(default=30)
@@ -1227,6 +1772,15 @@ class Tenancy(models.Model):
 
     class Meta:
         ordering = ["-start_date", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(base_water_meter_reading__isnull=True)
+                    | models.Q(base_water_meter_reading__gte=0)
+                ),
+                name="users_tenancy_base_water_reading_nonnegative",
+            ),
+        ]
 
     def clean(self):
         super().clean()
@@ -1236,6 +1790,13 @@ class Tenancy(models.Model):
             raise ValidationError({"end_date": "Fixed-term tenancies require an end date."})
         if self.end_date and self.end_date < self.start_date:
             raise ValidationError({"end_date": "The tenancy end date cannot be before its start date."})
+        if self.base_water_meter_reading is not None and (
+            not self.base_water_meter_reading.is_finite()
+            or self.base_water_meter_reading < 0
+        ):
+            raise ValidationError(
+                {"base_water_meter_reading": "The base water reading must be a finite, non-negative value."}
+            )
         if not 1 <= self.due_day <= 31:
             raise ValidationError({"due_day": "The due day must be between 1 and 31."})
         if self.tenant_id and self.unit_id:
@@ -1258,6 +1819,112 @@ class Tenancy(models.Model):
         return f"{self.unit} - {self.tenant} ({self.start_date})"
 
 
+class ViewingLead(models.Model):
+    STATUS_NEW = "new"
+    STATUS_VIEWING_BOOKED = "viewing_booked"
+    STATUS_APPLIED = "applied"
+    STATUS_CONVERTED = "converted"
+    STATUS_LOST = "lost"
+    STATUS_CHOICES = (
+        (STATUS_NEW, "New inquiry"),
+        (STATUS_VIEWING_BOOKED, "Viewing booked"),
+        (STATUS_APPLIED, "Applied"),
+        (STATUS_CONVERTED, "Converted"),
+        (STATUS_LOST, "Lost"),
+    )
+
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="viewing_leads")
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.PROTECT,
+        related_name="viewing_leads",
+        blank=True,
+        null=True,
+    )
+    unit = models.ForeignKey(
+        Unit,
+        on_delete=models.PROTECT,
+        related_name="viewing_leads",
+        blank=True,
+        null=True,
+    )
+    full_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=30)
+    email = models.EmailField(blank=True)
+    preference = models.TextField(blank=True)
+    budget = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_NEW)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_viewing_leads",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(budget__isnull=True) | models.Q(budget__gte=0),
+                name="users_viewinglead_budget_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.property_id and self.property.branch_id != self.branch_id:
+            raise ValidationError({"property": "The property must belong to the lead branch."})
+        if self.unit_id and (
+            self.unit.property.branch_id != self.branch_id
+            or (self.property_id and self.unit.property_id != self.property_id)
+        ):
+            raise ValidationError({"unit": "The unit must belong to the lead property and branch."})
+
+
+class PropertyViewing(models.Model):
+    STATUS_SCHEDULED = "scheduled"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = (
+        (STATUS_SCHEDULED, "Scheduled"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+    )
+
+    lead = models.ForeignKey(ViewingLead, on_delete=models.PROTECT, related_name="viewings")
+    scheduled_for = models.DateTimeField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SCHEDULED)
+    notes = models.TextField(blank=True)
+    scheduled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="scheduled_property_viewings",
+    )
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="assigned_property_viewings",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_for", "id"]
+
+    def clean(self):
+        super().clean()
+        if self.status not in dict(self.STATUS_CHOICES):
+            raise ValidationError({"status": "This viewing status is not supported."})
+        if self.assigned_to_id:
+            profile = UserProfile.objects.filter(user_id=self.assigned_to_id).first()
+            if profile is None or not profile.accessible_branches().filter(pk=self.lead.branch_id).exists():
+                raise ValidationError({"assigned_to": "The assignee must have access to the lead branch."})
+
+
 class InvoiceNumberSequence(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="invoice_sequences")
     year = models.PositiveSmallIntegerField()
@@ -1273,9 +1940,11 @@ class InvoiceNumberSequence(models.Model):
 
 
 class Invoice(models.Model):
+    STATUS_DRAFT = "draft"
     STATUS_ISSUED = "issued"
     STATUS_VOID = "void"
     STATUS_CHOICES = (
+        (STATUS_DRAFT, "Draft"),
         (STATUS_ISSUED, "Issued"),
         (STATUS_VOID, "Void"),
     )
@@ -1288,7 +1957,7 @@ class Invoice(models.Model):
     due_date = models.DateField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ISSUED)
     total = models.DecimalField(max_digits=12, decimal_places=2)
-    issued_at = models.DateTimeField(auto_now_add=True)
+    issued_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1312,12 +1981,139 @@ class Invoice(models.Model):
             raise ValidationError({"branch": "The invoice branch must match the tenancy branch."})
 
     def save(self, *args, **kwargs):
-        if not self._state.adding:
+        if self._state.adding:
+            if self.status == self.STATUS_ISSUED and self.issued_at is None:
+                self.issued_at = timezone.now()
+            return super().save(*args, **kwargs)
+        existing_status = type(self).objects.values_list("status", flat=True).get(pk=self.pk)
+        if existing_status != self.STATUS_DRAFT:
             raise ValidationError("Issued invoices are immutable; use a credit note workflow.")
+        if self.status == self.STATUS_ISSUED and self.issued_at is None:
+            self.issued_at = timezone.now()
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Issued invoices cannot be deleted.")
+        if not self._state.adding and self.status != self.STATUS_DRAFT:
+            raise ValidationError("Issued invoices cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
+
+class InvoiceWaiverRequest(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending Director approval"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    )
+
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.PROTECT,
+        related_name="waiver_requests",
+        blank=True,
+        null=True,
+    )
+    unit = models.ForeignKey(
+        Unit,
+        on_delete=models.PROTECT,
+        related_name="invoice_waiver_requests",
+    )
+    period_start = models.DateField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.TextField()
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="requested_invoice_waivers",
+    )
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="decided_invoice_waivers",
+        blank=True,
+        null=True,
+    )
+    decided_at = models.DateTimeField(blank=True, null=True)
+    decision_reason = models.TextField(blank=True)
+    director_notified_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="users_invoice_waiver_amount_positive",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status="pending", decided_by__isnull=True, decided_at__isnull=True)
+                    | models.Q(status__in=("approved", "rejected"), decided_by__isnull=False, decided_at__isnull=False)
+                ),
+                name="users_invoice_waiver_decision_consistent",
+            ),
+        ]
+        indexes = [models.Index(fields=["unit", "period_start"], name="users_waiver_unit_period_idx")]
+
+    def clean(self):
+        super().clean()
+        if not self.reason.strip():
+            raise ValidationError({"reason": "A waiver reason is required."})
+        if self.invoice_id and self.unit_id and self.invoice.tenancy.unit_id != self.unit_id:
+            raise ValidationError({"invoice": "The waiver invoice must belong to the selected unit."})
+        if self.invoice_id and self.invoice.period_start != self.period_start:
+            raise ValidationError({"invoice": "The waiver invoice must match the selected billing period."})
+        if self.invoice_id and self.invoice.status not in {
+            Invoice.STATUS_DRAFT,
+            Invoice.STATUS_ISSUED,
+        }:
+            raise ValidationError({"invoice": "Waivers can only be requested for draft or issued invoices."})
+        if not self.unit_id:
+            raise ValidationError({"unit": "A unit is required for a waiver request."})
+        if self.amount <= 0:
+            raise ValidationError({"amount": "Waiver amount must be positive."})
+
+    def save(self, *args, **kwargs):
+        if self.invoice_id:
+            self.unit_id = self.invoice.tenancy.unit_id
+            self.period_start = self.invoice.period_start
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = set(update_fields) | {"unit", "period_start"}
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Unit {self.unit_id} waiver for {self.period_start} ({self.amount}, {self.status})"
+
+
+class BillingNotification(models.Model):
+    TYPE_CARETAKER_READINGS = "caretaker_readings"
+    TYPE_AGENT_DRAFTS = "agent_drafts"
+    TYPE_CHOICES = (
+        (TYPE_CARETAKER_READINGS, "Caretaker water readings"),
+        (TYPE_AGENT_DRAFTS, "Property officer invoice drafts"),
+    )
+
+    property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="billing_notifications")
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="billing_notifications",
+    )
+    period_start = models.DateField()
+    notification_type = models.CharField(max_length=32, choices=TYPE_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["property", "recipient", "period_start", "notification_type"],
+                name="users_billingnotification_recipient_unique",
+            ),
+        ]
 
 
 class InvoiceLine(models.Model):
@@ -1500,11 +2296,13 @@ class DepositEntry(models.Model):
     TYPE_RECEIPT = "receipt"
     TYPE_TOP_UP = "top_up"
     TYPE_REFUND = "refund"
+    TYPE_DEDUCTION = "deduction"
     TYPE_ADJUSTMENT = "adjustment"
     TYPE_CHOICES = (
         (TYPE_RECEIPT, "Receipt"),
         (TYPE_TOP_UP, "Top-up"),
         (TYPE_REFUND, "Refund"),
+        (TYPE_DEDUCTION, "Deduction"),
         (TYPE_ADJUSTMENT, "Adjustment"),
     )
     account = models.ForeignKey(DepositAccount, on_delete=models.PROTECT, related_name="entries")
@@ -1527,6 +2325,177 @@ class DepositEntry(models.Model):
                 name="users_deposit_entry_amount_positive",
             ),
         ]
+
+
+class MoveOutNotice(models.Model):
+    STATUS_SUBMITTED = "submitted"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_REJECTED = "rejected"
+    STATUS_WITHDRAWN = "withdrawn"
+    STATUS_CHOICES = (
+        (STATUS_SUBMITTED, "Submitted"),
+        (STATUS_ACCEPTED, "Accepted"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_WITHDRAWN, "Withdrawn"),
+    )
+
+    tenancy = models.ForeignKey(Tenancy, on_delete=models.PROTECT, related_name="move_out_notices")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="move_out_notices",
+    )
+    proposed_move_out_date = models.DateField()
+    previous_tenancy_end_date = models.DateField(blank=True, null=True)
+    reason = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reviewed_move_out_notices",
+        blank=True,
+        null=True,
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    review_note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenancy"],
+                condition=models.Q(status__in=["submitted", "accepted"]),
+                name="users_moveoutnotice_one_active_per_tenancy",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.proposed_move_out_date < self.tenancy.start_date:
+            raise ValidationError(
+                {"proposed_move_out_date": "The move-out date cannot precede the tenancy start."}
+            )
+        if self.status in {self.STATUS_ACCEPTED, self.STATUS_REJECTED} and (
+            self.reviewed_by_id is None or self.reviewed_at is None
+        ):
+            raise ValidationError({"reviewed_by": "Reviewed notices require review details."})
+
+
+class MoveOutSettlement(models.Model):
+    STATUS_AWAITING_APPROVAL = "awaiting_approval"
+    STATUS_REJECTED = "rejected"
+    STATUS_APPROVED = "approved"
+    STATUS_PAID = "paid"
+    STATUS_CHOICES = (
+        (STATUS_AWAITING_APPROVAL, "Awaiting approval"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_PAID, "Paid"),
+    )
+
+    tenancy = models.OneToOneField(Tenancy, on_delete=models.PROTECT, related_name="move_out_settlement")
+    notice = models.ForeignKey(MoveOutNotice, on_delete=models.PROTECT, related_name="settlements")
+    exit_inspection = models.ForeignKey(
+        PropertyInspection,
+        on_delete=models.PROTECT,
+        related_name="move_out_settlements",
+    )
+    actual_move_out_date = models.DateField()
+    final_readings = models.JSONField(default=list, blank=True)
+    damage_items = models.JSONField(default=list, blank=True)
+    maintenance_required = models.BooleanField(default=False)
+    deposit_balance = models.DecimalField(max_digits=12, decimal_places=2)
+    arrears_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    utility_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    damages_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    deduction_from_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    refund_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    shortfall_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    status = models.CharField(
+        max_length=30,
+        choices=STATUS_CHOICES,
+        default=STATUS_AWAITING_APPROVAL,
+    )
+    prepared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="prepared_move_out_settlements",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reviewed_move_out_settlements",
+        blank=True,
+        null=True,
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    rejection_reason = models.TextField(blank=True)
+    payout_reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    payout_date = models.DateField(blank=True, null=True)
+    payout_recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_move_out_payouts",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(deposit_balance__gte=0)
+                    & models.Q(arrears_amount__gte=0)
+                    & models.Q(utility_amount__gte=0)
+                    & models.Q(damages_amount__gte=0)
+                    & models.Q(deduction_from_deposit__gte=0)
+                    & models.Q(refund_amount__gte=0)
+                    & models.Q(shortfall_amount__gte=0)
+                ),
+                name="users_moveoutsettlement_amounts_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.notice_id and (
+            self.notice.tenancy_id != self.tenancy_id
+            or self.notice.status != MoveOutNotice.STATUS_ACCEPTED
+        ):
+            raise ValidationError({"notice": "The settlement requires an accepted notice for its tenancy."})
+        if self.exit_inspection_id:
+            inspection = self.exit_inspection
+            if (
+                inspection.unit_id != self.tenancy.unit_id
+                or inspection.status != PropertyInspection.STATUS_COMPLETED
+                or inspection.inspection_type.lower() not in {"move_out", "exit"}
+            ):
+                raise ValidationError(
+                    {"exit_inspection": "A completed move-out inspection for the tenancy unit is required."}
+                )
+        if self.actual_move_out_date < self.tenancy.start_date:
+            raise ValidationError(
+                {"actual_move_out_date": "The move-out date cannot precede the tenancy start."}
+            )
+        if not isinstance(self.final_readings, list) or not isinstance(self.damage_items, list):
+            raise ValidationError(
+                {"final_readings": "Settlement readings and damage items must be arrays."}
+            )
+        if self.status in {self.STATUS_APPROVED, self.STATUS_PAID} and (
+            self.reviewed_by_id is None or self.reviewed_at is None
+        ):
+            raise ValidationError({"reviewed_by": "Approved settlements require review details."})
+        if self.status == self.STATUS_PAID and (
+            self.payout_date is None
+            or self.payout_recorded_by_id is None
+            or (self.refund_amount > 0 and not self.payout_reference)
+        ):
+            raise ValidationError({"payout_reference": "Paid settlements require a payout date and recorder; refunds also require a reference."})
 
 
 class BankStatementImport(models.Model):
@@ -1629,20 +2598,37 @@ class MpesaCallback(models.Model):
 class ArrearsPolicy(models.Model):
     branch = models.OneToOneField(Branch, on_delete=models.PROTECT, related_name="arrears_policy")
     grace_days = models.PositiveSmallIntegerField(default=0)
+    penalty_type = models.CharField(
+        max_length=12,
+        choices=(("percentage", "Percentage"), ("flat", "Flat fee")),
+        default="percentage",
+    )
     penalty_rate = models.DecimalField(max_digits=7, decimal_places=4, default=0)
+    penalty_flat_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     reminder_after_days = models.PositiveSmallIntegerField(default=7)
     demand_after_days = models.PositiveSmallIntegerField(default=30)
     updated_at = models.DateTimeField(auto_now=True)
 
     def clean(self):
         super().clean()
-        if self.penalty_rate < 0:
-            raise ValidationError({"penalty_rate": "Penalty rate cannot be negative."})
+        if self.penalty_type not in {"percentage", "flat"}:
+            raise ValidationError({"penalty_type": "Choose percentage or flat fee."})
+        if self.penalty_rate < 0 or self.penalty_rate > 100:
+            raise ValidationError({"penalty_rate": "Penalty rate must be between 0 and 100."})
+        if self.penalty_flat_fee < 0:
+            raise ValidationError({"penalty_flat_fee": "Penalty flat fee cannot be negative."})
 
 
 class ArrearsWaiver(models.Model):
     tenancy = models.ForeignKey(Tenancy, on_delete=models.PROTECT, related_name="arrears_waivers")
     invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="arrears_waivers")
+    invoice_waiver_request = models.OneToOneField(
+        "InvoiceWaiverRequest",
+        on_delete=models.PROTECT,
+        related_name="ledger_waiver",
+        blank=True,
+        null=True,
+    )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     reason = models.TextField()
     approved_by = models.ForeignKey(
@@ -1663,6 +2649,86 @@ class ArrearsWaiver(models.Model):
             raise ValidationError({"invoice": "The waiver invoice must belong to the tenancy."})
         if not self.reason.strip():
             raise ValidationError({"reason": "A waiver reason is required."})
+
+
+class ArrearsReminder(models.Model):
+    CHANNEL_SMS = "sms"
+    CHANNEL_WHATSAPP = "whatsapp"
+    CHANNEL_CHOICES = (
+        (CHANNEL_SMS, "SMS"),
+        (CHANNEL_WHATSAPP, "WhatsApp"),
+    )
+    STAGE_BEFORE_DUE = "before_due"
+    STAGE_DUE_TODAY = "due_today"
+    STAGE_OVERDUE_1_30 = "overdue_1_30"
+    STAGE_OVERDUE_31_60 = "overdue_31_60"
+    STAGE_OVERDUE_61_90 = "overdue_61_90"
+    STAGE_OVERDUE_90_PLUS = "overdue_90_plus"
+    STAGE_CHOICES = (
+        (STAGE_BEFORE_DUE, "Three days before due"),
+        (STAGE_DUE_TODAY, "Due today"),
+        (STAGE_OVERDUE_1_30, "Overdue 1-30 days"),
+        (STAGE_OVERDUE_31_60, "Overdue 31-60 days"),
+        (STAGE_OVERDUE_61_90, "Overdue 61-90 days"),
+        (STAGE_OVERDUE_90_PLUS, "Overdue 90+ days"),
+    )
+    STATUS_PLANNED = "planned"
+    STATUS_SUPERSEDED = "superseded"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = (
+        (STATUS_PLANNED, "Planned; provider not dispatched"),
+        (STATUS_SUPERSEDED, "Superseded by a later occurrence"),
+        (STATUS_CANCELLED, "Cancelled because balance is no longer due"),
+    )
+
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.PROTECT,
+        related_name="reminders",
+    )
+    tenancy = models.ForeignKey(
+        Tenancy,
+        on_delete=models.PROTECT,
+        related_name="arrears_reminders",
+    )
+    channel = models.CharField(max_length=16, choices=CHANNEL_CHOICES)
+    stage = models.CharField(
+        max_length=20,
+        choices=STAGE_CHOICES,
+        default=STAGE_OVERDUE_1_30,
+    )
+    scheduled_for = models.DateField()
+    amount_due = models.DecimalField(max_digits=12, decimal_places=2)
+    message = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=16,
+        choices=STATUS_CHOICES,
+        default=STATUS_PLANNED,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_for", "invoice_id", "channel"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "channel", "scheduled_for"],
+                name="users_arrears_reminder_invoice_channel_date_unique",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount_due__gte=0),
+                name="users_arrears_reminder_amount_nonnegative",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["status", "scheduled_for"]),
+            models.Index(fields=["tenancy", "scheduled_for"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.invoice_id and self.tenancy_id != self.invoice.tenancy_id:
+            raise ValidationError({"invoice": "The reminder invoice must belong to the tenancy."})
 
 
 class DemandLetter(models.Model):
@@ -1769,12 +2835,48 @@ class ArrearsPaymentPlanInstalment(models.Model):
 
 
 class MoveInPackage(models.Model):
+    HANDOVER_STATUS_PENDING = "pending"
+    HANDOVER_STATUS_SUBMITTED = "submitted"
+    HANDOVER_STATUS_CONFIRMED = "confirmed"
+    HANDOVER_STATUS_LEGACY = "legacy"
+    HANDOVER_STATUS_CHOICES = (
+        (HANDOVER_STATUS_PENDING, "Pending caretaker handover"),
+        (HANDOVER_STATUS_SUBMITTED, "Awaiting Property Officer confirmation"),
+        (HANDOVER_STATUS_CONFIRMED, "Confirmed"),
+        (HANDOVER_STATUS_LEGACY, "Legacy package"),
+    )
+
     tenancy = models.OneToOneField(
         Tenancy,
         on_delete=models.PROTECT,
         related_name="move_in_package",
     )
     agreement_reference = models.CharField(max_length=100, unique=True)
+    handover_status = models.CharField(
+        max_length=20,
+        choices=HANDOVER_STATUS_CHOICES,
+        default=HANDOVER_STATUS_PENDING,
+    )
+    keys_issued = models.PositiveSmallIntegerField(blank=True, null=True)
+    condition_checklist = models.JSONField(default=list, blank=True)
+    initial_meter_readings = models.JSONField(default=list, blank=True)
+    handover_photos = models.JSONField(default=list, blank=True)
+    handover_submitted_at = models.DateTimeField(blank=True, null=True)
+    handover_submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="submitted_move_in_handovers",
+        blank=True,
+        null=True,
+    )
+    handover_confirmed_at = models.DateTimeField(blank=True, null=True)
+    handover_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="confirmed_move_in_handovers",
+        blank=True,
+        null=True,
+    )
     generated_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1821,6 +2923,11 @@ class MoveInChecklistItem(models.Model):
     STATUS_PENDING = "pending"
     STATUS_COMPLETED = "completed"
     STATUS_WAIVED = "waived"
+    CARETAKER_HANDOVER_ITEM_TITLES = (
+        "Record opening meter readings",
+        "Inspect and document unit condition",
+        "Hand over keys and access devices",
+    )
     STATUS_CHOICES = (
         (STATUS_PENDING, "Pending"),
         (STATUS_COMPLETED, "Completed"),
@@ -1861,11 +2968,227 @@ class TenantActivationChallenge(models.Model):
     )
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(blank=True, null=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    email_sent_at = models.DateTimeField(blank=True, null=True)
+    email_delivery_error = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     @property
     def is_usable(self):
         return self.used_at is None and self.expires_at > timezone.now()
+
+
+class MoveInSettlement(models.Model):
+    STATUS_PAYMENT_PENDING = "payment_pending"
+    STATUS_PARTIAL = "partial"
+    STATUS_BOOKED = "booked"
+    STATUS_PAID = "paid"
+    STATUS_MOVE_IN_PENDING = "move_in_pending"
+    STATUS_ACTIVE = "active"
+    STATUS_RESERVED = "reserved"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = (
+        (STATUS_PAYMENT_PENDING, "Payment pending"),
+        (STATUS_PARTIAL, "Partial"),
+        (STATUS_BOOKED, "Booked"),
+        (STATUS_PAID, "Paid"),
+        (STATUS_MOVE_IN_PENDING, "Move-in pending"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_RESERVED, "Reserved"),
+        (STATUS_CANCELLED, "Cancelled"),
+    )
+    OPEN_STATUSES = (
+        STATUS_PAYMENT_PENDING,
+        STATUS_PARTIAL,
+        STATUS_BOOKED,
+        STATUS_PAID,
+        STATUS_MOVE_IN_PENDING,
+        STATUS_RESERVED,
+    )
+
+    unit = models.ForeignKey(Unit, on_delete=models.PROTECT, related_name="move_in_settlements")
+    tenant = models.ForeignKey(
+        "Tenant",
+        on_delete=models.PROTECT,
+        related_name="move_in_settlements",
+        blank=True,
+        null=True,
+    )
+    tenant_name = models.CharField(max_length=255)
+    tenant_email = models.EmailField()
+    tenant_phone = models.CharField(max_length=12)
+    tenant_type = models.CharField(
+        max_length=20,
+        choices=(("individual", "Individual"), ("company", "Company")),
+        default="individual",
+    )
+    national_id_or_passport = models.CharField(max_length=100, blank=True)
+    company_registration_number = models.CharField(max_length=100, blank=True)
+    contact_person = models.CharField(max_length=255, blank=True)
+    kra_pin = models.CharField(max_length=20, blank=True)
+    tenancy_type = models.CharField(
+        max_length=30,
+        choices=Tenancy.TENANCY_TYPE_CHOICES,
+        default=Tenancy.TYPE_MONTH_TO_MONTH,
+    )
+    tenancy_end_date = models.DateField(blank=True, null=True)
+    tenancy_due_day = models.PositiveSmallIntegerField(blank=True, null=True)
+    deposit_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    rent_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    garbage_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    water_deposit_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    utility_deposit_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    utility_deposits = models.JSONField(default=list, blank=True)
+    utility_charges = models.JSONField(default=list, blank=True)
+    total_required = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    deposit_paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    outstanding_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    expected_move_in_date = models.DateField()
+    status = models.CharField(
+        max_length=24,
+        choices=STATUS_CHOICES,
+        default=STATUS_PAYMENT_PENDING,
+    )
+    activation_override = models.BooleanField(default=False)
+    cancellation_reason = models.TextField(blank=True)
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+    booked_at = models.DateTimeField(blank=True, null=True)
+    activated_at = models.DateTimeField(blank=True, null=True)
+    activation_email_sent_at = models.DateTimeField(blank=True, null=True)
+    activation_email_error = models.TextField(blank=True)
+    activation_sms_queued_at = models.DateTimeField(blank=True, null=True)
+    activation_sms_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["unit", "status"])]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(deposit_amount__gte=0)
+                    & models.Q(rent_amount__gte=0)
+                    & models.Q(garbage_amount__gte=0)
+                    & models.Q(water_deposit_amount__gte=0)
+                    & models.Q(utility_deposit_amount__gte=0)
+                    & models.Q(total_required__gte=0)
+                    & models.Q(total_paid__gte=0)
+                    & models.Q(deposit_paid_amount__gte=0)
+                    & models.Q(outstanding_balance__gte=0)
+                ),
+                name="users_moveinsettlement_amounts_nonnegative",
+            ),
+            models.UniqueConstraint(
+                fields=["unit"],
+                condition=models.Q(
+                    status__in=(
+                        "payment_pending",
+                        "partial",
+                        "booked",
+                        "paid",
+                        "move_in_pending",
+                        "reserved",
+                    )
+                ),
+                name="users_moveinsettlement_one_open_per_unit",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.tenant_type not in dict(Tenant.TENANT_TYPE_CHOICES):
+            raise ValidationError({"tenant_type": "This tenant type is not supported."})
+        if self.tenancy_type not in dict(Tenancy.TENANCY_TYPE_CHOICES):
+            raise ValidationError({"tenancy_type": "This tenancy type is not supported."})
+        if self.tenancy_type == Tenancy.TYPE_FIXED_TERM and self.tenancy_end_date is None:
+            raise ValidationError({"tenancy_end_date": "Fixed-term tenancies require an end date."})
+        if self.tenancy_end_date and self.tenancy_end_date < self.expected_move_in_date:
+            raise ValidationError({"tenancy_end_date": "The tenancy end date cannot be before its start date."})
+        if self.tenancy_due_day is not None and not 1 <= self.tenancy_due_day <= 31:
+            raise ValidationError({"tenancy_due_day": "The rent due day must be between 1 and 31."})
+        if not isinstance(self.utility_deposits, list) or any(
+            not isinstance(deposit, dict)
+            or not isinstance(deposit.get("name"), str)
+            or not deposit["name"].strip()
+            or not isinstance(deposit.get("amount"), (int, float, str))
+            for deposit in self.utility_deposits
+        ):
+            raise ValidationError({"utility_deposits": "Utility deposits must be a list of named amounts."})
+        if not isinstance(self.utility_charges, list) or any(
+            not isinstance(charge, dict)
+            or not isinstance(charge.get("name"), str)
+            or not charge["name"].strip()
+            or not isinstance(charge.get("amount"), (int, float, str))
+            for charge in self.utility_charges
+        ):
+            raise ValidationError({"utility_charges": "Utility charges must be a list of named amounts."})
+        if self.unit_id and self.tenant_id and self.unit.property.branch_id != self.tenant.branch_id:
+            raise ValidationError({"tenant": "The tenant and unit must belong to the same branch."})
+        if self.total_paid > self.total_required:
+            raise ValidationError({"total_paid": "Payments cannot exceed the move-in total."})
+        if self.deposit_paid_amount > self.deposit_total:
+            raise ValidationError({"deposit_paid_amount": "Deposit payments cannot exceed the configured deposits."})
+
+    @property
+    def deposit_total(self):
+        return self.deposit_amount + self.water_deposit_amount + self.utility_deposit_amount
+
+
+class MoveInPayment(models.Model):
+    METHOD_MANUAL = "manual"
+    METHOD_STK_PUSH = "stk_push"
+    METHOD_OFFICER_CONFIRMATION = "officer_confirmation"
+    METHOD_CHOICES = (
+        (METHOD_MANUAL, "Manual"),
+        (METHOD_STK_PUSH, "STK push"),
+        (METHOD_OFFICER_CONFIRMATION, "Property officer payment confirmation"),
+    )
+    STATUS_PENDING = "pending"
+    STATUS_SUCCESS = "success"
+    STATUS_FAILED = "failed"
+    STATUS_NEEDS_REVIEW = "needs_review"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending"),
+        (STATUS_SUCCESS, "Success"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_NEEDS_REVIEW, "Needs review"),
+    )
+
+    settlement = models.ForeignKey(
+        MoveInSettlement,
+        on_delete=models.PROTECT,
+        related_name="payments",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    mpesa_reference = models.CharField(max_length=100, blank=True)
+    checkout_request_id = models.CharField(max_length=100, blank=True, null=True)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="move_in_payments_recorded",
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUCCESS)
+    result_description = models.TextField(blank=True)
+    processed_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["settlement", "created_at"])]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="users_moveinpayment_amount_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["checkout_request_id"],
+                condition=models.Q(checkout_request_id__isnull=False),
+                name="users_moveinpayment_checkout_unique",
+            ),
+        ]
 
 
 class Tenant(models.Model):
@@ -1882,6 +3205,7 @@ class Tenant(models.Model):
     company_registration_number = models.CharField(max_length=100, blank=True)
     contact_person = models.CharField(max_length=255, blank=True)
     national_id_or_passport = models.CharField(max_length=100, blank=True)
+    is_provisional = models.BooleanField(default=False)
     kra_pin = models.CharField(max_length=20, blank=True)
     phone = models.CharField(
         max_length=12,
@@ -1931,7 +3255,11 @@ class Tenant(models.Model):
                 raise ValidationError(
                     {"contact_person": "Company tenants require a contact person."}
                 )
-        elif self.tenant_type == self.INDIVIDUAL and not self.national_id_or_passport:
+        elif (
+            self.tenant_type == self.INDIVIDUAL
+            and not self.national_id_or_passport
+            and not self.is_provisional
+        ):
             raise ValidationError(
                 {"national_id_or_passport": "Individual tenants require an ID or passport number."}
             )
@@ -1981,9 +3309,24 @@ class UserProfile(models.Model):
             )
         ],
     )
+    id_or_registration_number = models.CharField(max_length=100, blank=True)
+    kra_pin = models.CharField(max_length=20, blank=True)
     branches = models.ManyToManyField(Branch, related_name="user_profiles", blank=True)
+    active_property = models.ForeignKey(
+        Property,
+        on_delete=models.SET_NULL,
+        related_name="active_user_profiles",
+        blank=True,
+        null=True,
+    )
+    totp_secret_encrypted = models.BinaryField(blank=True, null=True)
+    totp_enabled = models.BooleanField(default=False)
+    totp_last_used_counter = models.BigIntegerField(blank=True, null=True)
+    totp_recovery_codes = models.JSONField(default=list, blank=True)
     failed_login_attempts = models.PositiveSmallIntegerField(default=0)
     locked_until = models.DateTimeField(blank=True, null=True)
+    onboarding_completed = models.BooleanField(default=False)
+    tutorial_completed = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["name", "user__email"]
@@ -2001,10 +3344,146 @@ class UserProfile(models.Model):
     def __str__(self):
         return self.name
 
-    def accessible_branches(self):
-        if self.user.groups.filter(name=SUPER_ADMIN_ROLE).exists():
-            return Branch.objects.all()
-        return self.branches.all()
+    def accessible_branches(self, role_names=None):
+        if self.user.is_superuser:
+            return Branch.objects.filter(agency__is_active=True)
+        memberships = self.agency_memberships.filter(
+            agency__is_active=True,
+            is_active=True,
+        )
+        director_agencies = memberships.filter(
+            roles__name=SUPER_ADMIN_ROLE
+        ).values("agency_id")
+        role_memberships = memberships
+        if role_names is not None:
+            role_memberships = role_memberships.filter(roles__name__in=role_names)
+        member_branches = role_memberships.filter(
+            branches__agency_id=F("agency_id")
+        ).values("branches__pk")
+        return Branch.objects.filter(
+            Q(agency_id__in=director_agencies)
+            | Q(pk__in=member_branches)
+        ).distinct()
+
+
+class AgencyMembership(models.Model):
+    profile = models.ForeignKey(
+        UserProfile,
+        on_delete=models.CASCADE,
+        related_name="agency_memberships",
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.PROTECT,
+        related_name="memberships",
+    )
+    roles = models.ManyToManyField(
+        "auth.Group",
+        related_name="agency_memberships",
+        blank=True,
+    )
+    branches = models.ManyToManyField(
+        Branch,
+        related_name="agency_memberships",
+        blank=True,
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["agency__name", "profile__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["profile", "agency"],
+                name="users_agencymembership_profile_agency_unique",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.pk and self.branches.exclude(agency_id=self.agency_id).exists():
+            raise ValidationError(
+                {"branches": "Assigned branches must belong to this membership's agency."}
+            )
+
+    def __str__(self):
+        return f"{self.profile} at {self.agency}"
+
+
+class DirectorActivationChallenge(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="director_activation_challenges",
+    )
+    code_hash = models.CharField(max_length=256)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "expires_at"])]
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+
+class StaffActivationChallenge(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    membership = models.ForeignKey(
+        AgencyMembership,
+        on_delete=models.CASCADE,
+        related_name="activation_challenges",
+    )
+    code_hash = models.CharField(max_length=256)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["membership", "expires_at"])]
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+
+class LandlordActivationChallenge(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    landlord = models.ForeignKey(
+        Landlord,
+        on_delete=models.CASCADE,
+        related_name="activation_challenges",
+    )
+    code_hash = models.CharField(max_length=256)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["landlord", "expires_at"])]
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+
+class TOTPLoginChallenge(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="totp_login_challenges",
+    )
+    setup_secret_encrypted = models.BinaryField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "expires_at"])]
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
 
 
 class SMSLoginChallenge(models.Model):
@@ -2025,6 +3504,56 @@ class SMSLoginChallenge(models.Model):
         return timezone.now() >= self.expires_at
 
 
+class SMSDelivery(models.Model):
+    STATUS_QUEUED = "queued"
+    STATUS_SENDING = "sending"
+    STATUS_SENT = "sent"
+    STATUS_FAILED = "failed"
+    STATUS_EXPIRED = "expired"
+    STATUS_CHOICES = (
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_SENDING, "Sending"),
+        (STATUS_SENT, "Sent"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_EXPIRED, "Expired"),
+    )
+
+    template_name = models.CharField(max_length=100)
+    recipient_encrypted = models.BinaryField()
+    message_encrypted = models.BinaryField()
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_QUEUED,
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    available_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    locked_at = models.DateTimeField(blank=True, null=True)
+    sent_at = models.DateTimeField(blank=True, null=True)
+    provider_message_id = models.CharField(max_length=255, blank=True)
+    error_code = models.CharField(max_length=100, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="queued_sms_deliveries",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["status", "available_at"]),
+            models.Index(fields=["created_by", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.template_name} SMS ({self.status})"
+
+
 class AuditLogQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError("Audit log entries are immutable.")
@@ -2040,6 +3569,13 @@ class AuditLogQuerySet(models.QuerySet):
 
 
 class AuditLog(models.Model):
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.SET_NULL,
+        related_name="audit_logs",
+        blank=True,
+        null=True,
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2058,6 +3594,7 @@ class AuditLog(models.Model):
 
     class Meta:
         ordering = ["-timestamp", "-id"]
+        indexes = [models.Index(fields=["agency", "timestamp"])]
 
     def save(self, *args, **kwargs):
         if not self._state.adding:
