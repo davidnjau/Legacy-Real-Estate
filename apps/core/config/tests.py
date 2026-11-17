@@ -12846,7 +12846,7 @@ class WhatsAppBotTests(TestCase):
                 self._message(contact.wa_id, choice="t_balance")
             )
         body = post.call_args.args[0]["text"]["body"]
-        self.assertIn("INV-WA-0055", body)
+        self.assertIn(invoice.number, body)
         self.assertIn("18,200.00", body)
 
     def test_photo_maintenance_flow_creates_ticket_with_evidence(self):
