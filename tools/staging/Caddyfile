@@ -1,7 +1,7 @@
 {$STAGING_DOMAIN} {
     encode gzip
 
-    handle /api/* {
+    handle /api/v1/* {
         reverse_proxy core:8000
     }
 
