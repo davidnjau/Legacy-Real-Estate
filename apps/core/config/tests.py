@@ -11765,6 +11765,50 @@ class UserAccessTests(TestCase):
         self.assertEqual(mail.outbox[0].to, [user.email])
         self.assertIn("reset-password", mail.outbox[0].body)
 
+    @override_settings(
+        PUBLIC_SITE_URL="https://staging.example.test",
+        DEBUG=False,
+        EMAIL_DELIVERY_BACKEND="mailpit",
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        BREVO_API_KEY="",
+        BREVO_SENDER_EMAIL="",
+    )
+    def test_staging_password_recovery_uses_mailpit_without_brevo(self):
+        from django.core import mail
+
+        user = self.create_user(email="staging-reset@example.com")
+        response = self.client.post(
+            "/api/v1/auth/password-reset",
+            data={"email": user.email},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [user.email])
+        self.assertIn("reset-password", mail.outbox[0].body)
+
+    @override_settings(
+        PUBLIC_SITE_URL="https://staging.example.test",
+        DEBUG=False,
+        EMAIL_DELIVERY_BACKEND="mailpit",
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        BREVO_API_KEY="",
+        BREVO_SENDER_EMAIL="",
+    )
+    def test_staging_director_activation_uses_mailpit_without_brevo(self):
+        from django.core import mail
+
+        from users.views import _send_director_activation_email
+
+        user = self.create_user(email="staging-director@example.com")
+        _send_director_activation_email(user, "challenge-id", "123456")
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [user.email])
+        self.assertIn("123456", mail.outbox[0].body)
+        self.assertIn("/activate-director?challenge_id=challenge-id", mail.outbox[0].body)
+
     def test_sms_delivery_failures_retry_and_expired_messages_are_discarded(self):
         user = self.create_user(
             email="sms-retry@example.com",
@@ -13028,6 +13072,28 @@ class WhatsAppRentStkTests(TestCase):
             message["type"] = "text"
             message["text"] = {"body": text}
         return message
+
+    @override_settings(
+        DEBUG=False,
+        EMAIL_DELIVERY_BACKEND="mailpit",
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        BREVO_API_KEY="",
+        BREVO_SENDER_EMAIL="",
+    )
+    def test_whatsapp_payment_receipt_uses_mailpit_without_brevo(self):
+        from django.core import mail
+        from users import whatsapp_bot
+
+        whatsapp_bot._send_payment_receipt_email(
+            self.tenant,
+            "STAGING-RECEIPT-001",
+            Decimal("2500.00"),
+        )
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.tenant.email])
+        self.assertEqual(mail.outbox[0].subject, "Payment received — STAGING-RECEIPT-001")
+        self.assertIn("KES 2,500.00", mail.outbox[0].body)
 
     def test_pay_flow_initiates_stk_and_callback_completes_tri_channel_receipt(self):
         from users.models import (

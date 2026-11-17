@@ -193,6 +193,16 @@ deploying schema changes, and do not use `docker compose down -v` or remove
 the PostgreSQL volume unless intentionally resetting staging data. Keep
 staging data anonymized or synthetic.
 
+Staging email is captured in Mailpit rather than delivered to real recipients.
+The authenticated inbox is available at
+`https://staging.legacyhomes.live/mailpit/`; set `MAILPIT_UI_AUTH` in the VPS
+`.env` to a unique `username:password` value before deploying. Generate a
+password with `openssl rand -hex 32`, and do not commit or share the credential.
+Mailpit's SMTP and UI ports are not published directly; Caddy proxies the UI
+path, and messages are retained for 14 days by default. Activation links and
+other email contents are visible to anyone with inbox access, so restrict the
+credential to trusted staging operators.
+
 The GitHub Actions `staging` environment must also have `STAGING_HOST`,
 `STAGING_USER`, and `STAGING_SSH_KEY` configured for the deployment workflow.
 These are SSH deployment secrets; the application and RabbitMQ runtime

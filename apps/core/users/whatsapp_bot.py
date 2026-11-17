@@ -41,6 +41,7 @@ from users.models import (
     WhatsAppContact,
 )
 from users import daraja
+from users.email import email_delivery_is_configured, uses_mailpit_backend
 from users.object_storage import upload_private_object
 
 logger = logging.getLogger(__name__)
@@ -468,8 +469,28 @@ def _initiate_stk(contact, state, invoice_id):
 def _send_payment_receipt_email(tenant, reference, amount):
     if not tenant.email:
         return
-    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
-        logger.info("Receipt email skipped: Brevo is not configured.")
+    if not email_delivery_is_configured():
+        logger.info("Receipt email skipped: email delivery is not configured.")
+        return
+    subject = f"Payment received — {reference}"
+    text_content = (
+        f"Dear {tenant.name},\n\n"
+        f"Your payment of KES {amount:,.2f} (reference {reference}) has "
+        "been received. Thank you.\n\nLegacy Real Estate"
+    )
+    if uses_mailpit_backend():
+        from django.core.mail import send_mail
+
+        try:
+            send_mail(
+                subject,
+                text_content,
+                settings.DEFAULT_FROM_EMAIL,
+                [tenant.email],
+                fail_silently=False,
+            )
+        except Exception:
+            logger.exception("Payment receipt email could not be sent.")
         return
     payload = json.dumps({
         "sender": {
@@ -477,12 +498,8 @@ def _send_payment_receipt_email(tenant, reference, amount):
             "email": settings.BREVO_SENDER_EMAIL,
         },
         "to": [{"email": tenant.email}],
-        "subject": f"Payment received — {reference}",
-        "textContent": (
-            f"Dear {tenant.name},\n\n"
-            f"Your payment of KES {amount:,.2f} (reference {reference}) has "
-            "been received. Thank you.\n\nLegacy Real Estate"
-        ),
+        "subject": subject,
+        "textContent": text_content,
     }).encode("utf-8")
     request = Request(
         "https://api.brevo.com/v3/smtp/email",

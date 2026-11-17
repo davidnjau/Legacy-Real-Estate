@@ -92,6 +92,7 @@ jobs:
           OBJECT_STORAGE_BUCKET: legacy-private
           OBJECT_STORAGE_REGION: us-east-1
           STAGING_DOMAIN: localhost
+          MAILPIT_UI_AUTH: ci-placeholder-user:ci-placeholder-password
 
   contract:
     runs-on: ubuntu-latest

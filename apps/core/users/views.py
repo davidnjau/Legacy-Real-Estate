@@ -48,6 +48,7 @@ from users.access import accessible_branches
 from users.arrears import arrears_for_accessible_invoices, invoice_arrears
 from users.audit import record_audit_event
 from users.billing import generate_monthly_invoice, month_end, water_reading_status
+from users.email import email_delivery_is_configured, uses_mailpit_backend
 from users.models import (
     Announcement,
     AgencyMembership,
@@ -178,7 +179,7 @@ def _send_password_reset_email(user, reset_url, *, initial_setup=False):
             "Choose a new password</a></p>"
             "<p>If you did not request this change, you can ignore this email.</p>"
         )
-    if settings.DEBUG and not settings.BREVO_API_KEY:
+    if uses_mailpit_backend():
         from django.core.mail import send_mail
 
         send_mail(
@@ -245,7 +246,7 @@ def _send_director_activation_email(user, challenge_id, code):
         f'<p><a href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
         "<p>If you did not expect this invitation, contact your platform administrator.</p>"
     )
-    if settings.DEBUG and not settings.BREVO_API_KEY:
+    if uses_mailpit_backend():
         from django.core.mail import EmailMultiAlternatives
 
         message = EmailMultiAlternatives(
@@ -319,7 +320,7 @@ def _send_staff_activation_email(
         f'<p><a href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
         f"<p>If you did not expect this invitation, contact {html.escape(contact)}.</p>"
     )
-    if settings.DEBUG and not settings.BREVO_API_KEY:
+    if uses_mailpit_backend():
         from django.core.mail import EmailMultiAlternatives
 
         message = EmailMultiAlternatives(
@@ -391,7 +392,7 @@ def _send_caretaker_activation_email(email_address, property_name, activation_ur
         f"<p>One-time code: <strong>{code}</strong>. It expires in {lifetime_minutes} minutes.</p>"
         f'<p><a href="{safe_url}">Activate your account</a></p>'
     )
-    if settings.DEBUG and not settings.BREVO_API_KEY:
+    if uses_mailpit_backend():
         from django.core.mail import EmailMultiAlternatives
 
         message = EmailMultiAlternatives(
@@ -453,7 +454,7 @@ def _send_tenant_activation_email(
         f"Use this secure link and code to create your password: {activation_url}\n\n"
         "The link expires in 48 hours."
     )
-    if settings.DEBUG and not settings.BREVO_API_KEY:
+    if uses_mailpit_backend():
         from django.core.mail import send_mail
 
         send_mail(
@@ -6054,10 +6055,7 @@ def request_password_reset(request):
     except ValidationError:
         return _problem(400, "Invalid email", "Enter a valid email address.", "invalid-email")
 
-    if not settings.PUBLIC_SITE_URL or (
-        not settings.DEBUG
-        and (not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL)
-    ):
+    if not settings.PUBLIC_SITE_URL or not email_delivery_is_configured():
         return _problem(503, "Recovery unavailable", "Password recovery is not configured.", "recovery-unavailable")
 
     user = get_user_model().objects.filter(email__iexact=email, is_active=True).first()

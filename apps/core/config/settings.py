@@ -157,6 +157,13 @@ PUBLIC_SITE_URL = os.environ.get(
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 BREVO_SENDER_EMAIL = os.environ.get("BREVO_SENDER_EMAIL", "")
 BREVO_SENDER_NAME = os.environ.get("BREVO_SENDER_NAME", "Property Management")
+EMAIL_DELIVERY_BACKEND = os.environ.get(
+    "EMAIL_DELIVERY_BACKEND",
+    "mailpit" if DEBUG and not BREVO_API_KEY else "brevo",
+).strip().lower()
+if EMAIL_DELIVERY_BACKEND not in {"brevo", "mailpit"}:
+    raise ImproperlyConfigured("EMAIL_DELIVERY_BACKEND must be 'brevo' or 'mailpit'.")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "webmaster@localhost")
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "mailpit" if DEBUG else "localhost")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "1025" if DEBUG else "25"))

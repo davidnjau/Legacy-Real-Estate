@@ -48,6 +48,19 @@ services:
       timeout: 5s
       retries: 10
 
+  mailpit:
+    image: axllent/mailpit:v1.31.1
+    restart: unless-stopped
+    environment:
+      MP_ALLOWED_HOSTS: ${STAGING_DOMAIN}
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_AGE: ${MAILPIT_MAX_AGE:-14d}
+      MP_MAX_MESSAGES: ${MAILPIT_MAX_MESSAGES:-5000}
+      MP_UI_AUTH: ${MAILPIT_UI_AUTH:?Set MAILPIT_UI_AUTH}
+      MP_WEBROOT: /mailpit/
+    volumes:
+      - mailpit_data:/data
+
   core:
     build:
       context: ../..
@@ -62,6 +75,11 @@ services:
       BREVO_API_KEY: ${BREVO_API_KEY:-}
       BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
       BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Legacy Real Estate}
+      EMAIL_DELIVERY_BACKEND: ${EMAIL_DELIVERY_BACKEND:-mailpit}
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-staging@legacyhomes.live}
+      EMAIL_HOST: mailpit
+      EMAIL_PORT: "1025"
+      EMAIL_USE_TLS: "0"
       AUTH_SMS_BACKEND: ${AUTH_SMS_BACKEND}
       SOFTLINK_SMS_API_URL: ${SOFTLINK_SMS_API_URL:-https://api.softlinksms.co.ke/api/v1/sms}
       SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
@@ -106,6 +124,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mailpit:
+        condition: service_started
 
   sms-worker:
     build:
@@ -195,6 +215,14 @@ services:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
       DJANGO_DEBUG: ${DJANGO_DEBUG}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
+      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Legacy Real Estate}
+      EMAIL_DELIVERY_BACKEND: ${EMAIL_DELIVERY_BACKEND:-mailpit}
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-staging@legacyhomes.live}
+      EMAIL_HOST: mailpit
+      EMAIL_PORT: "1025"
+      EMAIL_USE_TLS: "0"
       AUTH_SMS_BACKEND: ${AUTH_SMS_BACKEND}
       SOFTLINK_SMS_API_URL: ${SOFTLINK_SMS_API_URL:-https://api.softlinksms.co.ke/api/v1/sms}
       SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
@@ -213,6 +241,8 @@ services:
       rabbitmq:
         condition: service_healthy
       core:
+        condition: service_started
+      mailpit:
         condition: service_started
 
   celery-beat:
@@ -271,11 +301,13 @@ services:
     depends_on:
       - core
       - website
+      - mailpit
 
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
   minio_data:
+  mailpit_data:
   caddy_data:
   caddy_config:
