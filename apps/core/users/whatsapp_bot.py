@@ -211,8 +211,20 @@ def _handle_verification_reply(contact, state, text):
         )
         return
     candidate = _normalise_id_number(text)
-    if not candidate or len(candidate) > 100:
-        send_text(contact.wa_id, "Please send only your ID number.")
+    # Greetings and chatter must not burn verification attempts — only
+    # plausible ID numbers (6+ characters including at least one digit)
+    # count toward the lockout.
+    if (
+        not candidate
+        or len(candidate) < 6
+        or len(candidate) > 100
+        or not any(ch.isdigit() for ch in candidate)
+    ):
+        send_text(
+            contact.wa_id,
+            "Please reply with just your national ID number (or company "
+            "registration number) to verify your account.",
+        )
         return
     tenant, landlord = _match_identities(candidate)
     if tenant is None and landlord is None:

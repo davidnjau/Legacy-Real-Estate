@@ -27,6 +27,7 @@ from users.models import (
     Unit,
     UserProfile,
     Vendor,
+    WhatsAppContact,
 )
 from users.roles import (
     BRANCH_MANAGER_ROLE,
@@ -181,6 +182,14 @@ class Command(BaseCommand):
             profile.branches.add(branch)
             if role_name == CARETAKER_ROLE:
                 property_obj.caretakers.add(user)
+
+        # Re-running the seed always unblocks the demo phones, so a failed
+        # verification experiment never stalls staging testing for 24 hours.
+        unlocked = WhatsAppContact.objects.filter(
+            wa_id__in=[options["tenant_phone"], options["landlord_phone"]]
+        ).update(failed_verifications=0, locked_until=None)
+        if unlocked:
+            self.stdout.write(f"  Cleared verification locks on {unlocked} demo contact(s).")
 
         self.stdout.write(self.style.SUCCESS(
             "Demo data ready:\n"

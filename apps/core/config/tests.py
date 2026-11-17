@@ -12814,11 +12814,25 @@ class WhatsAppBotTests(TestCase):
             whatsapp_bot.handle_inbound_message(self._message(other, text="hi"))
             for _ in range(5):
                 whatsapp_bot.handle_inbound_message(
-                    self._message(other, text="WRONG-ID")
+                    self._message(other, text="99999999")
                 )
         locked = WhatsAppContact.objects.get(wa_id=other)
         self.assertIsNotNone(locked.locked_until)
         self.assertIn("paused", post.call_args.args[0]["text"]["body"])
+
+    def test_greetings_do_not_count_as_verification_attempts(self):
+        from users.models import WhatsAppContact
+        from users import whatsapp_bot
+
+        wa_id = "254700008888"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
+            for text in ("hello", "Hello there", "hey", "menu", "cancel", "ok"):
+                whatsapp_bot.handle_inbound_message(self._message(wa_id, text=text))
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertEqual(contact.failed_verifications, 0)
+        self.assertIsNone(contact.locked_until)
+        self.assertIn("ID number", post.call_args.args[0]["text"]["body"])
 
     def test_tenant_balance_flow_reports_outstanding_invoices(self):
         from users.models import WhatsAppContact, ConversationState
