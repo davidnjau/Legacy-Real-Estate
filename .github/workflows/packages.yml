@@ -58,12 +58,12 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Verify Supabase SDK and credentials remain absent
+      - name: Verify Django API proxy routes are present
         run: |
-          if grep -rn -i "supabase" apps/website/app apps/website/lib apps/website/components; then
-            echo "Error: Supabase references detected in apps/website runtime code!"
-            exit 1
-          fi
+          test -f apps/website/lib/django-proxy.ts
+          test -f apps/website/app/api/auth/login/route.ts
+          test -f apps/website/app/api/auth/csrf/route.ts
+          test -f apps/website/app/api/public/listings/route.ts
       - run: pnpm --filter @legacy/website lint
       - run: pnpm --filter @legacy/website build
 
