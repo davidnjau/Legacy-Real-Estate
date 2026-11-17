@@ -841,6 +841,17 @@ def handle_inbound_message(message: dict) -> None:
             _prompt_for_id(contact, state)
         return
 
+    # "cancel"/"stop" abandons whatever flow is in progress from any step,
+    # including a draft maintenance ticket, and returns to the menu.
+    if text and text.lower().strip() in {"cancel", "stop"}:
+        state.state = {}
+        _save_state(state)
+        if state.active_role:
+            _show_menu(contact, state)
+        else:
+            _show_entry(contact, state)
+        return
+
     if choice in {"role_tenant", "role_landlord"}:
         state.active_role = ROLE_TENANT if choice == "role_tenant" else ROLE_LANDLORD
         _show_menu(contact, state)
