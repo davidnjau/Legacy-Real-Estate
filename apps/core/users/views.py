@@ -11799,7 +11799,6 @@ def submit_caretaker_move_in_handover(request, package_id):
             "handover-photos-required",
         )
 
-    readings_by_type = {item["utility_type"]: item for item in normalized_readings}
     try:
         with transaction.atomic():
             locked_package = (

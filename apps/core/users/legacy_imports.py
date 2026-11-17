@@ -31,7 +31,6 @@ from users.models import (
     AgencyMembership,
     Property,
     PropertyUnitType,
-    PropertyUnitTypeUtility,
     Tenant,
     TenantActivationChallenge,
     Tenancy,

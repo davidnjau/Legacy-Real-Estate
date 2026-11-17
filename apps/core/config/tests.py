@@ -11448,7 +11448,9 @@ class UserAccessTests(TestCase):
             ).exists()
         )
         challenge_id = response.json()["challenge_id"]
-        challenge = TOTPLoginChallenge.objects.get(pk=challenge_id)
+        self.assertTrue(
+            TOTPLoginChallenge.objects.filter(pk=challenge_id, user=user).exists()
+        )
         secret = response.json()["secret"]
         code = _code_for_counter(secret, int(timezone.now().timestamp() // 30))
         invalid_code = next(
