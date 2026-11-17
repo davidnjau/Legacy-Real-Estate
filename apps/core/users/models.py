@@ -3554,6 +3554,94 @@ class SMSDelivery(models.Model):
         return f"{self.template_name} SMS ({self.status})"
 
 
+class WhatsAppContact(models.Model):
+    """A WhatsApp number linked to platform identities after ID verification.
+
+    Created by the Phase 2 conversational onboarding flow; Phase 1 only reads
+    it to decide whether a recipient has opted into the WhatsApp channel.
+    """
+
+    wa_id = models.CharField(max_length=20, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="whatsapp_contacts",
+        blank=True,
+        null=True,
+    )
+    tenant = models.ForeignKey(
+        "users.Tenant",
+        on_delete=models.CASCADE,
+        related_name="whatsapp_contacts",
+        blank=True,
+        null=True,
+    )
+    id_number_hash = models.CharField(max_length=64, blank=True)
+    verified_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self):
+        return f"WhatsApp contact {self.wa_id}"
+
+
+class WhatsAppDelivery(models.Model):
+    STATUS_QUEUED = "queued"
+    STATUS_SENDING = "sending"
+    STATUS_SENT = "sent"
+    STATUS_FAILED = "failed"
+    STATUS_EXPIRED = "expired"
+    STATUS_CHOICES = (
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_SENDING, "Sending"),
+        (STATUS_SENT, "Sent"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_EXPIRED, "Expired"),
+    )
+
+    template_name = models.CharField(max_length=100)
+    recipient_encrypted = models.BinaryField()
+    payload_encrypted = models.BinaryField()
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_QUEUED,
+    )
+    # Meta's post-send lifecycle reported by webhook status events
+    # (sent/delivered/read/failed); distinct from the outbox status above.
+    channel_status = models.CharField(max_length=20, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    available_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    locked_at = models.DateTimeField(blank=True, null=True)
+    sent_at = models.DateTimeField(blank=True, null=True)
+    provider_message_id = models.CharField(max_length=255, blank=True)
+    error_code = models.CharField(max_length=100, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="queued_whatsapp_deliveries",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["status", "available_at"]),
+            models.Index(fields=["provider_message_id"]),
+            models.Index(fields=["created_by", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.template_name} WhatsApp ({self.status})"
+
+
 class AuditLogQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError("Audit log entries are immutable.")

@@ -12561,3 +12561,139 @@ class MoveInSettlementTests(TestCase):
         tenant.refresh_from_db()
         self.assertEqual(tenant.name, "Tenant Profile Updated")
         self.assertEqual(tenancy.tenant_id, tenant.pk)
+
+
+class WhatsAppDeliveryTests(TestCase):
+    @override_settings(WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend")
+    def test_whatsapp_templates_queue_encrypted_delivery_and_dispatch(self):
+        from users.models import WhatsAppDelivery
+        from users.whatsapp import (
+            dispatch_next_whatsapp_delivery,
+            queue_template_whatsapp,
+        )
+
+        phone = "254712345631"
+        delivery = queue_template_whatsapp(
+            phone,
+            "payment_receipt",
+            {"amount": "24,750.00", "reference": "INV-2026-0117"},
+        )
+
+        self.assertEqual(delivery.status, WhatsAppDelivery.STATUS_QUEUED)
+        self.assertNotIn(phone.encode(), bytes(delivery.recipient_encrypted))
+        self.assertNotIn(b"INV-2026-0117", bytes(delivery.payload_encrypted))
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="whatsapp.queued",
+                entity="WhatsAppDelivery",
+            ).exists()
+        )
+
+        with patch(
+            "users.whatsapp.send_whatsapp",
+            return_value="wamid.test-0001",
+        ) as send:
+            dispatched = dispatch_next_whatsapp_delivery()
+
+        self.assertEqual(dispatched.pk, delivery.pk)
+        self.assertEqual(dispatched.status, WhatsAppDelivery.STATUS_SENT)
+        self.assertEqual(dispatched.provider_message_id, "wamid.test-0001")
+        self.assertEqual(dispatched.recipient_encrypted, b"")
+        self.assertEqual(dispatched.payload_encrypted, b"")
+        self.assertEqual(send.call_args.args[0], phone)
+        payload = send.call_args.args[1]
+        self.assertEqual(payload["template"], "payment_confirmation")
+        self.assertEqual(
+            payload["params"],
+            {"amount": "24,750.00", "invoice_ref": "INV-2026-0117"},
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="whatsapp.sent",
+                entity="WhatsAppDelivery",
+            ).exists()
+        )
+
+    @override_settings(WHATSAPP_BACKEND="")
+    def test_whatsapp_fan_out_is_silent_when_channel_is_not_configured(self):
+        from users.models import WhatsAppDelivery
+        from users.whatsapp import queue_template_whatsapp_if_enabled
+
+        result = queue_template_whatsapp_if_enabled(
+            "254712345632",
+            "payment_receipt",
+            {"amount": "100.00", "reference": "REF-1"},
+        )
+
+        self.assertIsNone(result)
+        self.assertFalse(WhatsAppDelivery.objects.exists())
+
+    @override_settings(
+        WHATSAPP_APP_SECRET="test-app-secret",
+        WHATSAPP_VERIFY_TOKEN="test-verify-token",
+    )
+    def test_whatsapp_webhook_verifies_signature_and_records_statuses(self):
+        import hashlib
+        import hmac as hmac_module
+
+        from users.models import WhatsAppDelivery
+
+        response = self.client.get(
+            "/api/v1/whatsapp/webhook",
+            {
+                "hub.mode": "subscribe",
+                "hub.verify_token": "test-verify-token",
+                "hub.challenge": "challenge-123",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"challenge-123")
+
+        delivery = WhatsAppDelivery.objects.create(
+            template_name="payment_receipt",
+            recipient_encrypted=b"",
+            payload_encrypted=b"",
+            status=WhatsAppDelivery.STATUS_SENT,
+            provider_message_id="wamid.status-0001",
+        )
+        body = json.dumps({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "statuses": [{
+                            "id": "wamid.status-0001",
+                            "status": "failed",
+                            "errors": [{"code": 131042}],
+                        }],
+                    },
+                }],
+            }],
+        }).encode("utf-8")
+        signature = hmac_module.new(
+            b"test-app-secret", body, hashlib.sha256
+        ).hexdigest()
+
+        rejected = self.client.post(
+            "/api/v1/whatsapp/webhook",
+            body,
+            content_type="application/json",
+            headers={"X-Hub-Signature-256": "sha256=invalid"},
+        )
+        self.assertEqual(rejected.status_code, 403)
+
+        accepted = self.client.post(
+            "/api/v1/whatsapp/webhook",
+            body,
+            content_type="application/json",
+            headers={"X-Hub-Signature-256": f"sha256={signature}"},
+        )
+        self.assertEqual(accepted.status_code, 200)
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.channel_status, "failed")
+        self.assertEqual(delivery.error_code, "131042")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="whatsapp.account_delivery_blocked",
+                entity="WhatsAppDelivery",
+            ).exists()
+        )
