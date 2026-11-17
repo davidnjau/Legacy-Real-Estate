@@ -3612,6 +3612,65 @@ class ConversationState(models.Model):
         return f"Conversation state for {self.contact.wa_id}"
 
 
+class RentStkRequest(models.Model):
+    """An STK push initiated from WhatsApp against a specific invoice."""
+
+    STATUS_PENDING = "pending"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending"),
+        (STATUS_SUCCEEDED, "Succeeded"),
+        (STATUS_FAILED, "Failed"),
+    )
+
+    invoice = models.ForeignKey(
+        "users.Invoice",
+        on_delete=models.PROTECT,
+        related_name="rent_stk_requests",
+    )
+    tenant = models.ForeignKey(
+        "users.Tenant",
+        on_delete=models.PROTECT,
+        related_name="rent_stk_requests",
+    )
+    contact = models.ForeignKey(
+        WhatsAppContact,
+        on_delete=models.SET_NULL,
+        related_name="rent_stk_requests",
+        blank=True,
+        null=True,
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    phone = models.CharField(max_length=30)
+    checkout_request_id = models.CharField(max_length=100, unique=True)
+    merchant_request_id = models.CharField(max_length=100, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+    result_code = models.CharField(max_length=20, blank=True)
+    result_description = models.CharField(max_length=500, blank=True)
+    payment = models.ForeignKey(
+        "users.Payment",
+        on_delete=models.SET_NULL,
+        related_name="rent_stk_requests",
+        blank=True,
+        null=True,
+    )
+    processed_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["status", "created_at"])]
+
+    def __str__(self):
+        return f"Rent STK {self.checkout_request_id} ({self.status})"
+
+
 class WhatsAppDelivery(models.Model):
     STATUS_QUEUED = "queued"
     STATUS_SENDING = "sending"

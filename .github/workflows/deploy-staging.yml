@@ -76,12 +76,19 @@ jobs:
           WHATSAPP_WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
           WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
           WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+          MPESA_CONSUMER_KEY: ${{ secrets.MPESA_CONSUMER_KEY }}
+          MPESA_CONSUMER_SECRET: ${{ secrets.MPESA_CONSUMER_SECRET }}
+          MPESA_SHORTCODE: ${{ secrets.MPESA_SHORTCODE }}
+          MPESA_PASSKEY: ${{ secrets.MPESA_PASSKEY }}
+          MPESA_BASE_URL: ${{ secrets.MPESA_BASE_URL }}
         run: |
           : > whatsapp.env
           chmod 600 whatsapp.env
           for name in WHATSAPP_BACKEND WHATSAPP_ACCESS_TOKEN \
                       WHATSAPP_PHONE_NUMBER_ID WHATSAPP_WABA_ID \
-                      WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN; do
+                      WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN \
+                      MPESA_CONSUMER_KEY MPESA_CONSUMER_SECRET \
+                      MPESA_SHORTCODE MPESA_PASSKEY MPESA_BASE_URL; do
             value="${!name}"
             if [ -n "$value" ]; then
               printf '%s=%s\n' "$name" "$value" >> whatsapp.env
