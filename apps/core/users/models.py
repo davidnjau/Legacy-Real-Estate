@@ -3578,6 +3578,8 @@ class WhatsAppContact(models.Model):
     )
     id_number_hash = models.CharField(max_length=64, blank=True)
     verified_at = models.DateTimeField(blank=True, null=True)
+    failed_verifications = models.PositiveSmallIntegerField(default=0)
+    locked_until = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3586,6 +3588,28 @@ class WhatsAppContact(models.Model):
 
     def __str__(self):
         return f"WhatsApp contact {self.wa_id}"
+
+
+class ConversationState(models.Model):
+    """Where a verified WhatsApp contact is in a conversational flow."""
+
+    contact = models.OneToOneField(
+        WhatsAppContact,
+        on_delete=models.CASCADE,
+        related_name="conversation_state",
+    )
+    active_role = models.CharField(max_length=20, blank=True)
+    state = models.JSONField(default=dict, blank=True)
+    last_message_id = models.CharField(max_length=255, blank=True)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self):
+        return f"Conversation state for {self.contact.wa_id}"
 
 
 class WhatsAppDelivery(models.Model):

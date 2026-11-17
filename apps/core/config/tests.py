@@ -12697,3 +12697,182 @@ class WhatsAppDeliveryTests(TestCase):
                 entity="WhatsAppDelivery",
             ).exists()
         )
+
+
+@override_settings(WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend")
+class WhatsAppBotTests(TestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(name="Bot Test Agency")
+        self.branch = Branch.objects.create(agency=self.agency, name="Bot Branch")
+        self.user_model = get_user_model()
+
+    def _tenant_with_tenancy(self, suffix="01", portal=True):
+        portal_user = None
+        if portal:
+            portal_user = self.user_model.objects.create_user(
+                username=f"wa-tenant-{suffix}@example.com",
+                email=f"wa-tenant-{suffix}@example.com",
+                password="Long-test-passphrase-29!",
+            )
+        property_obj = Property.objects.create(
+            branch=self.branch,
+            name=f"WA Property {suffix}",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        unit = Unit.objects.create(
+            property=property_obj,
+            code=f"WA-{suffix}",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        tenant = Tenant.objects.create(
+            branch=self.branch,
+            tenant_type=Tenant.INDIVIDUAL,
+            name=f"Wanjiku Tester {suffix}",
+            national_id_or_passport=f"3041{suffix}99",
+            phone=f"2547000011{suffix}",
+            portal_user=portal_user,
+        )
+        tenancy = Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=timezone.localdate() - timedelta(days=30),
+            status=Tenancy.STATUS_ACTIVE,
+        )
+        return tenant, tenancy
+
+    def _message(self, wa_id, text=None, choice=None, image=None, message_id=None):
+        import uuid
+
+        message = {"from": wa_id, "id": message_id or f"wamid.{uuid.uuid4().hex}"}
+        if text is not None:
+            message["type"] = "text"
+            message["text"] = {"body": text}
+        elif choice is not None:
+            message["type"] = "interactive"
+            message["interactive"] = {"list_reply": {"id": choice}}
+        elif image is not None:
+            message["type"] = "image"
+            message["image"] = image
+        return message
+
+    def test_verification_links_tenant_and_locks_after_failures(self):
+        from users.models import WhatsAppContact
+        from users import whatsapp_bot
+
+        tenant, _ = self._tenant_with_tenancy("77")
+        wa_id = "254700001177"
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hello"))
+        self.assertIn("ID number", post.call_args.args[0]["text"]["body"])
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(wa_id, text=tenant.national_id_or_passport)
+            )
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNotNone(contact.verified_at)
+        self.assertEqual(contact.tenant_id, tenant.pk)
+        self.assertTrue(
+            AuditLog.objects.filter(action="whatsapp.contact_verified").exists()
+        )
+
+        other = "254700009999"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(other, text="hi"))
+            for _ in range(5):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(other, text="WRONG-ID")
+                )
+        locked = WhatsAppContact.objects.get(wa_id=other)
+        self.assertIsNotNone(locked.locked_until)
+        self.assertIn("paused", post.call_args.args[0]["text"]["body"])
+
+    def test_tenant_balance_flow_reports_outstanding_invoices(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("55")
+        invoice = Invoice.objects.create(
+            tenancy=tenancy,
+            branch=self.branch,
+            number="INV-WA-0055",
+            period_start=timezone.localdate().replace(day=1),
+            period_end=timezone.localdate(),
+            due_date=timezone.localdate() + timedelta(days=5),
+            total=Decimal("18200.00"),
+            status=Invoice.STATUS_ISSUED,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001155",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="t_balance")
+            )
+        body = post.call_args.args[0]["text"]["body"]
+        self.assertIn("INV-WA-0055", body)
+        self.assertIn("18,200.00", body)
+
+    def test_photo_maintenance_flow_creates_ticket_with_evidence(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("33")
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001133",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="t_issue")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cat_plumbing")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Kitchen tap is leaking badly")
+            )
+            with patch.object(
+                whatsapp_bot,
+                "_fetch_media",
+                return_value=(b"fake-jpeg-bytes", "image/jpeg"),
+            ), patch.object(whatsapp_bot, "upload_private_object") as upload:
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={"id": "media-1", "sha256": "abc", "mime_type": "image/jpeg"},
+                    )
+                )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+
+        ticket = MaintenanceTicket.objects.get(unit=tenancy.unit)
+        self.assertEqual(ticket.category, MaintenanceTicket.CATEGORY_PLUMBING)
+        self.assertEqual(ticket.description, "Kitchen tap is leaking badly")
+        self.assertEqual(ticket.reported_by, tenant.portal_user)
+        self.assertEqual(len(ticket.photos), 1)
+        self.assertEqual(ticket.photos[0]["content_type"], "image/jpeg")
+        self.assertTrue(
+            ticket.photos[0]["storage_key"].startswith(f"maintenance/tenant/{tenant.pk}/")
+        )
+        upload.assert_called_once()
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_ticket.tenant_created",
+                new_values__source="whatsapp",
+            ).exists()
+        )

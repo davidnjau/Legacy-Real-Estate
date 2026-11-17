@@ -464,13 +464,16 @@ def whatsapp_webhook(request):
             value = change.get("value", {})
             for status_event in value.get("statuses", []):
                 _apply_status_event(status_event)
-            # Inbound messages are acknowledged but not routed yet; the
-            # conversational flows land in Phase 2.
             for message in value.get("messages", []):
-                logger.info(
-                    "Inbound WhatsApp message %s (%s) received; conversational "
-                    "routing is not enabled yet.",
-                    message.get("id"),
-                    message.get("type"),
-                )
+                # Routing failures must never bubble into a non-2xx response,
+                # or Meta retries the whole batch.
+                try:
+                    from users.whatsapp_bot import handle_inbound_message
+
+                    handle_inbound_message(message)
+                except Exception:
+                    logger.exception(
+                        "Inbound WhatsApp message %s could not be routed.",
+                        message.get("id"),
+                    )
     return JsonResponse({"status": "ok"})

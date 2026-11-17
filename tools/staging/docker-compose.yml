@@ -67,6 +67,12 @@ services:
       SOFTLINK_SMS_API_KEY: ${SOFTLINK_SMS_API_KEY}
       SOFTLINK_SMS_TRAFFIC_CLASS: ${SOFTLINK_SMS_TRAFFIC_CLASS:-promotional}
       SOFTLINK_SMS_TIMEOUT_SECONDS: ${SOFTLINK_SMS_TIMEOUT_SECONDS:-10}
+      WHATSAPP_BACKEND: ${WHATSAPP_BACKEND:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_WABA_ID: ${WHATSAPP_WABA_ID:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -116,6 +122,33 @@ services:
       POSTGRES_PORT: "5432"
       REDIS_URL: redis://redis:6379/0
     command: python manage.py dispatch_sms_deliveries --watch
+    depends_on:
+      postgres:
+        condition: service_started
+      core:
+        condition: service_started
+
+  whatsapp-worker:
+    build:
+      context: ../..
+      dockerfile: apps/core/Dockerfile.staging
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      WHATSAPP_BACKEND: ${WHATSAPP_BACKEND:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_WABA_ID: ${WHATSAPP_WABA_ID:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    command: python manage.py dispatch_whatsapp_deliveries --watch
     depends_on:
       postgres:
         condition: service_started
