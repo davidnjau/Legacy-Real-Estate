@@ -2,6 +2,8 @@ from django.contrib import admin
 from django.urls import path
 
 from config.views import health_check
+from users.whatsapp import whatsapp_webhook
+from users.whatsapp_bot import receive_rent_stk_callback
 from users.director_portal import (
     director_audit_logs,
     director_financials,
@@ -642,6 +644,8 @@ urlpatterns = [
     path("api/v1/invoices/<int:invoice_id>/demand-letter", create_demand_letter, name="demand-letter-create"),
     path("api/v1/payment-plans", list_payment_plans, name="payment-plan-list"),
     path("api/v1/payments/mpesa/callback", receive_mpesa_callback, name="mpesa-callback"),
+    path("api/v1/whatsapp/webhook", whatsapp_webhook, name="whatsapp-webhook"),
+    path("api/v1/payments/mpesa/rent-stk-callback", receive_rent_stk_callback, name="rent-stk-callback"),
     path("api/v1/payments/create", create_payment, name="payment-create"),
     path("api/v1/payments/offline/create", create_offline_payment, name="offline-payment-create"),
     path("api/v1/payments/<int:payment_id>/cheque-status", update_cheque_status, name="cheque-status-update"),

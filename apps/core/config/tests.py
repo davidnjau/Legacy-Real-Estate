@@ -12561,3 +12561,636 @@ class MoveInSettlementTests(TestCase):
         tenant.refresh_from_db()
         self.assertEqual(tenant.name, "Tenant Profile Updated")
         self.assertEqual(tenancy.tenant_id, tenant.pk)
+
+
+class WhatsAppDeliveryTests(TestCase):
+    @override_settings(WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend")
+    def test_whatsapp_templates_queue_encrypted_delivery_and_dispatch(self):
+        from users.models import WhatsAppDelivery
+        from users.whatsapp import (
+            dispatch_next_whatsapp_delivery,
+            queue_template_whatsapp,
+        )
+
+        phone = "254712345631"
+        delivery = queue_template_whatsapp(
+            phone,
+            "payment_receipt",
+            {"amount": "24,750.00", "reference": "INV-2026-0117"},
+        )
+
+        self.assertEqual(delivery.status, WhatsAppDelivery.STATUS_QUEUED)
+        self.assertNotIn(phone.encode(), bytes(delivery.recipient_encrypted))
+        self.assertNotIn(b"INV-2026-0117", bytes(delivery.payload_encrypted))
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="whatsapp.queued",
+                entity="WhatsAppDelivery",
+            ).exists()
+        )
+
+        with patch(
+            "users.whatsapp.send_whatsapp",
+            return_value="wamid.test-0001",
+        ) as send:
+            dispatched = dispatch_next_whatsapp_delivery()
+
+        self.assertEqual(dispatched.pk, delivery.pk)
+        self.assertEqual(dispatched.status, WhatsAppDelivery.STATUS_SENT)
+        self.assertEqual(dispatched.provider_message_id, "wamid.test-0001")
+        self.assertEqual(dispatched.recipient_encrypted, b"")
+        self.assertEqual(dispatched.payload_encrypted, b"")
+        self.assertEqual(send.call_args.args[0], phone)
+        payload = send.call_args.args[1]
+        self.assertEqual(payload["template"], "payment_confirmation")
+        self.assertEqual(
+            payload["params"],
+            {"amount": "24,750.00", "invoice_ref": "INV-2026-0117"},
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="whatsapp.sent",
+                entity="WhatsAppDelivery",
+            ).exists()
+        )
+
+    @override_settings(WHATSAPP_BACKEND="")
+    def test_whatsapp_fan_out_is_silent_when_channel_is_not_configured(self):
+        from users.models import WhatsAppDelivery
+        from users.whatsapp import queue_template_whatsapp_if_enabled
+
+        result = queue_template_whatsapp_if_enabled(
+            "254712345632",
+            "payment_receipt",
+            {"amount": "100.00", "reference": "REF-1"},
+        )
+
+        self.assertIsNone(result)
+        self.assertFalse(WhatsAppDelivery.objects.exists())
+
+    @override_settings(
+        WHATSAPP_APP_SECRET="test-app-secret",
+        WHATSAPP_VERIFY_TOKEN="test-verify-token",
+    )
+    def test_whatsapp_webhook_verifies_signature_and_records_statuses(self):
+        import hashlib
+        import hmac as hmac_module
+
+        from users.models import WhatsAppDelivery
+
+        response = self.client.get(
+            "/api/v1/whatsapp/webhook",
+            {
+                "hub.mode": "subscribe",
+                "hub.verify_token": "test-verify-token",
+                "hub.challenge": "challenge-123",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"challenge-123")
+
+        delivery = WhatsAppDelivery.objects.create(
+            template_name="payment_receipt",
+            recipient_encrypted=b"",
+            payload_encrypted=b"",
+            status=WhatsAppDelivery.STATUS_SENT,
+            provider_message_id="wamid.status-0001",
+        )
+        body = json.dumps({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "statuses": [{
+                            "id": "wamid.status-0001",
+                            "status": "failed",
+                            "errors": [{"code": 131042}],
+                        }],
+                    },
+                }],
+            }],
+        }).encode("utf-8")
+        signature = hmac_module.new(
+            b"test-app-secret", body, hashlib.sha256
+        ).hexdigest()
+
+        rejected = self.client.post(
+            "/api/v1/whatsapp/webhook",
+            body,
+            content_type="application/json",
+            headers={"X-Hub-Signature-256": "sha256=invalid"},
+        )
+        self.assertEqual(rejected.status_code, 403)
+
+        accepted = self.client.post(
+            "/api/v1/whatsapp/webhook",
+            body,
+            content_type="application/json",
+            headers={"X-Hub-Signature-256": f"sha256={signature}"},
+        )
+        self.assertEqual(accepted.status_code, 200)
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.channel_status, "failed")
+        self.assertEqual(delivery.error_code, "131042")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="whatsapp.account_delivery_blocked",
+                entity="WhatsAppDelivery",
+            ).exists()
+        )
+
+    @override_settings(
+        WHATSAPP_APP_SECRET="",
+        WHATSAPP_WEBHOOK_TOKEN="cap-token-123",
+        DEBUG=False,
+    )
+    def test_whatsapp_webhook_accepts_capability_token_without_app_secret(self):
+        body = json.dumps({"entry": []}).encode("utf-8")
+
+        rejected = self.client.post(
+            "/api/v1/whatsapp/webhook", body, content_type="application/json"
+        )
+        self.assertEqual(rejected.status_code, 403)
+
+        wrong = self.client.post(
+            "/api/v1/whatsapp/webhook?token=wrong",
+            body,
+            content_type="application/json",
+        )
+        self.assertEqual(wrong.status_code, 403)
+
+        accepted = self.client.post(
+            "/api/v1/whatsapp/webhook?token=cap-token-123",
+            body,
+            content_type="application/json",
+        )
+        self.assertEqual(accepted.status_code, 200)
+
+
+@override_settings(WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend")
+class WhatsAppBotTests(TestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(name="Bot Test Agency")
+        self.branch = Branch.objects.create(agency=self.agency, name="Bot Branch")
+        self.user_model = get_user_model()
+
+    def _tenant_with_tenancy(self, suffix="01", portal=True):
+        portal_user = None
+        if portal:
+            portal_user = self.user_model.objects.create_user(
+                username=f"wa-tenant-{suffix}@example.com",
+                email=f"wa-tenant-{suffix}@example.com",
+                password="Long-test-passphrase-29!",
+            )
+        property_obj = Property.objects.create(
+            branch=self.branch,
+            name=f"WA Property {suffix}",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        unit = Unit.objects.create(
+            property=property_obj,
+            code=f"WA-{suffix}",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        tenant = Tenant.objects.create(
+            branch=self.branch,
+            tenant_type=Tenant.INDIVIDUAL,
+            name=f"Wanjiku Tester {suffix}",
+            national_id_or_passport=f"3041{suffix}99",
+            phone=f"2547000011{suffix}",
+            portal_user=portal_user,
+        )
+        tenancy = Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=timezone.localdate() - timedelta(days=30),
+            status=Tenancy.STATUS_ACTIVE,
+        )
+        return tenant, tenancy
+
+    def _message(self, wa_id, text=None, choice=None, image=None, message_id=None):
+        import uuid
+
+        message = {"from": wa_id, "id": message_id or f"wamid.{uuid.uuid4().hex}"}
+        if text is not None:
+            message["type"] = "text"
+            message["text"] = {"body": text}
+        elif choice is not None:
+            message["type"] = "interactive"
+            message["interactive"] = {"list_reply": {"id": choice}}
+        elif image is not None:
+            message["type"] = "image"
+            message["image"] = image
+        return message
+
+    def test_verification_links_tenant_and_locks_after_failures(self):
+        from users.models import WhatsAppContact
+        from users import whatsapp_bot
+
+        tenant, _ = self._tenant_with_tenancy("77")
+        wa_id = "254700001177"
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hello"))
+        self.assertIn("ID number", post.call_args.args[0]["text"]["body"])
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(wa_id, text=tenant.national_id_or_passport)
+            )
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNotNone(contact.verified_at)
+        self.assertEqual(contact.tenant_id, tenant.pk)
+        self.assertTrue(
+            AuditLog.objects.filter(action="whatsapp.contact_verified").exists()
+        )
+
+        other = "254700009999"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(other, text="hi"))
+            for _ in range(5):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(other, text="WRONG-ID")
+                )
+        locked = WhatsAppContact.objects.get(wa_id=other)
+        self.assertIsNotNone(locked.locked_until)
+        self.assertIn("paused", post.call_args.args[0]["text"]["body"])
+
+    def test_tenant_balance_flow_reports_outstanding_invoices(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("55")
+        invoice = Invoice.objects.create(
+            tenancy=tenancy,
+            branch=self.branch,
+            number="INV-WA-0055",
+            period_start=timezone.localdate().replace(day=1),
+            period_end=timezone.localdate(),
+            due_date=timezone.localdate() + timedelta(days=5),
+            total=Decimal("18200.00"),
+            status=Invoice.STATUS_ISSUED,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001155",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="t_balance")
+            )
+        body = post.call_args.args[0]["text"]["body"]
+        self.assertIn("INV-WA-0055", body)
+        self.assertIn("18,200.00", body)
+
+    def test_photo_maintenance_flow_creates_ticket_with_evidence(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("33")
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001133",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="t_issue")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cat_plumbing")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Kitchen tap is leaking badly")
+            )
+            with patch.object(
+                whatsapp_bot,
+                "_fetch_media",
+                return_value=(b"fake-jpeg-bytes", "image/jpeg"),
+            ), patch.object(whatsapp_bot, "upload_private_object") as upload:
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={"id": "media-1", "sha256": "abc", "mime_type": "image/jpeg"},
+                    )
+                )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+
+        ticket = MaintenanceTicket.objects.get(unit=tenancy.unit)
+        self.assertEqual(ticket.category, MaintenanceTicket.CATEGORY_PLUMBING)
+        self.assertEqual(ticket.description, "Kitchen tap is leaking badly")
+        self.assertEqual(ticket.reported_by, tenant.portal_user)
+        self.assertEqual(len(ticket.photos), 1)
+        self.assertEqual(ticket.photos[0]["content_type"], "image/jpeg")
+        self.assertTrue(
+            ticket.photos[0]["storage_key"].startswith(f"maintenance/tenant/{tenant.pk}/")
+        )
+        upload.assert_called_once()
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_ticket.tenant_created",
+                new_values__source="whatsapp",
+            ).exists()
+        )
+
+
+@override_settings(
+    WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
+    AUTH_SMS_BACKEND="users.sms.ConsoleSMSBackend",
+    MPESA_CONSUMER_KEY="test-key",
+    MPESA_CONSUMER_SECRET="test-secret",
+    MPESA_SHORTCODE="522533",
+    MPESA_PASSKEY="test-passkey",
+    PUBLIC_SITE_URL="https://staging.legacy.example",
+)
+class WhatsAppRentStkTests(TestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(name="STK Test Agency")
+        self.branch = Branch.objects.create(agency=self.agency, name="STK Branch")
+        self.user_model = get_user_model()
+        self.portal_user = self.user_model.objects.create_user(
+            username="stk-tenant@example.com",
+            email="stk-tenant@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        property_obj = Property.objects.create(
+            branch=self.branch,
+            name="STK Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        unit = Unit.objects.create(
+            property=property_obj,
+            code="STK-1",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        self.tenant = Tenant.objects.create(
+            branch=self.branch,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Stk Tester",
+            national_id_or_passport="30415599",
+            phone="254700002211",
+            email="stk-tenant@example.com",
+            portal_user=self.portal_user,
+        )
+        self.tenancy = Tenancy.objects.create(
+            unit=unit,
+            tenant=self.tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=timezone.localdate() - timedelta(days=30),
+            status=Tenancy.STATUS_ACTIVE,
+        )
+        self.invoice = Invoice.objects.create(
+            tenancy=self.tenancy,
+            branch=self.branch,
+            number="INV-STK-0001",
+            period_start=timezone.localdate().replace(day=1),
+            period_end=timezone.localdate(),
+            due_date=timezone.localdate() + timedelta(days=5),
+            total=Decimal("20000.00"),
+            status=Invoice.STATUS_ISSUED,
+        )
+        from users.models import WhatsAppContact, ConversationState
+
+        self.contact = WhatsAppContact.objects.create(
+            wa_id="254700002211",
+            tenant=self.tenant,
+            user=self.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=self.contact, active_role="tenant")
+
+    def _message(self, choice=None, text=None):
+        import uuid
+
+        message = {"from": self.contact.wa_id, "id": f"wamid.{uuid.uuid4().hex}"}
+        if choice is not None:
+            message["type"] = "interactive"
+            message["interactive"] = {"list_reply": {"id": choice}}
+        else:
+            message["type"] = "text"
+            message["text"] = {"body": text}
+        return message
+
+    def test_pay_flow_initiates_stk_and_callback_completes_tri_channel_receipt(self):
+        from users.models import (
+            RentStkRequest,
+            SMSDelivery,
+            WhatsAppDelivery,
+        )
+        from users import whatsapp_bot
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(choice="t_pay"))
+            whatsapp_bot.handle_inbound_message(
+                self._message(choice=f"inv_{self.invoice.pk}")
+            )
+            with patch.object(
+                whatsapp_bot.daraja,
+                "stk_push",
+                return_value={
+                    "checkout_request_id": "ws_CO_TEST_001",
+                    "merchant_request_id": "mr_001",
+                },
+            ) as stk:
+                whatsapp_bot.handle_inbound_message(
+                    self._message(choice=f"stk_{self.invoice.pk}")
+                )
+
+        stk.assert_called_once()
+        request_row = RentStkRequest.objects.get(checkout_request_id="ws_CO_TEST_001")
+        self.assertEqual(request_row.invoice, self.invoice)
+        self.assertEqual(request_row.status, RentStkRequest.STATUS_PENDING)
+        self.assertIn("M-PESA prompt", post.call_args.args[0]["text"]["body"])
+
+        callback = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "mr_001",
+                    "CheckoutRequestID": "ws_CO_TEST_001",
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 20000.00},
+                            {"Name": "MpesaReceiptNumber", "Value": "SHK31XYZ9A"},
+                            {"Name": "PhoneNumber", "Value": 254700002211},
+                        ],
+                    },
+                },
+            },
+        }
+        with patch.object(whatsapp_bot, "_send_payment_receipt_email") as email:
+            response = self.client.post(
+                "/api/v1/payments/mpesa/rent-stk-callback",
+                json.dumps(callback),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+
+        request_row.refresh_from_db()
+        self.assertEqual(request_row.status, RentStkRequest.STATUS_SUCCEEDED)
+        payment = Payment.objects.get(reference="SHK31XYZ9A")
+        self.assertEqual(payment.tenant, self.tenant)
+        self.assertEqual(payment.amount, Decimal("20000.00"))
+        self.assertEqual(payment.source, Payment.SOURCE_MPESA)
+        self.assertEqual(payment.allocations.get().invoice, self.invoice)
+        self.assertTrue(Receipt.objects.filter(payment=payment).exists())
+        # Tri-channel receipt: WhatsApp template + SMS queued, email sent
+        self.assertTrue(
+            WhatsAppDelivery.objects.filter(template_name="payment_receipt").exists()
+        )
+        self.assertTrue(
+            SMSDelivery.objects.filter(template_name="payment_receipt").exists()
+        )
+        email.assert_called_once()
+
+        # Replaying the same callback must not double-allocate
+        self.client.post(
+            "/api/v1/payments/mpesa/rent-stk-callback",
+            json.dumps(callback),
+            content_type="application/json",
+        )
+        self.assertEqual(Payment.objects.filter(reference="SHK31XYZ9A").count(), 1)
+
+    def test_failed_stk_callback_marks_request_and_notifies(self):
+        from users.models import RentStkRequest
+        from users import whatsapp_bot
+
+        RentStkRequest.objects.create(
+            invoice=self.invoice,
+            tenant=self.tenant,
+            contact=self.contact,
+            amount=Decimal("20000.00"),
+            phone=self.contact.wa_id,
+            checkout_request_id="ws_CO_FAIL_01",
+        )
+        callback = {
+            "Body": {
+                "stkCallback": {
+                    "CheckoutRequestID": "ws_CO_FAIL_01",
+                    "ResultCode": 1032,
+                    "ResultDesc": "Request cancelled by user",
+                },
+            },
+        }
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            response = self.client.post(
+                "/api/v1/payments/mpesa/rent-stk-callback",
+                json.dumps(callback),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        row = RentStkRequest.objects.get(checkout_request_id="ws_CO_FAIL_01")
+        self.assertEqual(row.status, RentStkRequest.STATUS_FAILED)
+        self.assertIn("not completed", post.call_args.args[0]["text"]["body"])
+        self.assertFalse(Payment.objects.exists())
+
+
+@override_settings(WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend")
+class WhatsAppLandlordTests(TestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(name="LL Test Agency")
+        self.branch = Branch.objects.create(agency=self.agency, name="LL Branch")
+        self.user_model = get_user_model()
+        self.portal_user = self.user_model.objects.create_user(
+            username="wa-landlord@example.com",
+            email="wa-landlord@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self.landlord = Landlord.objects.create(
+            branch=self.branch,
+            portal_user=self.portal_user,
+            name="Wanjiku Landlady",
+            id_or_registration_number="LL-889900",
+            phone="254700003322",
+        )
+        self.property = Property.objects.create(
+            branch=self.branch,
+            landlord=self.landlord,
+            name="LL Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            code="LL-1",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        self.ticket = MaintenanceTicket.objects.create(
+            property=self.property,
+            unit=self.unit,
+            reported_by=self.portal_user,
+            title="Roof leak",
+            description="Roof leak",
+            category=MaintenanceTicket.CATEGORY_STRUCTURAL,
+            priority=MaintenanceTicket.PRIORITY_HIGH,
+        )
+        self.vendor = Vendor.objects.create(
+            branch=self.branch,
+            name="FixIt Ltd",
+            trade="Roofing",
+            phone="254700004433",
+        )
+        self.quotation = MaintenanceQuotation.objects.create(
+            ticket=self.ticket,
+            vendor=self.vendor,
+            submitted_by=self.portal_user,
+            amount=Decimal("45000.00"),
+            status=MaintenanceQuotation.STATUS_SUBMITTED,
+        )
+        from users.models import WhatsAppContact, ConversationState
+
+        self.contact = WhatsAppContact.objects.create(
+            wa_id="254700003322",
+            user=self.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=self.contact, active_role="landlord")
+
+    def _choice(self, choice):
+        import uuid
+
+        return {
+            "from": self.contact.wa_id,
+            "id": f"wamid.{uuid.uuid4().hex}",
+            "type": "interactive",
+            "interactive": {"button_reply": {"id": choice}},
+        }
+
+    def test_landlord_sees_and_approves_pending_quotation(self):
+        from users import whatsapp_bot
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._choice("l_approvals"))
+        body = post.call_args.args[0]["interactive"]["body"]["text"]
+        self.assertIn("FixIt Ltd", body)
+        self.assertIn("45,000.00", body)
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._choice(f"q_app_{self.quotation.pk}")
+            )
+        self.quotation.refresh_from_db()
+        self.assertEqual(self.quotation.status, MaintenanceQuotation.STATUS_APPROVED)
+        self.assertEqual(self.quotation.approved_by, self.portal_user)
+        self.assertIn("approved", post.call_args.args[0]["text"]["body"])
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_quotation.landlord_decided",
+                new_values__approved=True,
+            ).exists()
+        )
