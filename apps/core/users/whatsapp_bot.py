@@ -1048,14 +1048,13 @@ def _route_message(contact, state, message: dict) -> None:
         return
 
     # "cancel"/"stop" abandons whatever flow is in progress from any step,
-    # including a draft maintenance ticket, and returns to the menu.
+    # including a draft maintenance ticket, and falls back to the role
+    # chooser (multi-role contacts) or the menu (single role).
     if text and text.lower().strip() in {"cancel", "stop"}:
         state.state = {}
+        state.active_role = ""
         _save_state(state)
-        if state.active_role:
-            _show_menu(contact, state)
-        else:
-            _show_entry(contact, state)
+        _show_entry(contact, state)
         return
 
     if choice.startswith("role_"):

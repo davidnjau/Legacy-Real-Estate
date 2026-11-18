@@ -13155,6 +13155,41 @@ class WhatsAppBotTests(TestCase):
         buttons = post.call_args.args[0]["interactive"]["action"]["buttons"]
         self.assertEqual(len(buttons), 2)
 
+    def test_cancel_returns_multi_role_contact_to_role_chooser(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, _ = self._tenant_with_tenancy("99")
+        tenant.portal_user.groups.add(Group.objects.get_or_create(name="Caretaker")[0])
+        other = Property.objects.create(
+            branch=self.branch,
+            name="Cancel Test Property",
+            property_type="Apartment",
+            location="Nakuru",
+        )
+        other.caretakers.add(tenant.portal_user)
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001199",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(
+            contact=contact, active_role="tenant", state={"flow": "issue", "step": "category"}
+        )
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="cancel")
+            )
+        state.refresh_from_db()
+        self.assertEqual(state.active_role, "")
+        self.assertEqual(state.state.get("flow"), "choose_role")
+        buttons = post.call_args.args[0]["interactive"]["action"]["buttons"]
+        self.assertEqual(
+            [b["reply"]["id"] for b in buttons], ["role_tenant", "role_caretaker"]
+        )
+
 
 @override_settings(
     WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
