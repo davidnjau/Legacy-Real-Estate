@@ -13191,6 +13191,116 @@ class WhatsAppBotTests(TestCase):
         )
 
 
+    def test_caretaker_only_staff_can_verify_but_other_staff_cannot(self):
+        from users.models import UserProfile, WhatsAppContact
+        from users import whatsapp_bot
+
+        caretaker = self.user_model.objects.create_user(
+            username="solo-caretaker@example.com",
+            email="solo-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        caretaker.groups.add(Group.objects.get_or_create(name="Caretaker")[0])
+        UserProfile.objects.create(
+            user=caretaker,
+            name="Solo Caretaker",
+            phone="254700002255",
+            id_or_registration_number="CT-778899",
+        )
+        wa_id = "254700002255"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="CT-778899"))
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNotNone(contact.verified_at)
+        self.assertEqual(contact.user, caretaker)
+        bodies = " ".join(str(c.args[0]) for c in post.call_args_list)
+        self.assertIn("Solo", bodies)
+
+        # Other staff roles are gated out of the channel entirely.
+        officer = self.user_model.objects.create_user(
+            username="gated-officer@example.com",
+            email="gated-officer@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        officer.groups.add(
+            Group.objects.get_or_create(name="Property Officer / Agent")[0]
+        )
+        UserProfile.objects.create(
+            user=officer,
+            name="Gated Officer",
+            phone="254700002266",
+            id_or_registration_number="PO-112233",
+        )
+        other = "254700002266"
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(self._message(other, text="hi"))
+            whatsapp_bot.handle_inbound_message(self._message(other, text="PO-112233"))
+        gated = WhatsAppContact.objects.get(wa_id=other)
+        self.assertIsNone(gated.verified_at)
+
+    @override_settings(
+        WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
+        WHATSAPP_ACTIVATION_TEMPLATE="account_activation_code",
+    )
+    def test_activation_otp_renders_authentication_payload(self):
+        from users.whatsapp import (
+            dispatch_next_whatsapp_delivery,
+            queue_template_whatsapp,
+        )
+
+        queue_template_whatsapp(
+            "254700002277", "tenant_activation", {"code": "482913"}
+        )
+        with patch("users.whatsapp.send_whatsapp", return_value="wamid.auth1") as send:
+            dispatch_next_whatsapp_delivery()
+        payload = send.call_args.args[1]
+        self.assertEqual(payload["template"], "account_activation_code")
+        self.assertEqual(payload["auth_code"], "482913")
+
+    @override_settings(
+        WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
+        WHATSAPP_ACTIVATION_TEMPLATE="",
+    )
+    def test_activation_otp_stays_silent_until_template_configured(self):
+        from users.models import WhatsAppDelivery
+        from users.whatsapp import queue_template_whatsapp_if_enabled
+
+        result = queue_template_whatsapp_if_enabled(
+            "254700002288", "tenant_activation", {"code": "482913"}
+        )
+        self.assertIsNone(result)
+        self.assertFalse(WhatsAppDelivery.objects.exists())
+
+    @override_settings(
+        WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
+        AUTH_SMS_BACKEND="users.sms.ConsoleSMSBackend",
+    )
+    def test_queue_rent_reminders_command(self):
+        from users.models import SMSDelivery, WhatsAppDelivery
+
+        tenant, tenancy = self._tenant_with_tenancy("22")
+        Invoice.objects.create(
+            tenancy=tenancy,
+            branch=self.branch,
+            number="INV-REMIND-0022",
+            period_start=timezone.localdate().replace(day=1),
+            period_end=timezone.localdate(),
+            due_date=timezone.localdate(),
+            total=Decimal("9000.00"),
+            status=Invoice.STATUS_ISSUED,
+        )
+        out = StringIO()
+        call_command("queue_rent_reminders", stdout=out)
+        self.assertIn("1 tenant(s) reminder(s) queued", out.getvalue())
+        self.assertTrue(
+            WhatsAppDelivery.objects.filter(template_name="invoice_reminder").exists()
+        )
+        self.assertTrue(
+            SMSDelivery.objects.filter(template_name="invoice_reminder").exists()
+        )
+
+
 @override_settings(
     WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
     AUTH_SMS_BACKEND="users.sms.ConsoleSMSBackend",

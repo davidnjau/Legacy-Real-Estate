@@ -192,6 +192,9 @@ class Command(BaseCommand):
             profile.branches.add(branch)
             if role_name == CARETAKER_ROLE:
                 property_obj.caretakers.add(user)
+                if not profile.id_or_registration_number:
+                    profile.id_or_registration_number = "CT-445566"
+                    profile.save(update_fields=["id_or_registration_number"])
 
         tester_lines = []
         for email, name, id_number, phone, unit_code, invoice_number, total in EXTRA_TENANTS:
@@ -305,5 +308,6 @@ class Command(BaseCommand):
             f"  Landlord: {landlord.name} — ID {landlord.id_or_registration_number}, "
             f"phone {landlord.phone}, portal demo-landlord@legacyhomes.live\n"
             f"  Quotation pending approval on ticket #{ticket.pk}\n"
+            "  Caretaker WhatsApp ID: CT-445566 (demo-caretaker)\n"
             f"  Staff: " + ", ".join(email for email, *_ in STAFF_ACCOUNTS)
         ))
