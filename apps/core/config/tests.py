@@ -12947,6 +12947,109 @@ class WhatsAppBotTests(TestCase):
         self.assertFalse(MaintenanceTicket.objects.filter(unit=tenancy.unit).exists())
         self.assertEqual(post.call_args.args[0]["type"], "interactive")
 
+    def test_caretaker_completes_ticket_and_tenant_is_notified(self):
+        from users.models import WhatsAppContact, ConversationState, WhatsAppDelivery
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("66")
+        caretaker = self.user_model.objects.create_user(
+            username="wa-caretaker@example.com",
+            email="wa-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        caretaker.groups.add(Group.objects.get_or_create(name="Caretaker")[0])
+        tenancy.unit.property.caretakers.add(caretaker)
+        ticket = MaintenanceTicket.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            reported_by=tenant.portal_user,
+            title="Broken lock",
+            description="Broken lock",
+            category=MaintenanceTicket.CATEGORY_SECURITY,
+            priority=MaintenanceTicket.PRIORITY_HIGH,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001166",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="caretaker")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_tickets")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"tkt_{ticket.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"tc_{ticket.pk}")
+            )
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, MaintenanceTicket.STATUS_COMPLETED)
+        self.assertTrue(
+            WhatsAppDelivery.objects.filter(
+                template_name="maintenance_ticket_completed_tenant"
+            ).exists()
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_ticket.caretaker_completed"
+            ).exists()
+        )
+        bodies = [c.args[0] for c in post.call_args_list]
+        self.assertIn("marked complete", bodies[-1]["text"]["body"])
+
+    def test_switch_role_and_session_expiry_reset_to_entry(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, _ = self._tenant_with_tenancy("88")
+        caretaker_group = Group.objects.get_or_create(name="Caretaker")[0]
+        tenant.portal_user.groups.add(caretaker_group)
+        other_property = Property.objects.create(
+            branch=self.branch,
+            name="Switch Test Property",
+            property_type="Apartment",
+            location="Nakuru",
+        )
+        other_property.caretakers.add(tenant.portal_user)
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001188",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="switch")
+            )
+        buttons = post.call_args.args[0]["interactive"]["action"]["buttons"]
+        self.assertEqual(
+            [b["reply"]["id"] for b in buttons], ["role_tenant", "role_caretaker"]
+        )
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="role_caretaker")
+            )
+        state.refresh_from_db()
+        self.assertEqual(state.active_role, "caretaker")
+
+        state.expires_at = timezone.now() - timedelta(minutes=1)
+        state.save(update_fields=["expires_at"])
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="hello")
+            )
+        state.refresh_from_db()
+        self.assertEqual(state.state.get("flow"), "choose_role")
+        buttons = post.call_args.args[0]["interactive"]["action"]["buttons"]
+        self.assertEqual(len(buttons), 2)
+
 
 @override_settings(
     WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
