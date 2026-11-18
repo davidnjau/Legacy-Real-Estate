@@ -1,0 +1,39 @@
+name: Run staging management command
+
+on:
+  workflow_dispatch:
+    inputs:
+      management_command:
+        description: manage.py command and args to run in the core container
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Configure SSH
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$STAGING_SSH_KEY" > "$HOME/.ssh/staging"
+          chmod 600 "$HOME/.ssh/staging"
+          ssh-keyscan -H "$STAGING_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Run command
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          MGMT_COMMAND: ${{ inputs.management_command }}
+        run: |
+          ssh -i "$HOME/.ssh/staging" "$STAGING_USER@$STAGING_HOST" \
+            "cd /srv/legacy-real-estate/release && \
+             docker compose --env-file /srv/legacy-real-estate/.env \
+               -f tools/staging/docker-compose.yml exec -T core \
+               python manage.py $MGMT_COMMAND"
