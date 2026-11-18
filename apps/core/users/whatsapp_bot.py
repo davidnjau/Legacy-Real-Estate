@@ -320,6 +320,14 @@ def _handle_verification_reply(contact, state, text):
         or (landlord.portal_user if landlord else None)
         or caretaker_user
     )
+    # Whichever ID was used, surface every identity on the same portal user —
+    # a landlord who is also a tenant gets both roles from one verification.
+    if contact.tenant is None and contact.user is not None:
+        contact.tenant = (
+            Tenant.objects.filter(portal_user=contact.user)
+            .order_by("-created_at")
+            .first()
+        )
     contact.id_number_hash = hashlib.sha256(candidate.lower().encode("utf-8")).hexdigest()
     contact.verified_at = now
     contact.failed_verifications = 0

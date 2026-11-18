@@ -13239,6 +13239,43 @@ class WhatsAppBotTests(TestCase):
         gated = WhatsAppContact.objects.get(wa_id=other)
         self.assertIsNone(gated.verified_at)
 
+    def test_landlord_verification_backfills_tenant_and_caretaker_roles(self):
+        from users.models import WhatsAppContact
+        from users import whatsapp_bot
+
+        tenant, _ = self._tenant_with_tenancy("11")
+        portal_user = tenant.portal_user
+        portal_user.groups.add(Group.objects.get_or_create(name="Caretaker")[0])
+        Landlord.objects.create(
+            branch=self.branch,
+            portal_user=portal_user,
+            name="Tri Role",
+            id_or_registration_number="TRI-123456",
+            phone="254700003311",
+        )
+        other_property = Property.objects.create(
+            branch=self.branch,
+            name="Tri Role Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        other_property.caretakers.add(portal_user)
+
+        wa_id = "254700003311"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
+            whatsapp_bot.handle_inbound_message(
+                self._message(wa_id, text="TRI-123456")
+            )
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNotNone(contact.verified_at)
+        self.assertEqual(contact.tenant, tenant)
+        buttons = post.call_args.args[0]["interactive"]["action"]["buttons"]
+        self.assertEqual(
+            [b["reply"]["id"] for b in buttons],
+            ["role_tenant", "role_landlord", "role_caretaker"],
+        )
+
     @override_settings(
         WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
         WHATSAPP_ACTIVATION_TEMPLATE="account_activation_code",
