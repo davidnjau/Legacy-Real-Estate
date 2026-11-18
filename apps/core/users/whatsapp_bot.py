@@ -211,6 +211,11 @@ def _normalise_id_number(value: str) -> str:
 
 
 def _match_identities(id_number: str):
+    """Match an ID to the roles allowed on WhatsApp: tenant, landlord,
+    caretaker. Other staff (directors, accountants, officers) are
+    deliberately not matched — the channel is gated to these three."""
+    from users.models import UserProfile
+
     normalised = _normalise_id_number(id_number)
     tenant = Tenant.objects.filter(
         national_id_or_passport__iexact=normalised
@@ -218,7 +223,15 @@ def _match_identities(id_number: str):
     landlord = Landlord.objects.filter(
         id_or_registration_number__iexact=normalised
     ).order_by("-created_at").first()
-    return tenant, landlord
+    caretaker_user = None
+    profile = (
+        UserProfile.objects.filter(id_or_registration_number__iexact=normalised)
+        .select_related("user")
+        .first()
+    )
+    if profile is not None and has_role(profile.user, CARETAKER_ROLE):
+        caretaker_user = profile.user
+    return tenant, landlord, caretaker_user
 
 
 def _roles(contact: WhatsAppContact) -> list[str]:
@@ -281,8 +294,8 @@ def _handle_verification_reply(contact, state, text):
             "registration number) to verify your account.",
         )
         return
-    tenant, landlord = _match_identities(candidate)
-    if tenant is None and landlord is None:
+    tenant, landlord, caretaker_user = _match_identities(candidate)
+    if tenant is None and landlord is None and caretaker_user is None:
         contact.failed_verifications += 1
         if contact.failed_verifications >= MAX_VERIFICATION_ATTEMPTS:
             contact.locked_until = now + timedelta(hours=VERIFICATION_LOCK_HOURS)
@@ -301,8 +314,10 @@ def _handle_verification_reply(contact, state, text):
         return
 
     contact.tenant = tenant
-    contact.user = (tenant.portal_user if tenant else None) or (
-        landlord.portal_user if landlord else None
+    contact.user = (
+        (tenant.portal_user if tenant else None)
+        or (landlord.portal_user if landlord else None)
+        or caretaker_user
     )
     contact.id_number_hash = hashlib.sha256(candidate.lower().encode("utf-8")).hexdigest()
     contact.verified_at = now
@@ -321,8 +336,15 @@ def _handle_verification_reply(contact, state, text):
         "contact_id": contact.pk,
         "tenant_id": tenant.pk if tenant else None,
         "landlord_id": landlord.pk if landlord else None,
+        "caretaker_user_id": caretaker_user.pk if caretaker_user else None,
     })
-    name = (tenant.name if tenant else landlord.name).split()[0]
+    if tenant:
+        full_name = tenant.name
+    elif landlord:
+        full_name = landlord.name
+    else:
+        full_name = caretaker_user.profile.name
+    name = full_name.split()[0]
     send_text(contact.wa_id, f"✅ Thank you {name}, your number is now verified.")
     _show_entry(contact, state)
 

@@ -9124,6 +9124,14 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
             request=request,
             expires_at=challenge.expires_at,
         )
+        queue_template_whatsapp_if_enabled(
+            locked.tenant_phone,
+            "tenant_activation",
+            {"code": activation_code},
+            actor=actor,
+            request=request,
+            expires_at=challenge.expires_at,
+        )
     except (ImproperlyConfigured, RuntimeError, ValueError, OSError) as exc:
         sms_error = str(exc)
         locked.activation_sms_error = sms_error

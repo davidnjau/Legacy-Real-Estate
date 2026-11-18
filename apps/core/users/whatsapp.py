@@ -59,6 +59,14 @@ WHATSAPP_TEMPLATES = {
             "unit_label": "{unit_label}",
         },
     },
+    # Account-activation OTP. AUTHENTICATION templates can only be created
+    # once Meta business verification completes, so the Meta template name
+    # comes from WHATSAPP_ACTIVATION_TEMPLATE and the channel stays silent
+    # until that setting is configured.
+    "tenant_activation": {
+        "auth": True,
+        "params": {"code": "{code}"},
+    },
 }
 
 
@@ -87,6 +95,37 @@ class CloudAPIWhatsAppBackend:
                 "The WhatsApp recipient must be a valid international phone number."
             )
 
+        if payload.get("auth_code"):
+            # Authentication templates use positional parameters plus the
+            # copy-code button parameter, both carrying the OTP.
+            components = [
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": payload["auth_code"]}],
+                },
+                {
+                    "type": "button",
+                    "sub_type": "url",
+                    "index": "0",
+                    "parameters": [{"type": "text", "text": payload["auth_code"]}],
+                },
+            ]
+        elif payload.get("params"):
+            components = [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "parameter_name": name,
+                            "text": value,
+                        }
+                        for name, value in payload["params"].items()
+                    ],
+                }
+            ]
+        else:
+            components = []
         body = json.dumps({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -95,19 +134,7 @@ class CloudAPIWhatsAppBackend:
             "template": {
                 "name": payload["template"],
                 "language": {"code": payload["language"]},
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {
-                                "type": "text",
-                                "parameter_name": name,
-                                "text": value,
-                            }
-                            for name, value in payload["params"].items()
-                        ],
-                    }
-                ] if payload["params"] else [],
+                "components": components,
             },
         }).encode("utf-8")
         request = Request(
@@ -196,6 +223,18 @@ def render_whatsapp_payload(template_name: str, context: dict[str, Any]) -> dict
         ) from exc
     if any(not value.strip() for value in params.values()):
         raise ValueError("Rendered WhatsApp parameters cannot be empty.")
+    if template.get("auth"):
+        meta_name = settings.WHATSAPP_ACTIVATION_TEMPLATE
+        if not meta_name:
+            raise ValueError(
+                "WHATSAPP_ACTIVATION_TEMPLATE must be configured for "
+                "authentication templates."
+            )
+        return {
+            "template": meta_name,
+            "language": settings.WHATSAPP_LANGUAGE_CODE,
+            "auth_code": params["code"],
+        }
     return {
         "template": template["meta_name"],
         "language": settings.WHATSAPP_LANGUAGE_CODE,
@@ -269,6 +308,11 @@ def queue_template_whatsapp_if_enabled(phone, template_name, context, **kwargs):
     if not whatsapp_backend_is_configured():
         return None
     if template_name not in WHATSAPP_TEMPLATES:
+        return None
+    if (
+        WHATSAPP_TEMPLATES[template_name].get("auth")
+        and not settings.WHATSAPP_ACTIVATION_TEMPLATE
+    ):
         return None
     if not isinstance(phone, str) or not phone.strip():
         return None
