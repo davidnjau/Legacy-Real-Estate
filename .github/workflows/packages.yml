@@ -92,7 +92,8 @@ jobs:
           OBJECT_STORAGE_BUCKET: legacy-private
           OBJECT_STORAGE_REGION: us-east-1
           STAGING_DOMAIN: localhost
-          MAILPIT_UI_AUTH: ci-placeholder-user:ci-placeholder-password
+          EMAIL_DELIVERY_BACKEND: softlink
+          SOFTLINK_EMAIL_API_KEY: ci-placeholder-email-key
 
   contract:
     runs-on: ubuntu-latest

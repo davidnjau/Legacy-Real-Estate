@@ -157,12 +157,22 @@ PUBLIC_SITE_URL = os.environ.get(
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 BREVO_SENDER_EMAIL = os.environ.get("BREVO_SENDER_EMAIL", "")
 BREVO_SENDER_NAME = os.environ.get("BREVO_SENDER_NAME", "Property Management")
+SOFTLINK_EMAIL_API_URL = os.environ.get(
+    "SOFTLINK_EMAIL_API_URL",
+    "https://api.softlinksms.co.ke/api/v1/email",
+)
+SOFTLINK_EMAIL_API_KEY = os.environ.get("SOFTLINK_EMAIL_API_KEY", "")
+SOFTLINK_EMAIL_TIMEOUT_SECONDS = int(
+    os.environ.get("SOFTLINK_EMAIL_TIMEOUT_SECONDS", "10")
+)
 EMAIL_DELIVERY_BACKEND = os.environ.get(
     "EMAIL_DELIVERY_BACKEND",
     "mailpit" if DEBUG and not BREVO_API_KEY else "brevo",
 ).strip().lower()
-if EMAIL_DELIVERY_BACKEND not in {"brevo", "mailpit"}:
-    raise ImproperlyConfigured("EMAIL_DELIVERY_BACKEND must be 'brevo' or 'mailpit'.")
+if EMAIL_DELIVERY_BACKEND not in {"brevo", "mailpit", "softlink"}:
+    raise ImproperlyConfigured(
+        "EMAIL_DELIVERY_BACKEND must be 'brevo', 'mailpit', or 'softlink'."
+    )
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "webmaster@localhost")
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "mailpit" if DEBUG else "localhost")

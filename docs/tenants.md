@@ -162,9 +162,17 @@ Local Compose creates the private `legacy-private` bucket on first upload.
 For staging, create that bucket as private in MinIO and configure
 `OBJECT_STORAGE_ACCESS_KEY` and `OBJECT_STORAGE_SECRET_KEY` with a
 bucket-scoped service account that can read, write, and delete objects under
-`maintenance/tenant/` and `tenant-documents/`. Keep these credentials
-server-side and separate from the MinIO root account. The application does not
-create buckets in staging.
+all active upload prefixes:
+
+- `maintenance/tenant/` (tenant portal and WhatsApp maintenance evidence)
+- `tenant-documents/`
+- `move-in/`
+- `water-meter-readings/`
+- `maintenance-tickets/completion/`
+- `inspections/move-out/`
+
+Keep these credentials server-side and separate from the MinIO root account.
+The application does not create buckets in staging.
 
 ## Move-out notices
 

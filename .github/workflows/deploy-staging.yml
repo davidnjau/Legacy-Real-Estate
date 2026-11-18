@@ -131,13 +131,12 @@ jobs:
           tar -xzf /tmp/legacy-real-estate.tar.gz \
             -C /srv/legacy-real-estate/release
           test -f /srv/legacy-real-estate/.env
-          if ! grep -q '^MAILPIT_UI_AUTH=.' /srv/legacy-real-estate/.env; then
-            echo "Set MAILPIT_UI_AUTH in the staging VPS environment before deploying." >&2
+          if ! grep -q '^EMAIL_DELIVERY_BACKEND=softlink$' /srv/legacy-real-estate/.env; then
+            echo "Set EMAIL_DELIVERY_BACKEND=softlink in the staging VPS environment." >&2
             exit 1
           fi
-          if grep -q 'replace-with-a-long-random-hex-password' \
-            /srv/legacy-real-estate/.env; then
-            echo "Replace the Mailpit example password before deploying." >&2
+          if ! grep -q '^SOFTLINK_EMAIL_API_KEY=.' /srv/legacy-real-estate/.env; then
+            echo "Set SOFTLINK_EMAIL_API_KEY in the staging VPS environment before deploying." >&2
             exit 1
           fi
           cd /srv/legacy-real-estate/release
@@ -175,20 +174,6 @@ jobs:
             https://staging.legacyhomes.live/admin/dashboard)
           if [ "$director_portal_status" != "307" ]; then
             echo "Unauthenticated Director portal should redirect to the website login; got HTTP $director_portal_status." >&2
-            exit 1
-          fi
-          mailpit_status=$(curl --silent --show-error --output /dev/null \
-            --write-out '%{http_code}' \
-            https://staging.legacyhomes.live/mailpit/)
-          if [ "$mailpit_status" != "401" ]; then
-            echo "Mailpit inbox should require authentication; got HTTP $mailpit_status." >&2
-            exit 1
-          fi
-          mailpit_redirect=$(curl --silent --show-error --output /dev/null \
-            --write-out '%{http_code}' \
-            https://staging.legacyhomes.live/mailpit)
-          if [ "$mailpit_redirect" != "308" ]; then
-            echo "Mailpit inbox path should redirect to its trailing-slash URL; got HTTP $mailpit_redirect." >&2
             exit 1
           fi
           REMOTE

@@ -107,9 +107,16 @@ does not add business workflows or permissions beyond the approved SRS.
   `POST /api/v1/auth/password-reset/confirm`. Reset links use Django's
   single-use password-reset token. Local `DEBUG=1` sends recovery and tenant
   activation emails through Mailpit (`EMAIL_HOST`/`EMAIL_PORT`; local UI at
-  `http://localhost:8025`). Deployed environments use Brevo and require
-  `PUBLIC_SITE_URL`, `BREVO_API_KEY`, and `BREVO_SENDER_EMAIL`. The request
-  response does not reveal whether an account exists. Local Compose sets
+  `http://localhost:8025`). Staging uses the Softlink email API configured by
+  `EMAIL_DELIVERY_BACKEND=softlink`, `SOFTLINK_EMAIL_API_URL`,
+  `SOFTLINK_EMAIL_API_KEY`, and `SOFTLINK_EMAIL_TIMEOUT_SECONDS`; requests
+  include recipient addresses, a subject, and branded HTML in the `body` field.
+  The HTML uses the website's forest-green palette and inline styles for email
+  client compatibility. The API key must remain outside source control. Sender
+  identity is configured and verified in the Softlink account, not by the
+  idempotency header. Other deployed environments may continue to use Brevo
+  with `BREVO_API_KEY` and `BREVO_SENDER_EMAIL`. The request response does not
+  reveal whether an account exists. Local Compose sets
   `PUBLIC_SITE_URL` from `WEBSITE_HOST_PORT` (default `3001`); if the website
   uses a different host port, activation and recovery emails use that port.
 - `GET /api/v1/auth/me` returns the current user's role names and accessible

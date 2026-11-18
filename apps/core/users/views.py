@@ -8,15 +8,12 @@ import mimetypes
 import re
 import secrets
 import smtplib
-import urllib.error
-import urllib.request
 import uuid
 from datetime import date, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO, StringIO
 
 from botocore.exceptions import BotoCoreError, ClientError
-from kombu.exceptions import OperationalError as BrokerOperationalError
 from django.conf import settings
 from django.contrib.auth import (
     authenticate,
@@ -42,16 +39,18 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
+from kombu.exceptions import OperationalError as BrokerOperationalError
 from openpyxl import load_workbook
 
 from users.access import accessible_branches
 from users.arrears import arrears_for_accessible_invoices, invoice_arrears
 from users.audit import record_audit_event
 from users.billing import generate_monthly_invoice, month_end, water_reading_status
-from users.email import email_delivery_is_configured, uses_mailpit_backend
+from users.email import email_delivery_is_configured, send_email
+from users.legacy_imports import import_legacy_data
 from users.models import (
-    Announcement,
     AgencyMembership,
+    Announcement,
     ArrearsPaymentPlan,
     ArrearsPaymentPlanInstalment,
     ArrearsWaiver,
@@ -117,15 +116,12 @@ from users.models import (
     Vendor,
     ViewingLead,
 )
+from users.move_in import confirmed_invoice_amount, sync_move_in_occupancy
 from users.object_storage import (
     delete_private_object,
     read_private_object,
     upload_private_object,
 )
-from users.move_in import confirmed_invoice_amount, sync_move_in_occupancy
-from users.legacy_imports import import_legacy_data
-from users.sms import queue_template_sms
-from users.whatsapp import queue_template_whatsapp_if_enabled
 from users.roles import (
     AGENCY_STAFF_ROLE_NAMES,
     BRANCH_MANAGER_ROLE,
@@ -136,6 +132,7 @@ from users.roles import (
     TENANT_PORTAL_ROLE,
     requires_finance_mfa,
 )
+from users.sms import queue_template_sms
 from users.totp import (
     decrypt_secret,
     encrypt_secret,
@@ -143,6 +140,7 @@ from users.totp import (
     matching_counter,
     provisioning_uri,
 )
+from users.whatsapp import queue_template_whatsapp_if_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +159,7 @@ def _send_password_reset_email(user, reset_url, *, initial_setup=False):
         )
         html_content = (
             "<p>A Director account has been provisioned for you.</p>"
-            f'<p><a href="{html.escape(reset_url, quote=True)}">'
+            f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{html.escape(reset_url, quote=True)}">'
             "Choose your password</a></p>"
             "<p>This is a one-time link. If you did not expect this invitation, "
             "contact the person who coordinated your account setup.</p>"
@@ -175,54 +173,16 @@ def _send_password_reset_email(user, reset_url, *, initial_setup=False):
         )
         html_content = (
             "<p>We received a request to reset your Legacy Real Estate password.</p>"
-            f'<p><a href="{html.escape(reset_url, quote=True)}">'
+            f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{html.escape(reset_url, quote=True)}">'
             "Choose a new password</a></p>"
             "<p>If you did not request this change, you can ignore this email.</p>"
         )
-    if uses_mailpit_backend():
-        from django.core.mail import send_mail
-
-        send_mail(
-            subject,
-            text_content,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-            fail_silently=False,
-        )
-        return
-
-    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
-        raise ImproperlyConfigured("Brevo email settings are required to send password recovery emails.")
-
-    payload = json.dumps(
-        {
-            "sender": {
-                "name": settings.BREVO_SENDER_NAME,
-                "email": settings.BREVO_SENDER_EMAIL,
-            },
-            "to": [{"email": user.email}],
-            "subject": subject,
-            "textContent": text_content,
-            "htmlContent": html_content,
-        }
-    ).encode()
-    request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "accept": "application/json",
-            "api-key": settings.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        method="POST",
+    send_email(
+        user.email,
+        subject,
+        text_content,
+        html_content=html_content,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Brevo returned HTTP {response.status}.")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        logger.warning("Password reset email delivery failed: %s", type(error).__name__)
-        raise RuntimeError("Password reset email delivery failed.") from error
 
 
 def _send_director_activation_email(user, challenge_id, code):
@@ -241,54 +201,18 @@ def _send_director_activation_email(user, challenge_id, code):
     html_content = (
         f"<p>Hello {html.escape(user.profile.name)},</p>"
         "<p>Your agency Director account is ready to activate.</p>"
-        f"<p>Your one-time activation code is <strong>{code}</strong>. "
+        f'<p>Your one-time activation code is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{code}</span>. '
         f"It expires in {lifetime_minutes} minutes.</p>"
-        f'<p><a href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
+        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
         "<p>If you did not expect this invitation, contact your platform administrator.</p>"
     )
-    if uses_mailpit_backend():
-        from django.core.mail import EmailMultiAlternatives
-
-        message = EmailMultiAlternatives(
-            "Activate your Legacy Real Estate Director account",
-            text_content,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-        )
-        message.attach_alternative(html_content, "text/html")
-        message.send(fail_silently=False)
-        return
-    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
-        raise ImproperlyConfigured("Brevo settings are required to send Director activation emails.")
-    payload = json.dumps(
-        {
-            "sender": {
-                "name": settings.BREVO_SENDER_NAME,
-                "email": settings.BREVO_SENDER_EMAIL,
-            },
-            "to": [{"email": user.email, "name": user.profile.name}],
-            "subject": "Activate your Legacy Real Estate Director account",
-            "textContent": text_content,
-            "htmlContent": html_content,
-        }
-    ).encode()
-    request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "accept": "application/json",
-            "api-key": settings.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        method="POST",
+    send_email(
+        user.email,
+        "Activate your Legacy Real Estate Director account",
+        text_content,
+        html_content=html_content,
+        recipient_name=user.profile.name,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Brevo returned HTTP {response.status}.")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        logger.warning("Director activation email delivery failed: %s", type(error).__name__)
-        raise RuntimeError("Director activation email delivery failed.") from error
 
 
 def _send_staff_activation_email(
@@ -315,54 +239,18 @@ def _send_staff_activation_email(
     html_content = (
         f"<p>Hello {html.escape(user.profile.name)},</p>"
         f"<p>Your {html.escape(portal_name)} account is ready to activate.</p>"
-        f"<p>Your one-time activation code is <strong>{code}</strong>. "
+        f'<p>Your one-time activation code is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{code}</span>. '
         f"It expires in {lifetime_minutes} minutes.</p>"
-        f'<p><a href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
+        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
         f"<p>If you did not expect this invitation, contact {html.escape(contact)}.</p>"
     )
-    if uses_mailpit_backend():
-        from django.core.mail import EmailMultiAlternatives
-
-        message = EmailMultiAlternatives(
-            f"Activate your Legacy Real Estate {portal_name} account",
-            text_content,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-        )
-        message.attach_alternative(html_content, "text/html")
-        message.send(fail_silently=False)
-        return
-    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
-        raise ImproperlyConfigured("Brevo settings are required to send activation emails.")
-    payload = json.dumps(
-        {
-            "sender": {
-                "name": settings.BREVO_SENDER_NAME,
-                "email": settings.BREVO_SENDER_EMAIL,
-            },
-            "to": [{"email": user.email, "name": user.profile.name}],
-            "subject": f"Activate your Legacy Real Estate {portal_name} account",
-            "textContent": text_content,
-            "htmlContent": html_content,
-        }
-    ).encode()
-    request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "accept": "application/json",
-            "api-key": settings.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        method="POST",
+    send_email(
+        user.email,
+        f"Activate your Legacy Real Estate {portal_name} account",
+        text_content,
+        html_content=html_content,
+        recipient_name=user.profile.name,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Brevo returned HTTP {response.status}.")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        logger.warning("Portal activation email delivery failed: %s", type(error).__name__)
-        raise RuntimeError("Portal activation email delivery failed.") from error
 
 
 def _send_landlord_activation_email(user, challenge_id, code):
@@ -389,52 +277,15 @@ def _send_caretaker_activation_email(email_address, property_name, activation_ur
     safe_url = html.escape(activation_url, quote=True)
     html_content = (
         f"<p>Your caretaker account for {safe_property_name} is ready to activate.</p>"
-        f"<p>One-time code: <strong>{code}</strong>. It expires in {lifetime_minutes} minutes.</p>"
-        f'<p><a href="{safe_url}">Activate your account</a></p>'
+        f'<p>One-time code: <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{code}</span>. It expires in {lifetime_minutes} minutes.</p>'
+        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{safe_url}">Activate your account</a></p>'
     )
-    if uses_mailpit_backend():
-        from django.core.mail import EmailMultiAlternatives
-
-        message = EmailMultiAlternatives(
-            f"Activate your {property_name} caretaker account",
-            text_content,
-            settings.DEFAULT_FROM_EMAIL,
-            [email_address],
-        )
-        message.attach_alternative(html_content, "text/html")
-        message.send(fail_silently=False)
-        return
-    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
-        raise ImproperlyConfigured("Brevo settings are required to send caretaker activation emails.")
-    payload = json.dumps(
-        {
-            "sender": {
-                "name": settings.BREVO_SENDER_NAME or property_name,
-                "email": settings.BREVO_SENDER_EMAIL,
-            },
-            "to": [{"email": email_address}],
-            "subject": f"Activate your {property_name} caretaker account",
-            "textContent": text_content,
-            "htmlContent": html_content,
-        }
-    ).encode()
-    email_request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "accept": "application/json",
-            "api-key": settings.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        method="POST",
+    send_email(
+        email_address,
+        f"Activate your {property_name} caretaker account",
+        text_content,
+        html_content=html_content,
     )
-    try:
-        with urllib.request.urlopen(email_request, timeout=10) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Brevo returned HTTP {response.status}.")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        logger.warning("Caretaker activation email delivery failed: %s", type(error).__name__)
-        raise RuntimeError("Caretaker activation email delivery failed.") from error
 
 
 def _send_tenant_activation_email(
@@ -454,60 +305,25 @@ def _send_tenant_activation_email(
         f"Use this secure link and code to create your password: {activation_url}\n\n"
         "The link expires in 48 hours."
     )
-    if uses_mailpit_backend():
-        from django.core.mail import send_mail
-
-        send_mail(
-            f"Activate your {property_name} account",
-            text_content,
-            settings.DEFAULT_FROM_EMAIL,
-            [email],
-            fail_silently=False,
-        )
-        return
-    if not settings.BREVO_API_KEY or not settings.BREVO_SENDER_EMAIL:
-        raise ImproperlyConfigured("Brevo email settings are required to send tenant activation emails.")
-
     safe_full_name = html.escape(full_name)
     safe_email = html.escape(email)
     safe_property_name = html.escape(property_name)
     safe_unit_code = html.escape(unit_code)
     safe_url = html.escape(activation_url, quote=True)
-    payload = json.dumps(
-        {
-            "sender": {
-                "name": settings.BREVO_SENDER_NAME or property_name,
-                "email": settings.BREVO_SENDER_EMAIL,
-            },
-            "to": [{"email": email, "name": full_name}],
-            "subject": f"Activate your {property_name} account",
-            "textContent": text_content,
-            "htmlContent": (
-                f"<p>Hi {safe_full_name},</p>"
-                f"<p>Your tenant account for {safe_property_name}, unit {safe_unit_code}, is ready.</p>"
-                f"<p>Your one-time activation code is <strong>{html.escape(activation_code)}</strong>.</p>"
-                f'<p><a href="{safe_url}">Activate your account</a></p>'
-                f"<p>This link is for {safe_email} and expires in 48 hours.</p>"
-            ),
-        }
-    ).encode()
-    request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "accept": "application/json",
-            "api-key": settings.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        method="POST",
+    html_content = (
+        f"<p>Hi {safe_full_name},</p>"
+        f"<p>Your tenant account for {safe_property_name}, unit {safe_unit_code}, is ready.</p>"
+        f'<p>Your one-time activation code is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{html.escape(activation_code)}</span>.</p>'
+        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{safe_url}">Activate your account</a></p>'
+        f"<p>This link is for {safe_email} and expires in 48 hours.</p>"
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"Brevo returned HTTP {response.status}.")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        logger.warning("Tenant activation email delivery failed: %s", type(error).__name__)
-        raise RuntimeError("Tenant activation email delivery failed.") from error
+    send_email(
+        email,
+        f"Activate your {property_name} account",
+        text_content,
+        html_content=html_content,
+        recipient_name=full_name,
+    )
 
 
 def _new_tenant_activation_code():

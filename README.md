@@ -56,8 +56,9 @@ original Supabase schema is retained as a reference at
 - Integration processing: RabbitMQ-backed Celery workers and Beat handle
   scheduled billing and water-reading workflows; audited SMS delivery remains
   queued through the Django SMS outbox.
-- Files: S3-compatible object storage is integrated for private tenant
-  maintenance evidence; remaining file workflows are not yet migrated.
+- Files: S3-compatible private object storage backs maintenance evidence,
+  move-in and move-out photos, water-meter photos, and tenant documents;
+  remaining file workflows are not yet migrated.
 - Hosting: Kubernetes is a later delivery target, not configured by this
   initial setup branch.
 
@@ -193,15 +194,14 @@ deploying schema changes, and do not use `docker compose down -v` or remove
 the PostgreSQL volume unless intentionally resetting staging data. Keep
 staging data anonymized or synthetic.
 
-Staging email is captured in Mailpit rather than delivered to real recipients.
-The authenticated inbox is available at
-`https://staging.legacyhomes.live/mailpit/`; set `MAILPIT_UI_AUTH` in the VPS
-`.env` to a unique `username:password` value before deploying. Generate a
-password with `openssl rand -hex 32`, and do not commit or share the credential.
-Mailpit's SMTP and UI ports are not published directly; Caddy proxies the UI
-path, and messages are retained for 14 days by default. Activation links and
-other email contents are visible to anyone with inbox access, so restrict the
-credential to trusted staging operators.
+Staging email is sent through Softlink to real recipients. Set
+`EMAIL_DELIVERY_BACKEND=softlink`, `SOFTLINK_EMAIL_API_URL`, and
+`SOFTLINK_EMAIL_API_KEY` in `/srv/legacy-real-estate/.env` on the VPS before
+deploying. Keep the API key out of Git and configure the sender address in the
+Softlink account if required by the provider. Use controlled test recipients:
+activation links, password-reset links, and other messages are delivered outside
+the application and may contain sensitive account information. Local
+development continues to use Mailpit.
 
 The GitHub Actions `staging` environment must also have `STAGING_HOST`,
 `STAGING_USER`, and `STAGING_SSH_KEY` configured for the deployment workflow.

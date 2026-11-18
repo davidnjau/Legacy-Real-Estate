@@ -1,15 +1,6 @@
 {$STAGING_DOMAIN} {
     encode gzip
 
-    redir /mailpit /mailpit/ 308
-
-    handle_path /mailpit/* {
-        rewrite * /mailpit{path}
-        reverse_proxy mailpit:8025 {
-            header_up Host {host}
-        }
-    }
-
     handle /api/v1/* {
         reverse_proxy core:8000
     }

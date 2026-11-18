@@ -25,6 +25,8 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from users import daraja
+from users.email import email_delivery_is_configured, send_email
 from users.models import (
     AuditLog,
     ConversationState,
@@ -40,8 +42,6 @@ from users.models import (
     Tenant,
     WhatsAppContact,
 )
-from users import daraja
-from users.email import email_delivery_is_configured, uses_mailpit_backend
 from users.object_storage import upload_private_object
 from users.roles import CARETAKER_ROLE, has_role
 
@@ -510,42 +510,8 @@ def _send_payment_receipt_email(tenant, reference, amount):
         f"Your payment of KES {amount:,.2f} (reference {reference}) has "
         "been received. Thank you.\n\nLegacy Real Estate"
     )
-    if uses_mailpit_backend():
-        from django.core.mail import send_mail
-
-        try:
-            send_mail(
-                subject,
-                text_content,
-                settings.DEFAULT_FROM_EMAIL,
-                [tenant.email],
-                fail_silently=False,
-            )
-        except Exception:
-            logger.exception("Payment receipt email could not be sent.")
-        return
-    payload = json.dumps({
-        "sender": {
-            "name": settings.BREVO_SENDER_NAME,
-            "email": settings.BREVO_SENDER_EMAIL,
-        },
-        "to": [{"email": tenant.email}],
-        "subject": subject,
-        "textContent": text_content,
-    }).encode("utf-8")
-    request = Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "accept": "application/json",
-            "api-key": settings.BREVO_API_KEY,
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
     try:
-        with urlopen(request, timeout=10):
-            pass
+        send_email(tenant.email, subject, text_content)
     except Exception:
         logger.exception("Payment receipt email could not be sent.")
 

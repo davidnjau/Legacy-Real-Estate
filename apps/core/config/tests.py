@@ -11749,6 +11749,7 @@ class UserAccessTests(TestCase):
 
     @override_settings(
         EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        EMAIL_DELIVERY_BACKEND="mailpit",
         DEBUG=True,
         BREVO_API_KEY="",
     )
@@ -11768,46 +11769,104 @@ class UserAccessTests(TestCase):
     @override_settings(
         PUBLIC_SITE_URL="https://staging.example.test",
         DEBUG=False,
-        EMAIL_DELIVERY_BACKEND="mailpit",
-        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-        BREVO_API_KEY="",
-        BREVO_SENDER_EMAIL="",
+        EMAIL_DELIVERY_BACKEND="softlink",
+        SOFTLINK_EMAIL_API_URL="https://api.softlinksms.co.ke/api/v1/email",
+        SOFTLINK_EMAIL_API_KEY="test-softlink-email-key",
+        SOFTLINK_EMAIL_TIMEOUT_SECONDS=10,
     )
-    def test_staging_password_recovery_uses_mailpit_without_brevo(self):
-        from django.core import mail
+    def test_staging_password_recovery_uses_softlink_email_api(self):
+        response_mock = MagicMock()
+        response_mock.__enter__.return_value.status = 202
 
         user = self.create_user(email="staging-reset@example.com")
-        response = self.client.post(
-            "/api/v1/auth/password-reset",
-            data={"email": user.email},
-            content_type="application/json",
-        )
+        with patch("users.email.urlopen", return_value=response_mock) as urlopen:
+            response = self.client.post(
+                "/api/v1/auth/password-reset",
+                data={"email": user.email},
+                content_type="application/json",
+            )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, [user.email])
-        self.assertIn("reset-password", mail.outbox[0].body)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://api.softlinksms.co.ke/api/v1/email",
+        )
+        self.assertEqual(request.get_header("X-api-key"), "test-softlink-email-key")
+        self.assertTrue(request.get_header("Idempotency-key"))
+        payload = json.loads(request.data)
+        self.assertEqual(
+            set(payload),
+            {"recipients", "subject", "body"},
+        )
+        self.assertEqual(payload["recipients"], [user.email])
+        self.assertEqual(payload["subject"], "Reset your Legacy Real Estate password")
+        self.assertIn("<!doctype html>", payload["body"].lower())
+        self.assertIn("#123b2c", payload["body"])
+        self.assertIn("reset-password", payload["body"])
+        self.assertIn("background-color:#123b2c", payload["body"])
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 10)
 
     @override_settings(
         PUBLIC_SITE_URL="https://staging.example.test",
         DEBUG=False,
-        EMAIL_DELIVERY_BACKEND="mailpit",
-        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-        BREVO_API_KEY="",
-        BREVO_SENDER_EMAIL="",
+        EMAIL_DELIVERY_BACKEND="softlink",
+        SOFTLINK_EMAIL_API_URL="https://api.softlinksms.co.ke/api/v1/email",
+        SOFTLINK_EMAIL_API_KEY="test-softlink-email-key",
     )
-    def test_staging_director_activation_uses_mailpit_without_brevo(self):
-        from django.core import mail
-
+    def test_staging_director_activation_uses_softlink_email_api(self):
         from users.views import _send_director_activation_email
 
+        response_mock = MagicMock()
+        response_mock.__enter__.return_value.status = 200
         user = self.create_user(email="staging-director@example.com")
-        _send_director_activation_email(user, "challenge-id", "123456")
+        with patch("users.email.urlopen", return_value=response_mock) as urlopen:
+            _send_director_activation_email(user, "challenge-id", "123456")
 
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, [user.email])
-        self.assertIn("123456", mail.outbox[0].body)
-        self.assertIn("/activate-director?challenge_id=challenge-id", mail.outbox[0].body)
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(payload["recipients"], [user.email])
+        self.assertEqual(
+            payload["subject"],
+            "Activate your Legacy Real Estate Director account",
+        )
+        self.assertIn("123456", payload["body"])
+        self.assertIn("/activate-director?challenge_id=challenge-id", payload["body"])
+        self.assertIn("letter-spacing:3px", payload["body"])
+        self.assertIn("Activate your account</a>", payload["body"])
+
+    @override_settings(
+        EMAIL_DELIVERY_BACKEND="softlink",
+        SOFTLINK_EMAIL_API_URL="https://api.softlinksms.co.ke/api/v1/email",
+        SOFTLINK_EMAIL_API_KEY="",
+    )
+    def test_softlink_email_backend_requires_api_key_without_request(self):
+        from users.email import send_email
+
+        with patch("users.email.urlopen") as urlopen:
+            with self.assertRaises(ImproperlyConfigured):
+                send_email("tenant@example.test", "Test", "Test body")
+        urlopen.assert_not_called()
+
+    @override_settings(
+        EMAIL_DELIVERY_BACKEND="softlink",
+        SOFTLINK_EMAIL_API_URL="https://api.softlinksms.co.ke/api/v1/email",
+        SOFTLINK_EMAIL_API_KEY="test-softlink-email-key",
+    )
+    def test_softlink_email_backend_surfaces_provider_http_errors_safely(self):
+        from urllib.error import HTTPError
+
+        from users.email import send_email
+
+        provider_error = HTTPError(
+            "https://api.softlinksms.co.ke/api/v1/email",
+            401,
+            "Unauthorized",
+            {},
+            None,
+        )
+        with patch("users.email.urlopen", side_effect=provider_error):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+                send_email("tenant@example.test", "Test", "Test body")
 
     def test_sms_delivery_failures_retry_and_expired_messages_are_discarded(self):
         user = self.create_user(
@@ -13197,6 +13256,8 @@ class WhatsAppRentStkTests(TestCase):
         self.assertEqual(mail.outbox[0].to, [self.tenant.email])
         self.assertEqual(mail.outbox[0].subject, "Payment received — STAGING-RECEIPT-001")
         self.assertIn("KES 2,500.00", mail.outbox[0].body)
+        self.assertIn("Legacy Real Estate", mail.outbox[0].alternatives[0][0])
+        self.assertIn("#123b2c", mail.outbox[0].alternatives[0][0])
 
     def test_pay_flow_initiates_stk_and_callback_completes_tri_channel_receipt(self):
         from users.models import (
