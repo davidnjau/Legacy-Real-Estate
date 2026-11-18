@@ -287,6 +287,49 @@ class Command(BaseCommand):
             },
         )
 
+        # The demo landlord is also a tenant (unit B8) and a caretaker of
+        # Legacy Court, demonstrating all three WhatsApp roles on one number.
+        landlord_user.groups.add(tenant_group)
+        landlord_user.groups.add(caretaker_group)
+        property_obj.caretakers.add(landlord_user)
+        ll_unit, _ = Unit.objects.get_or_create(
+            property=property_obj,
+            code="B8",
+            defaults={"unit_type": "1 Bedroom", "status": Unit.STATUS_OCCUPIED},
+        )
+        ll_tenant, _ = Tenant.objects.get_or_create(
+            branch=branch,
+            national_id_or_passport="27334455",
+            defaults={
+                "tenant_type": Tenant.INDIVIDUAL,
+                "name": "Demo Landlord",
+                "phone": options["landlord_phone"],
+                "email": "demo-landlord@legacyhomes.live",
+                "portal_user": landlord_user,
+            },
+        )
+        ll_tenancy, _ = Tenancy.objects.get_or_create(
+            unit=ll_unit,
+            tenant=ll_tenant,
+            defaults={
+                "tenancy_type": Tenancy.TYPE_MONTH_TO_MONTH,
+                "start_date": today - timedelta(days=45),
+                "status": Tenancy.STATUS_ACTIVE,
+            },
+        )
+        Invoice.objects.get_or_create(
+            number="INV-DEMO-0005",
+            defaults={
+                "tenancy": ll_tenancy,
+                "branch": branch,
+                "period_start": today.replace(day=1),
+                "period_end": today,
+                "due_date": today + timedelta(days=5),
+                "total": Decimal("12000.00"),
+                "status": Invoice.STATUS_ISSUED,
+            },
+        )
+
         # Re-running the seed always unblocks the demo phones, so a failed
         # verification experiment never stalls staging testing for 24 hours.
         demo_phones = [options["tenant_phone"], options["landlord_phone"]] + [
