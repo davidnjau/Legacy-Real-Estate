@@ -43,6 +43,7 @@ from users.models import (
 from users import daraja
 from users.email import email_delivery_is_configured, uses_mailpit_backend
 from users.object_storage import upload_private_object
+from users.roles import CARETAKER_ROLE, has_role
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +52,17 @@ VERIFICATION_LOCK_HOURS = 24
 MAX_TICKET_PHOTOS = 5
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
 ALLOWED_PHOTO_TYPES = {"image/jpeg": "jpg", "image/png": "png"}
-STATE_TTL_HOURS = 24
+# Conversations idle beyond this restart from the greeting on return.
+SESSION_TTL_MINUTES = 5
 
 ROLE_TENANT = "tenant"
 ROLE_LANDLORD = "landlord"
+ROLE_CARETAKER = "caretaker"
+ROLE_LABELS = {
+    ROLE_TENANT: "Tenant",
+    ROLE_LANDLORD: "Landlord",
+    ROLE_CARETAKER: "Caretaker",
+}
 
 CATEGORY_ROWS = [
     (f"cat_{value}", label) for value, label in MaintenanceTicket.CATEGORY_CHOICES
@@ -175,6 +183,8 @@ def _roles(contact: WhatsAppContact) -> list[str]:
         roles.append(ROLE_TENANT)
     if contact.user_id and Landlord.objects.filter(portal_user_id=contact.user_id).exists():
         roles.append(ROLE_LANDLORD)
+    if contact.user_id and has_role(contact.user, CARETAKER_ROLE):
+        roles.append(ROLE_CARETAKER)
     return roles
 
 
@@ -276,44 +286,66 @@ def _handle_verification_reply(contact, state, text):
 def _show_entry(contact, state):
     roles = _roles(contact)
     if len(roles) > 1:
+        state.active_role = ""
         state.state = {"flow": "choose_role"}
         _save_state(state)
         send_buttons(
             contact.wa_id,
             "You have more than one role with us. How would you like to continue today?",
-            [("role_tenant", "Tenant"), ("role_landlord", "Landlord")],
+            [(f"role_{role}", ROLE_LABELS[role]) for role in roles[:3]],
         )
         return
     state.active_role = roles[0] if roles else ""
     _show_menu(contact, state)
 
 
+SWITCH_ROW = ("switch_role", "Switch role", "Use a different role on this account")
+
+
 def _show_menu(contact, state):
+    state.state = {"flow": "menu"}
+    _save_state(state)
+    multi_role = len(_roles(contact)) > 1
     if state.active_role == ROLE_LANDLORD:
-        state.state = {"flow": "menu"}
-        _save_state(state)
+        rows = [
+            ("l_summary", "Portfolio summary", "Properties, units and occupancy"),
+            ("l_approvals", "Pending approvals", "Maintenance quotations awaiting you"),
+        ]
+        if multi_role:
+            rows.append(SWITCH_ROW)
         send_list(
             contact.wa_id,
             "🏠 Welcome to your landlord services. What would you like to see?",
             "Landlord services",
-            [
-                ("l_summary", "Portfolio summary", "Properties, units and occupancy"),
-                ("l_approvals", "Pending approvals", "Maintenance quotations awaiting you"),
-            ],
+            rows,
         )
         return
-    state.state = {"flow": "menu"}
-    _save_state(state)
+    if state.active_role == ROLE_CARETAKER:
+        rows = [
+            ("c_tickets", "My assigned tickets", "Open maintenance at your properties"),
+        ]
+        if multi_role:
+            rows.append(SWITCH_ROW)
+        send_list(
+            contact.wa_id,
+            "🔧 Caretaker services. What would you like to do?",
+            "Caretaker menu",
+            rows,
+        )
+        return
+    rows = [
+        ("t_balance", "Rent balance", "What you owe and when it's due"),
+        ("t_pay", "Pay rent", "Pay via M-PESA right here"),
+        ("t_receipts", "My receipts", "Your recent payment receipts"),
+        ("t_issue", "Report an issue", "Repairs and maintenance, with photos"),
+    ]
+    if multi_role:
+        rows.append(SWITCH_ROW)
     send_list(
         contact.wa_id,
         f"Hi {contact.tenant.name.split()[0]}! How can we help today?",
         "Tenant services",
-        [
-            ("t_balance", "Rent balance", "What you owe and when it's due"),
-            ("t_pay", "Pay rent", "Pay via M-PESA right here"),
-            ("t_receipts", "My receipts", "Your recent payment receipts"),
-            ("t_issue", "Report an issue", "Repairs and maintenance, with photos"),
-        ],
+        rows,
     )
 
 
@@ -680,6 +712,119 @@ def _decide_quotation(contact, state, quotation_id, approved, reason=""):
     send_text(contact.wa_id, f"Quotation #{quotation.pk} {verdict}. The team has been notified.")
 
 
+def _caretaker_properties(contact):
+    from django.db.models import Q
+
+    from users.models import Property
+
+    return Property.objects.filter(
+        Q(caretakers=contact.user)
+        | Q(
+            caretaker_assignments__caretaker=contact.user,
+            caretaker_assignments__ended_at__isnull=True,
+        )
+    ).distinct()
+
+
+def _caretaker_open_tickets(contact):
+    return (
+        MaintenanceTicket.objects.filter(
+            property__in=_caretaker_properties(contact),
+            status__in=[
+                MaintenanceTicket.STATUS_OPEN,
+                MaintenanceTicket.STATUS_ASSIGNED,
+                MaintenanceTicket.STATUS_IN_PROGRESS,
+            ],
+        )
+        .select_related("property", "unit")
+        .order_by("-created_at")
+    )
+
+
+def _caretaker_ticket_list(contact, state):
+    tickets = list(_caretaker_open_tickets(contact)[:10])
+    if not tickets:
+        send_text(contact.wa_id, "✅ No open tickets at your properties right now.")
+        return
+    send_list(
+        contact.wa_id,
+        "🔧 Open tickets at your properties — pick one:",
+        "Open tickets",
+        [
+            (
+                f"tkt_{ticket.pk}",
+                f"#{ticket.pk} {ticket.property.name}"[:24],
+                (ticket.unit.code + " · " if ticket.unit else "") + ticket.title[:60],
+            )
+            for ticket in tickets
+        ],
+    )
+
+
+def _caretaker_ticket_detail(contact, state, ticket_id):
+    ticket = _caretaker_open_tickets(contact).filter(pk=ticket_id).first()
+    if ticket is None:
+        send_text(contact.wa_id, "That ticket is no longer open.")
+        return
+    unit_label = ticket.unit.code if ticket.unit else "common area"
+    send_buttons(
+        contact.wa_id,
+        f"🔧 Ticket #{ticket.pk} — {ticket.property.name}, {unit_label}\n\n"
+        f"{ticket.description[:400]}\n\n"
+        f"Status: {ticket.get_status_display()} · Priority: {ticket.get_priority_display()}",
+        [(f"tc_{ticket.pk}", "Mark complete"), ("c_tickets", "Back to tickets")],
+    )
+
+
+def _caretaker_complete_ticket(contact, state, ticket_id):
+    with transaction.atomic():
+        ticket = (
+            _caretaker_open_tickets(contact)
+            .select_for_update(of=("self",))
+            .filter(pk=ticket_id)
+            .first()
+        )
+        if ticket is None:
+            send_text(contact.wa_id, "That ticket is no longer open.")
+            return
+        ticket.status = MaintenanceTicket.STATUS_COMPLETED
+        ticket.save(update_fields=["status", "updated_at"])
+    AuditLog.objects.create(
+        user=contact.user,
+        action="maintenance_ticket.caretaker_completed",
+        entity="MaintenanceTicket",
+        new_values={"ticket_id": ticket.pk, "source": "whatsapp"},
+    )
+    send_text(contact.wa_id, f"✅ Ticket #{ticket.pk} marked complete. Good work!")
+
+    # Close the loop with the tenant, when the unit has an active tenancy.
+    tenancy = (
+        Tenancy.objects.filter(unit=ticket.unit, status=Tenancy.STATUS_ACTIVE)
+        .select_related("tenant")
+        .first()
+        if ticket.unit
+        else None
+    )
+    if tenancy and tenancy.tenant.phone:
+        from users.sms import queue_template_sms, sms_backend_is_configured
+        from users.whatsapp import queue_template_whatsapp_if_enabled
+
+        context = {
+            "property_name": ticket.property.name,
+            "unit_label": ticket.unit.code,
+        }
+        queue_template_whatsapp_if_enabled(
+            tenancy.tenant.phone, "maintenance_ticket_completed_tenant", context
+        )
+        if sms_backend_is_configured():
+            try:
+                queue_template_sms(
+                    tenancy.tenant.phone, "maintenance_ticket_completed_tenant", context
+                )
+            except Exception:
+                logger.exception("Maintenance completion SMS could not be queued.")
+
+
 def _active_tenancy(contact):
     return (
         contact.tenant.tenancies.filter(status=Tenancy.STATUS_ACTIVE)
@@ -829,7 +974,7 @@ def _issue_submit(contact, state):
 
 
 def _save_state(state):
-    state.expires_at = timezone.now() + timedelta(hours=STATE_TTL_HOURS)
+    state.expires_at = timezone.now() + timedelta(minutes=SESSION_TTL_MINUTES)
     state.save()
 
 
@@ -853,9 +998,11 @@ def handle_inbound_message(message: dict) -> None:
             return
         state.last_message_id = message_id
         state.save(update_fields=["last_message_id", "updated_at"])
+    # Sessions idle past the TTL restart from the greeting: any in-progress
+    # flow is discarded and the role must be chosen afresh.
     if state.expires_at and state.expires_at < timezone.now():
         state.state = {}
-        state.active_role = state.active_role or ""
+        state.active_role = ""
 
     kind = message.get("type")
     text = message.get("text", {}).get("body", "").strip() if kind == "text" else ""
@@ -881,12 +1028,27 @@ def handle_inbound_message(message: dict) -> None:
             _show_entry(contact, state)
         return
 
-    if choice in {"role_tenant", "role_landlord"}:
-        state.active_role = ROLE_TENANT if choice == "role_tenant" else ROLE_LANDLORD
-        _show_menu(contact, state)
+    if choice.startswith("role_"):
+        selected = choice.removeprefix("role_")
+        if selected in _roles(contact):
+            state.active_role = selected
+            _show_menu(contact, state)
+            return
+    if choice == "switch_role" or (text and text.lower().strip() == "switch"):
+        _show_entry(contact, state)
         return
     if not state.active_role:
         _show_entry(contact, state)
+        return
+
+    if choice == "c_tickets":
+        _caretaker_ticket_list(contact, state)
+        return
+    if choice.startswith("tkt_"):
+        _caretaker_ticket_detail(contact, state, int(choice.removeprefix("tkt_")))
+        return
+    if choice.startswith("tc_"):
+        _caretaker_complete_ticket(contact, state, int(choice.removeprefix("tc_")))
         return
 
     if choice == "t_balance":
@@ -956,6 +1118,9 @@ def handle_inbound_message(message: dict) -> None:
             return
 
     lowered = text.lower()
+    if state.active_role == ROLE_CARETAKER and ("ticket" in lowered or "job" in lowered):
+        _caretaker_ticket_list(contact, state)
+        return
     if state.active_role == ROLE_TENANT:
         if "pay" in lowered:
             _start_pay_flow(contact, state)

@@ -259,10 +259,29 @@ class Command(BaseCommand):
                 "location": "Nakuru",
             },
         )
-        Unit.objects.get_or_create(
+        villas_unit, _ = Unit.objects.get_or_create(
             property=villas,
             code="V1",
             defaults={"unit_type": "3 Bedroom", "status": Unit.STATUS_VACANT},
+        )
+
+        # Jane (primary demo tenant) doubles as caretaker of Legacy Villas —
+        # a property where she is NOT a tenant — to exercise the
+        # tenant/caretaker role chooser and the ticket completion flow.
+        caretaker_group, _ = Group.objects.get_or_create(name=CARETAKER_ROLE)
+        tenant_user.groups.add(caretaker_group)
+        villas.caretakers.add(tenant_user)
+        officer_user = user_model.objects.get(username="demo-officer@legacyhomes.live")
+        MaintenanceTicket.objects.get_or_create(
+            property=villas,
+            unit=villas_unit,
+            title="Demo: gate light not working",
+            defaults={
+                "reported_by": officer_user,
+                "description": "Demo: gate light not working",
+                "category": MaintenanceTicket.CATEGORY_ELECTRICAL,
+                "priority": MaintenanceTicket.PRIORITY_NORMAL,
+            },
         )
 
         # Re-running the seed always unblocks the demo phones, so a failed
