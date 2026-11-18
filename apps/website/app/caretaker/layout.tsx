@@ -10,12 +10,12 @@ export default async function CaretakerLayout({ children }: { children: React.Re
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-slate-50">
+    <div className="flex min-h-dvh flex-col overflow-hidden bg-slate-50">
       <PrototypeHeader activeRole="caretaker" user={user} />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
         <CaretakerSidebar />
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-7xl px-4 pb-24 pt-4 sm:px-6 sm:pt-6 md:p-8">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-7xl px-4 py-4 sm:px-6 sm:py-6 lg:p-8">
             {children}
           </div>
         </main>

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Home, Wrench, LogOut, UserCircle, DoorOpen } from 'lucide-react';
+import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -63,7 +64,10 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-64 bg-[#102820] text-white flex flex-col h-full border-r border-emerald-950/60 shrink-0">
+    <ResponsivePortalSidebar
+      label="Tenant navigation"
+      className="bg-[#102820] text-white md:h-full md:border-r md:border-emerald-950/60"
+    >
       <div className="p-5 border-b border-emerald-900/40">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
@@ -102,6 +106,6 @@ export function Sidebar() {
           <span>Sign Out</span>
         </button>
       </div>
-    </aside>
+    </ResponsivePortalSidebar>
   );
 }

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Building2, ClipboardCheck, FileText, LayoutDashboard } from 'lucide-react';
 import SignOutButton from '../auth/SignOutButton';
+import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 const landlordItems = [
   { name: 'Overview', href: '/landlord/dashboard', icon: LayoutDashboard, tourId: 'nav-dashboard' },
@@ -17,7 +18,10 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="w-64 bg-[#102820] text-white flex flex-col h-full border-r border-emerald-950/60 shrink-0">
+    <ResponsivePortalSidebar
+      label="Landlord navigation"
+      className="bg-[#102820] text-white md:h-full md:border-r md:border-emerald-950/60"
+    >
       <div className="p-5 border-b border-emerald-900/40" data-tour-id="sidebar-header">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
@@ -48,6 +52,6 @@ export function Sidebar() {
       <div className="p-4 border-t border-emerald-900/40">
         <SignOutButton />
       </div>
-    </aside>
+    </ResponsivePortalSidebar>
   );
 }

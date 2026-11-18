@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { DjangoUser } from '../../lib/django-auth';
 import SignOutButton from '../auth/SignOutButton';
+import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 type Agency = NonNullable<DjangoUser['agencies']>[number];
 
@@ -101,13 +102,13 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
               <select aria-label="Agency" value={agency?.id ?? ''} onChange={(event) => {
                 setAgencyId(Number(event.target.value));
                 setBranchId('all');
-              }} className="max-w-56 rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-xs font-semibold text-[#294536] outline-none transition focus:border-[#89a66b] focus:ring-4 focus:ring-[#eaf1e4]">
+              }} className="max-w-[44vw] rounded-xl border border-[#dfe5df] bg-white px-2 py-2.5 text-xs font-semibold text-[#294536] outline-none transition focus:border-[#89a66b] focus:ring-4 focus:ring-[#eaf1e4] sm:max-w-56 sm:px-3">
                 {agencies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
             )}
             {branches.length > 1 && (
               <select aria-label="Branch" value={branchId} onChange={(event) => setBranchId(event.target.value === 'all' ? 'all' : Number(event.target.value))}
-                className="max-w-56 rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-xs font-semibold text-[#294536] outline-none transition focus:border-[#89a66b] focus:ring-4 focus:ring-[#eaf1e4]">
+                className="max-w-[44vw] rounded-xl border border-[#dfe5df] bg-white px-2 py-2.5 text-xs font-semibold text-[#294536] outline-none transition focus:border-[#89a66b] focus:ring-4 focus:ring-[#eaf1e4] sm:max-w-56 sm:px-3">
                 <option value="all">All agency branches</option>
                 {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
               </select>
@@ -116,8 +117,12 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
             <SignOutButton />
           </div>
         </header>
-        <div className="mx-auto flex min-h-[calc(100vh-4.75rem)] max-w-[1760px]">
-          <aside className="hidden w-[260px] shrink-0 border-r border-[#e6e9e5] bg-white px-4 py-7 md:flex md:flex-col">
+        <div className="mx-auto flex min-h-[calc(100dvh-4.75rem)] max-w-[1760px] flex-col md:flex-row">
+          <ResponsivePortalSidebar
+            label="Director navigation"
+            desktopWidthClass="md:w-[260px]"
+            className="border-r border-[#e6e9e5] bg-white px-4 py-7"
+          >
             <div className="mb-5 px-3">
               <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#91a095]">Workspace</p>
               <p className="mt-1 text-xs text-[#8a978e]">{agency?.name || 'Agency administration'}</p>
@@ -138,15 +143,10 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
               <p className="mt-3 text-xs font-bold text-[#314b39]">Director access</p>
               <p className="mt-1 text-[11px] leading-relaxed text-[#839087]">Your agency workspace is secured and access-controlled.</p>
             </div>
-          </aside>
-          <div className="min-w-0 flex-1">
-            <div className="border-b border-[#e6e9e5] bg-white px-4 py-2.5 md:hidden">
-              <nav className="flex gap-2 overflow-x-auto">
-                {NAV_ITEMS.map(({ href, label }) => <Link key={href} href={href} aria-current={pathname === href ? 'page' : undefined} className={`shrink-0 rounded-xl px-3 py-2 text-xs font-semibold transition ${pathname === href ? 'bg-[#edf4e9] text-[#294d35]' : 'text-[#6b7b70] hover:bg-[#f6f8f5]'}`}>{label}</Link>)}
-              </nav>
-            </div>
+          </ResponsivePortalSidebar>
+          <main className="min-w-0 flex-1 overflow-x-hidden">
             {error ? <div role="alert" className="m-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div> : children}
-          </div>
+          </main>
         </div>
       </div>
     </DirectorPortalContext.Provider>

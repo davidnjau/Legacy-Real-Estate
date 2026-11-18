@@ -14,6 +14,7 @@ import {
   Scale,
   LogOut,
 } from 'lucide-react';
+import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 interface StaffSidebarProps {
   userRole?: string;
@@ -51,7 +52,7 @@ export function StaffSidebar({ userRole = 'Operations Staff' }: StaffSidebarProp
   };
 
   return (
-    <aside className="flex w-full shrink-0 flex-col bg-[#102820] text-white md:h-full md:w-64">
+    <ResponsivePortalSidebar label="Staff navigation" className="bg-[#102820] text-white">
       <div className="flex items-center justify-between border-b border-emerald-900/50 p-5">
         <div>
           <div className="flex items-center gap-2">
@@ -108,6 +109,6 @@ export function StaffSidebar({ userRole = 'Operations Staff' }: StaffSidebarProp
           <span>Sign Out</span>
         </button>
       </div>
-    </aside>
+    </ResponsivePortalSidebar>
   );
 }

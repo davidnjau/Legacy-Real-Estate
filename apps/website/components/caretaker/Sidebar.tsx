@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { ClipboardCheck, Droplets, LayoutDashboard, Wrench } from 'lucide-react';
+import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 const navItems = [
   { name: 'Site Hub', href: '/caretaker/dashboard', icon: LayoutDashboard },
@@ -43,8 +44,11 @@ export function CaretakerSidebar() {
   }, []);
 
   return (
-    <aside className="fixed inset-x-0 bottom-0 z-50 shrink-0 border-t border-emerald-950/60 bg-[#102820] text-white md:static md:h-full md:w-64 md:border-r md:border-t-0">
-      <div className="hidden border-b border-emerald-900/40 p-5 md:block">
+    <ResponsivePortalSidebar
+      label="Caretaker navigation"
+      className="border-emerald-950/60 bg-[#102820] text-white md:h-full md:border-r"
+    >
+      <div className="border-b border-emerald-900/40 p-5">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-sm font-black text-[#102820]">
             L
@@ -56,8 +60,7 @@ export function CaretakerSidebar() {
 
       <nav
         aria-label="Caretaker navigation"
-        className="mx-auto grid max-w-xl gap-1 px-2 py-2 md:flex md:max-w-none md:flex-col md:gap-1.5 md:px-3 md:py-4"
-        style={{ gridTemplateColumns: `repeat(${hasPaidWater ? 4 : 3}, minmax(0, 1fr))` }}
+        className="flex flex-col gap-1.5 px-3 py-4"
       >
         {[...navItems.slice(0, 1), ...(hasPaidWater ? [{ name: 'Water Meter', href: '/caretaker/meters', icon: Droplets }] : []), ...navItems.slice(1)].map((item) => {
           const isActive = pathname === item.href;
@@ -68,16 +71,16 @@ export function CaretakerSidebar() {
               href={item.href}
               aria-current={isActive ? 'page' : undefined}
               data-tour-id={`caretaker-nav-${item.name.toLowerCase().split(' ')[0]}`}
-              className={`flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[10px] font-semibold transition-colors md:flex-row md:justify-start md:gap-2.5 md:px-3 md:py-2.5 md:text-xs ${
+              className={`flex min-w-0 items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors ${
                 isActive ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-300 hover:bg-white/10'
               }`}
             >
               <Icon size={18} className={isActive ? 'text-white' : 'text-emerald-300/80'} aria-hidden="true" />
-              <span className="truncate">{item.name}</span>
+              <span>{item.name}</span>
             </Link>
           );
         })}
       </nav>
-    </aside>
+    </ResponsivePortalSidebar>
   );
 }

@@ -22,19 +22,19 @@ export default async function LandlordLayout({ children }: { children: React.Rea
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-slate-50 print:block print:h-auto print:overflow-visible">
+    <div className="flex min-h-dvh flex-col overflow-hidden bg-slate-50 print:block print:h-auto print:overflow-visible">
       <div className="print:hidden">
         <PrototypeHeader activeRole="landlord" user={user} />
       </div>
-      <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row print:block print:overflow-visible">
         {/* Sidebar Navigation */}
-        <div className="print:hidden">
+        <div className="print:hidden md:contents">
           <Sidebar />
         </div>
 
         {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto print:overflow-visible">
-          <div className="mx-auto max-w-7xl p-8 print:max-w-none print:p-0">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto print:overflow-visible">
+          <div className="mx-auto w-full max-w-7xl p-4 sm:p-6 lg:p-8 print:max-w-none print:p-0">
             {children}
           </div>
         </main>

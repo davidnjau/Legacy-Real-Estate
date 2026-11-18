@@ -16,11 +16,11 @@ export default async function StaffLayout({ children }: { children: React.ReactN
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-slate-50">
+    <div className="flex min-h-dvh flex-col overflow-hidden bg-slate-50">
       <PrototypeHeader activeRole="staff" user={user} />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
         <StaffSidebar userRole={user.roles.join(' · ')} />
-        <main className="flex-1 overflow-y-auto">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           {children}
         </main>
       </div>
