@@ -95,17 +95,60 @@ def _post_message(message: dict) -> None:
         logger.exception("WhatsApp session message could not be sent.")
 
 
+SESSION_HELP = (
+    "ℹ️ Type *cancel* to exit, *menu* to start over. "
+    f"Chats close after {SESSION_TTL_MINUTES} minutes of inactivity."
+)
+MENU_FOOTER = f"cancel exits · menu restarts · closes after {SESSION_TTL_MINUTES} idle min"
+
+
+def _identity_line(wa_id: str) -> str:
+    contact = (
+        WhatsAppContact.objects.filter(wa_id=wa_id, verified_at__isnull=False)
+        .select_related("tenant", "user", "conversation_state")
+        .first()
+    )
+    if contact is None:
+        return ""
+    state = getattr(contact, "conversation_state", None)
+    role = ROLE_LABELS.get(state.active_role) if state else None
+    name = ""
+    if contact.tenant_id:
+        name = contact.tenant.name.split()[0]
+    elif contact.user_id:
+        profile = getattr(contact.user, "profile", None)
+        if profile is not None and profile.name:
+            name = profile.name.split()[0]
+        else:
+            landlord = Landlord.objects.filter(portal_user_id=contact.user_id).first()
+            if landlord:
+                name = landlord.name.split()[0]
+    if name and role:
+        return f"👤 {name} · {role}"
+    if name:
+        return f"👤 {name}"
+    return ""
+
+
 def send_text(wa_id: str, body: str) -> None:
-    _post_message({"to": wa_id, "type": "text", "text": {"body": body}})
+    identity = _identity_line(wa_id)
+    footer = (identity + "\n" if identity else "") + SESSION_HELP
+    _post_message({
+        "to": wa_id,
+        "type": "text",
+        "text": {"body": f"{body}\n\n{footer}"},
+    })
 
 
 def send_buttons(wa_id: str, body: str, buttons: list[tuple[str, str]]) -> None:
+    identity = _identity_line(wa_id)
     _post_message({
         "to": wa_id,
         "type": "interactive",
         "interactive": {
             "type": "button",
-            "body": {"text": body},
+            "body": {"text": f"{identity}\n\n{body}" if identity else body},
+            "footer": {"text": MENU_FOOTER},
             "action": {
                 "buttons": [
                     {"type": "reply", "reply": {"id": option_id, "title": title}}
@@ -117,12 +160,14 @@ def send_buttons(wa_id: str, body: str, buttons: list[tuple[str, str]]) -> None:
 
 
 def send_list(wa_id: str, body: str, button: str, rows: list[tuple[str, str, str]]) -> None:
+    identity = _identity_line(wa_id)
     _post_message({
         "to": wa_id,
         "type": "interactive",
         "interactive": {
             "type": "list",
-            "body": {"text": body},
+            "body": {"text": f"{identity}\n\n{body}" if identity else body},
+            "footer": {"text": MENU_FOOTER},
             "action": {
                 "button": button,
                 "sections": [{
@@ -944,10 +989,19 @@ def _issue_submit(contact, state):
     state.state = {"flow": "menu"}
     _save_state(state)
     photo_count = len(draft.get("photos", []))
+    description_preview = description[:200] + ("…" if len(description) > 200 else "")
     send_text(
         contact.wa_id,
-        f"🔧 Request #{ticket.pk} created with {photo_count} photo(s). "
-        "The caretaker will be in touch. We'll update you here.",
+        "✅ Your maintenance request has been submitted successfully.\n\n"
+        "📋 Here is what we received:\n"
+        f"• Ticket: #{ticket.pk}\n"
+        f"• Property: {ticket.property.name}, unit {tenancy.unit.code}\n"
+        f"• Category: {ticket.get_category_display()}\n"
+        f"• Priority: {ticket.get_priority_display()}\n"
+        f"• Description: {description_preview}\n"
+        f"• Photos: {photo_count}\n\n"
+        "The caretaker will be in touch. We'll update you here once it "
+        "has been attended to.",
     )
 
 
@@ -968,8 +1022,13 @@ def _interactive_choice(message):
 
 
 def handle_inbound_message(message: dict) -> None:
+    """Route one inbound message, serialized per contact.
+
+    The contact row lock is held for the whole routing pass so concurrent
+    gunicorn workers cannot interleave two messages from the same person —
+    e.g. "done" must not read a draft while a photo upload is still saving.
+    """
     wa_id = message.get("from", "")
-    message_id = message.get("id", "")
     if not wa_id:
         return
     with transaction.atomic():
@@ -977,10 +1036,15 @@ def handle_inbound_message(message: dict) -> None:
             wa_id=wa_id
         )
         state, _ = ConversationState.objects.get_or_create(contact=contact)
-        if message_id and state.last_message_id == message_id:
-            return
-        state.last_message_id = message_id
-        state.save(update_fields=["last_message_id", "updated_at"])
+        _route_message(contact, state, message)
+
+
+def _route_message(contact, state, message: dict) -> None:
+    message_id = message.get("id", "")
+    if message_id and state.last_message_id == message_id:
+        return
+    state.last_message_id = message_id
+    state.save(update_fields=["last_message_id", "updated_at"])
     # Sessions idle past the TTL restart from the greeting: any in-progress
     # flow is discarded and the role must be chosen afresh.
     if state.expires_at and state.expires_at < timezone.now():
