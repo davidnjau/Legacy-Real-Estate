@@ -46,7 +46,8 @@ export function CaretakerSidebar() {
   return (
     <ResponsivePortalSidebar
       label="Caretaker navigation"
-      className="border-emerald-950/60 bg-[#102820] text-white md:h-full md:border-r"
+      fillDesktopHeight
+      className="border-emerald-950/60 bg-[#102820] text-white md:border-r"
     >
       <div className="border-b border-emerald-900/40 p-5">
         <div className="flex items-center gap-2.5">
@@ -60,7 +61,7 @@ export function CaretakerSidebar() {
 
       <nav
         aria-label="Caretaker navigation"
-        className="flex flex-col gap-1.5 px-3 py-4"
+        className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-4"
       >
         {[...navItems.slice(0, 1), ...(hasPaidWater ? [{ name: 'Water Meter', href: '/caretaker/meters', icon: Droplets }] : []), ...navItems.slice(1)].map((item) => {
           const isActive = pathname === item.href;
