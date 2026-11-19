@@ -13171,6 +13171,31 @@ class WhatsAppBotTests(TestCase):
             ["role_tenant", "role_landlord", "role_caretaker"],
         )
 
+    def test_verification_tolerates_separator_mixups(self):
+        from users.models import WhatsAppContact
+        from users import whatsapp_bot
+
+        separator_user = self.user_model.objects.create_user(
+            username="separator-landlord@example.com",
+            email="separator-landlord@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        Landlord.objects.create(
+            branch=self.branch,
+            portal_user=separator_user,
+            name="Separator Landlord",
+            id_or_registration_number="SP-445566",
+            phone="254700004411",
+        )
+        wa_id = "254700004411"
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
+            whatsapp_bot.handle_inbound_message(
+                self._message(wa_id, text="sp_445566")
+            )
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNotNone(contact.verified_at)
+
     @override_settings(
         WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",
         WHATSAPP_ACTIVATION_TEMPLATE="account_activation_code",

@@ -214,18 +214,33 @@ def _match_identities(id_number: str):
     """Match an ID to the roles allowed on WhatsApp: tenant, landlord,
     caretaker. Other staff (directors, accountants, officers) are
     deliberately not matched — the channel is gated to these three."""
+    from django.db.models import Q
+
     from users.models import UserProfile
 
     normalised = _normalise_id_number(id_number)
+    # Tolerate separator mix-ups: LL_889900 and LL889900 match LL-889900.
+    variants = {
+        normalised,
+        normalised.replace("_", "-"),
+        normalised.replace("-", "_"),
+    }
+
+    def _match(field):
+        query = Q()
+        for variant in variants:
+            query |= Q(**{f"{field}__iexact": variant})
+        return query
+
     tenant = Tenant.objects.filter(
-        national_id_or_passport__iexact=normalised
+        _match("national_id_or_passport")
     ).order_by("-created_at").first()
     landlord = Landlord.objects.filter(
-        id_or_registration_number__iexact=normalised
+        _match("id_or_registration_number")
     ).order_by("-created_at").first()
     caretaker_user = None
     profile = (
-        UserProfile.objects.filter(id_or_registration_number__iexact=normalised)
+        UserProfile.objects.filter(_match("id_or_registration_number"))
         .select_related("user")
         .first()
     )
@@ -405,6 +420,13 @@ def _show_menu(contact, state):
             "🔧 Caretaker services. What would you like to do?",
             "Caretaker menu",
             rows,
+        )
+        return
+    if contact.tenant is None:
+        send_text(
+            contact.wa_id,
+            "Your account is verified but has no active services on WhatsApp "
+            "yet. Please contact the office for help.",
         )
         return
     rows = [
