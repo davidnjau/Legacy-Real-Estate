@@ -1,6 +1,19 @@
 import { NextResponse } from 'next/server';
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api/v1';
+export function getDjangoApiBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    if (process.env.INTERNAL_API_BASE_URL) return process.env.INTERNAL_API_BASE_URL;
+    if (process.env.DJANGO_API_BASE_URL) return process.env.DJANGO_API_BASE_URL;
+    const pub = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+    if (pub.includes('staging.legacyhomes.live')) {
+      return 'http://core:8000/api/v1';
+    }
+    return pub || 'http://localhost:8000/api/v1';
+  }
+  return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api/v1';
+}
+
+const apiBaseUrl = getDjangoApiBaseUrl();
 
 type ProxyOptions = {
   method?: string;
@@ -29,13 +42,14 @@ export async function forwardDjangoRequest(
   path: string,
   options: ProxyOptions = {},
 ) {
+  const baseUrl = getDjangoApiBaseUrl();
   const method = options.method || request.method;
   const incomingCookie = request.headers.get('cookie') || '';
   let csrfResponse: Response | null = null;
   let csrfToken: string | null = null;
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
-    csrfResponse = await fetch(`${apiBaseUrl}/auth/csrf`, {
+    csrfResponse = await fetch(`${baseUrl}/auth/csrf`, {
       headers: { Cookie: incomingCookie },
       cache: 'no-store',
     });
@@ -56,7 +70,7 @@ export async function forwardDjangoRequest(
   }
   if (csrfToken) headers.set('X-CSRFToken', csrfToken);
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers,
     body: options.formData || (

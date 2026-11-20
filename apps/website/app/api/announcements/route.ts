@@ -1,7 +1,9 @@
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api/v1';
+import { getDjangoApiBaseUrl } from '../../../lib/django-proxy';
+
+const apiBaseUrl = getDjangoApiBaseUrl();
 
 async function backendRequest(path: string, init: RequestInit = {}) {
   const cookieStore = await cookies();

@@ -60,30 +60,41 @@ WHATSAPP_MAX_DELIVERY_ATTEMPTS = int(
     os.environ.get("WHATSAPP_MAX_DELIVERY_ATTEMPTS", "5")
 )
 NCBA_ENVIRONMENT = os.environ.get("NCBA_ENVIRONMENT", "sandbox").strip().lower()
-NCBA_USERNAME = os.environ.get("NCBA_USERNAME", "")
-NCBA_PASSWORD = os.environ.get("NCBA_PASSWORD", "")
-NCBA_SECRET_KEY = os.environ.get("NCBA_SECRET_KEY", "")
-NCBA_PAYBILL_NUMBER = os.environ.get("NCBA_PAYBILL_NUMBER", "")
-NCBA_ACCOUNT_NUMBER = os.environ.get("NCBA_ACCOUNT_NUMBER", "")
+NCBA_USERNAME = os.environ.get("NCBA_USERNAME", "").strip()
+NCBA_PASSWORD = os.environ.get("NCBA_PASSWORD", "").strip()
+NCBA_SECRET_KEY = os.environ.get("NCBA_SECRET_KEY", "").strip()
+NCBA_PAYBILL_NUMBER = (
+    os.environ.get("NCBA_PAYBILL_NUMBER")
+    or os.environ.get("NCBA_PAYBILL")
+    or os.environ.get("PAYBILL_NUMBER")
+    or os.environ.get("MPESA_SHORTCODE")
+    or ""
+).strip()
+NCBA_ACCOUNT_NUMBER = (
+    os.environ.get("NCBA_ACCOUNT_NUMBER")
+    or os.environ.get("NCBA_ACCOUNT")
+    or os.environ.get("ACCOUNT_NUMBER")
+    or ""
+).strip()
 NCBA_BASE_URL = os.environ.get(
     "NCBA_BASE_URL",
     "https://api.ncbagroup.com" if NCBA_ENVIRONMENT == "production" else "https://uat.ncbagroup.com",
-)
+).strip()
 
-MPESA_CONSUMER_KEY = os.environ.get("MPESA_CONSUMER_KEY") or NCBA_USERNAME
+MPESA_CONSUMER_KEY = (os.environ.get("MPESA_CONSUMER_KEY") or NCBA_USERNAME).strip()
 MPESA_CONSUMER_SECRET = (
     os.environ.get("MPESA_CONSUMER_SECRET") or NCBA_SECRET_KEY or NCBA_PASSWORD
-)
-MPESA_SHORTCODE = os.environ.get("MPESA_SHORTCODE") or NCBA_PAYBILL_NUMBER
-MPESA_PASSKEY = os.environ.get("MPESA_PASSKEY") or NCBA_SECRET_KEY
+).strip()
+MPESA_SHORTCODE = (os.environ.get("MPESA_SHORTCODE") or NCBA_PAYBILL_NUMBER).strip()
+MPESA_PASSKEY = (os.environ.get("MPESA_PASSKEY") or NCBA_SECRET_KEY or NCBA_PASSWORD).strip()
 MPESA_BASE_URL = os.environ.get(
     "MPESA_BASE_URL",
     "https://api.safaricom.co.ke"
     if NCBA_ENVIRONMENT == "production"
     else "https://sandbox.safaricom.co.ke",
-)
+).strip()
 MPESA_TIMEOUT_SECONDS = int(os.environ.get("MPESA_TIMEOUT_SECONDS", "30"))
-MPESA_RENT_CALLBACK_URL = os.environ.get("MPESA_RENT_CALLBACK_URL", "")
+MPESA_RENT_CALLBACK_URL = os.environ.get("MPESA_RENT_CALLBACK_URL", "").strip()
 AUTH_LOGIN_MAX_ATTEMPTS = int(os.environ.get("AUTH_LOGIN_MAX_ATTEMPTS", "5"))
 AUTH_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("AUTH_LOGIN_LOCKOUT_SECONDS", "900"))
 SESSION_COOKIE_AGE = int(os.environ.get("AUTH_SESSION_AGE_SECONDS", "28800"))

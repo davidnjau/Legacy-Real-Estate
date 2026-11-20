@@ -341,7 +341,7 @@ export default function TenantDashboardPage() {
     }
 
     setPayStatus('initiating');
-    setPayMessage('Connecting to M-Pesa gateway & sending STK push prompt...');
+    setPayMessage('Sending M-Pesa prompt to your phone...');
 
     try {
       const res = await fetch('/api/tenant/pay-rent', {
@@ -510,49 +510,23 @@ export default function TenantDashboardPage() {
 
       {loadError && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{loadError}</p>}
 
-      {/* M-Pesa Paybill Instructions Banner (SRS Section 06.2) */}
-      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#123b2c] to-[#0a231a] p-6 text-white shadow-md">
-        <div className="flex flex-wrap items-center justify-between gap-6">
+      {/* ============================================================ */}
+      {/*  Pay Rent & Account Overview (Unified M-Pesa Payment Section) */}
+      {/* ============================================================ */}
+      <section id="pay-rent" aria-label="Pay Rent" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-6 p-6 sm:p-7 border-b border-slate-100 bg-gradient-to-r from-emerald-50/60 via-slate-50/30 to-white">
           <div>
-            <span className="rounded-full bg-emerald-400/20 px-2.5 py-0.5 text-xs font-bold text-emerald-300 ring-1 ring-emerald-400/40">
-              Safaricom Daraja Paybill Instructions
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">
+              <Smartphone size={13} className="text-emerald-700" />
+              Rent Payment Hub
             </span>
-            <h2 className="mt-2 text-2xl font-bold tracking-tight">How to Pay Rent via M-Pesa</h2>
-            <p className="mt-1 text-xs text-emerald-100/80">
-              Enter your assigned Unit Code as the Account Number for instant automated reconciliation and SMS receipt.
-            </p>
-
-            <div className="mt-4 flex flex-wrap items-center gap-6">
-              <div className="rounded-xl bg-white/10 px-4 py-2 border border-white/10">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">Business Paybill</p>
-                <p className="font-mono text-xl font-black text-white">{data.tenant.paybill_number || 'Not configured'}</p>
-              </div>
-              <div className="rounded-xl bg-white/10 px-4 py-2 border border-white/10">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">Account No. (Unit Code)</p>
-                <p className="font-mono text-xl font-black text-emerald-300">{data.tenant.unit_code || 'Not linked'}</p>
-              </div>
-            </div>
-          </div>
-
-          <p className="text-sm text-emerald-100">Payments and receipts appear in your account ledger below.</p>
-        </div>
-      </section>
-
-      {/* ============================================================ */}
-      {/*  2. Account Balance Card                                     */}
-      {/* ============================================================ */}
-      <section aria-label="Account balance" className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-slate-500">Current Balance Due</p>
-            <p className={`mt-2 text-4xl font-bold tracking-tight ${indicator.color}`}>
+            <p className="mt-2 text-sm font-medium text-slate-500">Current Balance Due</p>
+            <p className={`mt-1 text-3xl sm:text-4xl font-extrabold tracking-tight ${indicator.color}`}>
               {currency.format(balance)}
             </p>
-          </div>
-          <div className="flex flex-col items-end gap-3">
-            <div className="flex items-center gap-2">
+            <div className="mt-2 flex items-center gap-2">
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold ${
                   balance <= 0
                     ? 'bg-emerald-100 text-emerald-800'
                     : balance < 15000
@@ -560,107 +534,67 @@ export default function TenantDashboardPage() {
                       : 'bg-red-100 text-red-800'
                 }`}
               >
-                <span className={`h-2 w-2 rounded-full ${indicator.bg}`} />
+                <span className={`h-1.5 w-1.5 rounded-full ${indicator.bg}`} />
                 {indicator.label}
               </span>
-              <p className="text-sm text-slate-500">
-                Next due:{' '}
-                <span className="font-semibold text-slate-800">
-                  {formatDate(data.summary.next_due_date)}
-                </span>
-              </p>
+              <span className="text-xs text-slate-500">
+                Next due date: <strong className="text-slate-700">{formatDate(data.summary.next_due_date)}</strong>
+              </span>
             </div>
+          </div>
+
+          <div className="flex flex-col sm:items-end gap-2">
             <button
               type="button"
               onClick={() => handleOpenPayModal(null, balance > 0 ? balance : undefined)}
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800"
+              className="inline-flex items-center justify-center gap-2.5 rounded-xl bg-emerald-600 px-6 py-3.5 text-sm font-bold text-white shadow-md transition hover:bg-emerald-700 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
             >
               <Smartphone size={18} />
-              Pay Rent via M-Pesa
+              <span>Pay Rent</span>
             </button>
+            <p className="text-[11px] text-slate-500">
+              Instant M-Pesa PIN prompt sent to your phone
+            </p>
           </div>
         </div>
-      </section>
 
-      {/* ============================================================ */}
-      {/*  3. M-Pesa Payment Instructions Card                         */}
-      {/* ============================================================ */}
-      <section
-        aria-labelledby="mpesa-heading"
-        className="overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-teal-50/60 to-white p-6 shadow-sm"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
-              <Smartphone size={24} />
-            </div>
-            <div>
-              <h2 id="mpesa-heading" className="text-lg font-bold text-slate-900">
-                Pay via M-Pesa
-              </h2>
-              <p className="text-sm text-slate-600">
-                Fast, secure rent payments via Lipa na M-Pesa Paybill or instant STK push
+        {/* How to Pay Rent via M-Pesa (Process Flow without raw payment details) */}
+        <div className="bg-slate-50/50 p-6 sm:p-7">
+          <div className="flex items-center gap-2 text-slate-900 font-bold text-sm mb-4">
+            <CheckCircle2 size={18} className="text-emerald-600" />
+            <h3 className="text-sm font-bold text-slate-900">How to Pay Rent via M-Pesa</h3>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-2xs">
+              <div className="flex items-center gap-2 text-emerald-800 font-bold text-xs uppercase tracking-wider">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-800 text-xs font-black">1</span>
+                <span>Click Pay Rent</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                Click the <strong>Pay Rent</strong> button above to start. You can choose to pay your outstanding balance or enter a custom amount.
               </p>
             </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => handleOpenPayModal(null, balance > 0 ? balance : undefined)}
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:bg-emerald-800"
-          >
-            <Smartphone size={16} />
-            Trigger STK Push Prompt
-          </button>
-        </div>
 
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <div className="rounded-xl border border-emerald-100 bg-white p-4 shadow-xs">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Paybill Number
-            </span>
-            <p className="mt-1 font-mono text-2xl font-bold tracking-tight text-slate-900">
-              {data.tenant.paybill_number || 'Not configured'}
-            </p>
-          </div>
-          <div className="rounded-xl border border-emerald-100 bg-white p-4 shadow-xs">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Account Number
-            </span>
-            <p className="mt-1 font-mono text-2xl font-bold tracking-tight text-emerald-700">
-              {data.tenant.unit_code || 'Your Unit Code'}
-            </p>
-          </div>
-        </div>
+            <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-2xs">
+              <div className="flex items-center gap-2 text-emerald-800 font-bold text-xs uppercase tracking-wider">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-800 text-xs font-black">2</span>
+                <span>Enter Your Phone Number</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                Enter your Safaricom phone number to receive the prompt. You can use your profile number or enter any other Safaricom line.
+              </p>
+            </div>
 
-        <div className="mt-4 rounded-xl border border-emerald-100/60 bg-white/80 p-4">
-          <p className="mb-2 text-sm font-semibold text-slate-800">Step-by-step instructions:</p>
-          <ol className="list-inside list-decimal space-y-1.5 text-sm text-slate-600">
-            <li>
-              Go to <strong>M-Pesa</strong> on your phone (SIM Toolkit or M-Pesa App)
-            </li>
-            <li>
-              Select <strong>Lipa na M-Pesa</strong> &gt; <strong>Pay Bill</strong>
-            </li>
-            <li>
-              Enter Business Number:{' '}
-              <strong className="font-mono text-slate-900">
-                {data.tenant.paybill_number || 'Not configured'}
-              </strong>
-            </li>
-            <li>
-              Enter Account Number:{' '}
-              <strong className="font-mono text-emerald-700">
-                {data.tenant.unit_code || 'Not linked'}
-              </strong>
-            </li>
-            <li>Enter Amount, confirm with your M-Pesa PIN, and press Send</li>
-          </ol>
-          <div className="mt-3 flex items-start gap-2 rounded-lg bg-emerald-50 p-3">
-            <Info size={16} className="mt-0.5 shrink-0 text-emerald-600" />
-            <p className="text-xs text-emerald-800">
-              Payments reflect within 24 hours. You will receive an SMS confirmation and your receipt
-              will appear in your dashboard.
-            </p>
+            <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-2xs">
+              <div className="flex items-center gap-2 text-emerald-800 font-bold text-xs uppercase tracking-wider">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-800 text-xs font-black">3</span>
+                <span>Enter PIN & Confirm</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                An M-Pesa PIN prompt appears on your phone handset. Enter your secret M-Pesa PIN to complete payment. Your ledger updates automatically.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -732,7 +666,7 @@ export default function TenantDashboardPage() {
                           className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:bg-emerald-800"
                         >
                           <Smartphone size={13} />
-                          Pay
+                          Pay Rent
                         </button>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
@@ -1057,7 +991,7 @@ export default function TenantDashboardPage() {
                 </div>
                 <div>
                   <h3 className="font-bold text-lg leading-tight">Pay Rent with M-Pesa</h3>
-                  <p className="text-xs text-emerald-200">Instant STK push prompt to your phone</p>
+                  <p className="text-xs text-emerald-200">An M-Pesa PIN prompt will be sent directly to your phone</p>
                 </div>
               </div>
               <button
@@ -1202,12 +1136,12 @@ export default function TenantDashboardPage() {
                       ) : (
                         <>
                           <Smartphone size={18} />
-                          <span>Push M-Pesa PIN Prompt</span>
+                          <span>Send M-Pesa PIN Prompt</span>
                         </>
                       )}
                     </button>
                     <p className="mt-2 text-center text-[11px] text-slate-400">
-                      Powered by NCBA Bank & Safaricom Daraja M-Pesa Express.
+                      Secure payment via Safaricom Lipa na M-Pesa.
                     </p>
                   </div>
                 </form>
