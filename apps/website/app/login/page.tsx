@@ -28,6 +28,15 @@ type AuthResponse = {
   recovery_codes?: string[];
 };
 
+function requireJsonResponse(response: Response) {
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+  if (contentType !== 'application/json' && !contentType?.endsWith('+json')) {
+    throw new Error(
+      `The sign-in service returned an unexpected response (HTTP ${response.status}). Please try again or contact support.`,
+    );
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
@@ -44,9 +53,10 @@ export default function LoginPage() {
 
   const getCsrfToken = async () => {
     const response = await fetch('/api/auth/csrf', { cache: 'no-store' });
+    requireJsonResponse(response);
     const payload = await response.json();
     if (!response.ok || !payload.csrfToken) {
-      throw new Error('Unable to prepare a secure sign-in. Please try again.');
+      throw new Error(payload.detail || payload.error || 'Unable to prepare a secure sign-in. Please try again.');
     }
     return payload.csrfToken as string;
   };
@@ -72,6 +82,7 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
         body: JSON.stringify({ identifier, password }),
       });
+      requireJsonResponse(response);
       const payload: AuthResponse = await response.json();
       if (
         response.status === 202
@@ -117,6 +128,7 @@ export default function LoginPage() {
           body: JSON.stringify({ challenge_id: challengeId, code: verificationCode }),
         },
       );
+      requireJsonResponse(response);
       const payload: AuthResponse = await response.json();
       if (!response.ok || !payload.user) {
         throw new Error(payload.detail || payload.error || 'The verification code was invalid or expired.');
