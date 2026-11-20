@@ -608,7 +608,7 @@ def _initiate_stk(contact, state, invoice_id, phone=None):
     _save_state(state)
     send_text(
         contact.wa_id,
-        f"📲 An M-PESA PIN prompt for KES {due:,.2f} has been pushed to {normalized_phone}.\n"
+        f"📲 An M-PESA prompt for KES {due:,.2f} has been pushed to {normalized_phone}.\n"
         "Please enter your PIN on your handset to complete the payment — your confirmation and official receipt will arrive here.",
     )
 
