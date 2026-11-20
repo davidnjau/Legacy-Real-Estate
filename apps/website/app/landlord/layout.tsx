@@ -22,7 +22,7 @@ export default async function LandlordLayout({ children }: { children: React.Rea
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-slate-50 print:block print:h-auto print:overflow-visible">
+    <div className="flex h-dvh flex-col overflow-hidden bg-[#f5f6f4] text-[#172820] print:block print:h-auto print:overflow-visible">
       <div className="print:hidden">
         <PrototypeHeader activeRole="landlord" user={user} />
       </div>

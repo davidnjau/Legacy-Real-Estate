@@ -9,7 +9,7 @@ export default async function TenantLayout({ children }: { children: React.React
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-slate-50">
+    <div className="flex h-dvh flex-col overflow-hidden bg-[#f5f6f4] text-[#172820]">
       <PrototypeHeader activeRole="tenant" user={user} />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
         {/* Sidebar Navigation */}

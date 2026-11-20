@@ -7,11 +7,21 @@ import { Building2, ClipboardCheck, FileText, LayoutDashboard } from 'lucide-rea
 import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
-const landlordItems = [
-  { name: 'Overview', href: '/landlord/dashboard', icon: LayoutDashboard, tourId: 'nav-dashboard' },
-  { name: 'My Properties', href: '/landlord/properties', icon: Building2, tourId: 'nav-properties' },
-  { name: 'Statements & Remittances', href: '/landlord/statements', icon: FileText, tourId: 'nav-statements' },
-  { name: 'Expense Approvals', href: '/landlord/approvals', icon: ClipboardCheck, tourId: 'nav-approvals' },
+const landlordGroups = [
+  {
+    label: 'Portfolio',
+    items: [
+      { name: 'Overview', href: '/landlord/dashboard', icon: LayoutDashboard, tourId: 'nav-dashboard' },
+      { name: 'My Properties', href: '/landlord/properties', icon: Building2, tourId: 'nav-properties' },
+    ],
+  },
+  {
+    label: 'Finance',
+    items: [
+      { name: 'Statements & Remittances', href: '/landlord/statements', icon: FileText, tourId: 'nav-statements' },
+      { name: 'Expense Approvals', href: '/landlord/approvals', icon: ClipboardCheck, tourId: 'nav-approvals' },
+    ],
+  },
 ];
 
 export function Sidebar() {
@@ -20,36 +30,50 @@ export function Sidebar() {
   return (
     <ResponsivePortalSidebar
       label="Landlord navigation"
-      className="bg-[#102820] text-white md:h-full md:border-r md:border-emerald-950/60"
+      desktopWidthClass="md:w-[260px]"
+      surface="light"
+      className="border-r border-[#e6e9e5] bg-white px-4 py-6"
     >
-      <div className="p-5 border-b border-emerald-900/40 shrink-0" data-tour-id="sidebar-header">
-        <div className="flex items-center gap-2.5">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
-            L
-          </span>
-          <h1 className="text-lg font-bold tracking-tight text-white">Legacy Portal</h1>
-        </div>
-        <p className="text-xs text-emerald-200/80 mt-1 font-medium">Property Owner Workspace</p>
+      <div className="mb-6 shrink-0 px-3" data-tour-id="sidebar-header">
+        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#91a095]">Workspace</p>
+        <p className="mt-1 text-xs text-[#8a978e]">Property owner</p>
       </div>
 
-      <nav className="flex-1 px-3 space-y-1.5 mt-4 overflow-y-auto">
-        <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-200/60">My portfolio</p>
-        {landlordItems.map(({ name, href, icon: Icon, tourId }) => {
-          const isActive = pathname === href;
-          return (
-            <Link key={name} href={href} data-tour-id={tourId}
-              aria-current={isActive ? 'page' : undefined}
-              className={`flex items-center gap-3 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
-                isActive ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'text-slate-300 hover:bg-white/10'
-              }`}>
-              <Icon size={16} className={isActive ? 'text-white' : 'text-emerald-300/80'} />
-              <span>{name}</span>
-            </Link>
-          );
-        })}
+      <nav className="flex-1 space-y-5 overflow-y-auto">
+        {landlordGroups.map(({ label, items }) => (
+          <div key={label}>
+            <p className="px-3 pb-2 text-[9px] font-bold uppercase tracking-[0.18em] text-[#a0aaa2]">{label}</p>
+            <div className="space-y-1">
+              {items.map(({ name, href, icon: Icon, tourId }) => {
+                const isActive = pathname === href;
+                return (
+                  <Link
+                    key={name}
+                    href={href}
+                    data-tour-id={tourId}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`group flex items-center gap-3 rounded-xl border px-3 py-2.5 text-[12px] transition ${
+                      isActive
+                        ? 'border-[#e1ebd8] bg-[#f1f6ed] font-bold text-[#234630] shadow-[0_2px_8px_rgba(30,60,40,0.04)]'
+                        : 'border-transparent font-medium text-[#68776d] hover:bg-[#f7f9f6] hover:text-[#234630]'
+                    }`}
+                  >
+                    <Icon
+                      size={16}
+                      strokeWidth={isActive ? 2.2 : 1.8}
+                      className={isActive ? 'text-[#668a4c]' : 'text-[#91a095] transition group-hover:text-[#668a4c]'}
+                    />
+                    <span className="flex-1">{name}</span>
+                    {isActive && <span className="h-1.5 w-1.5 rounded-full bg-[#83a95d]" />}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
-      <div className="p-4 border-t border-emerald-900/40 shrink-0">
+      <div className="mt-auto shrink-0 border-t border-[#e7ece5] pt-4">
         <SignOutButton />
       </div>
     </ResponsivePortalSidebar>

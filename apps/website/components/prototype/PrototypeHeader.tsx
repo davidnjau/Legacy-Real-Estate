@@ -1,8 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { Building2, Home, ShieldCheck, BriefcaseBusiness, LogOut, Sparkles, LayoutGrid } from 'lucide-react';
+import { Building2, LayoutGrid, LogOut } from 'lucide-react';
 import type { DjangoUser } from '../../lib/django-auth';
 
 interface PrototypeHeaderProps {
@@ -11,8 +10,6 @@ interface PrototypeHeaderProps {
 }
 
 export function PrototypeHeader({ activeRole, user }: PrototypeHeaderProps) {
-  const router = useRouter();
-
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
@@ -23,55 +20,64 @@ export function PrototypeHeader({ activeRole, user }: PrototypeHeaderProps) {
     }
   };
 
-  const portalShortcuts = [
-    { key: 'director', label: 'Director', href: '/admin/dashboard' },
-    { key: 'branch-manager', label: 'Manager', href: '/branch-manager/dashboard' },
-    { key: 'accountant', label: 'Finance', href: '/accountant/dashboard' },
-    { key: 'property-officer', label: 'Leasing', href: '/property-officer/dashboard' },
-    { key: 'land-sales', label: 'Land', href: '/land-sales/dashboard' },
-    { key: 'caretaker', label: 'Caretaker', href: '/caretaker/dashboard' },
-    { key: 'landlord', label: 'Landlord', href: '/landlord/dashboard' },
-    { key: 'tenant', label: 'Resident', href: '/tenant/dashboard' },
-    { key: 'buyer', label: 'Buyer', href: '/buyer/dashboard' },
-  ];
+  const roleLabels: Record<string, string> = {
+    staff: 'Agency workspace',
+    landlord: 'Property owner workspace',
+    caretaker: 'Field operations',
+    tenant: 'Resident workspace',
+  };
+  const roleHomePaths: Record<string, string> = {
+    staff: '/staff/dashboard',
+    landlord: '/landlord/dashboard',
+    caretaker: '/caretaker/dashboard',
+    tenant: '/tenant/dashboard',
+  };
 
   return (
-    <header className="sticky top-0 z-40 border-b border-emerald-950/60 bg-[#0d231a] px-4 py-2 text-white shadow-md">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 sm:gap-3">
-        {/* Left: Brand & Active Persona */}
-        <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none sm:gap-3">
-          <Link
-            href="/login"
-            className="flex shrink-0 items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-emerald-300 transition hover:bg-emerald-500/20"
-            title="Return to Portals Switcher"
-          >
-            <LayoutGrid size={13} />
-            <span>Portals</span>
-          </Link>
-
-          <div className="min-w-0 truncate text-[11px] text-emerald-100/90 sm:text-xs">
-            <span className="hidden text-slate-400 sm:inline">Account:{' '}</span>
-            <strong className="inline-block max-w-[44vw] truncate align-bottom text-white sm:max-w-none">
-              {user ? user.name : 'Simulated Persona'}
-            </strong>{' '}
-            {user?.roles?.[0] && (
-              <span className="hidden font-semibold text-emerald-300 sm:inline">({user.roles[0]})</span>
-            )}
-          </div>
+    <header className="sticky top-0 z-40 flex min-h-[72px] shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[#e6e9e5] bg-white/95 px-4 py-3 text-[#172820] shadow-[0_3px_16px_rgba(20,40,31,0.04)] backdrop-blur sm:px-6 lg:px-8">
+      <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+        <Link
+          href={roleHomePaths[activeRole] || '/login'}
+          aria-label="Legacy Real Estate home"
+          className="flex shrink-0 items-center gap-3"
+          title="Go to workspace home"
+        >
+          <span className="grid h-10 w-10 place-items-center rounded-2xl bg-[#163a2e] text-[#c5f06e] shadow-[0_5px_14px_rgba(22,58,46,0.18)]">
+            <Building2 size={20} strokeWidth={1.8} />
+          </span>
+          <span className="hidden sm:block">
+            <span className="block text-[10px] font-bold uppercase tracking-[0.18em] text-[#829087]">Legacy Real Estate</span>
+            <span className="block max-w-[28vw] truncate text-sm font-bold text-[#18372b]">{user?.name || 'Portal workspace'}</span>
+          </span>
+        </Link>
+        <span className="hidden h-8 w-px bg-slate-200 sm:block" />
+        <span className="inline-flex items-center gap-2 rounded-full bg-[#f3f6f2] px-3 py-1.5 text-[11px] font-semibold text-[#466253] sm:text-xs">
+          <span className="h-1.5 w-1.5 rounded-full bg-[#83a95d]" aria-hidden="true" />
+          {roleLabels[activeRole] || activeRole}
+        </span>
+        <div className="min-w-0 sm:hidden">
+          <span className="block max-w-[35vw] truncate text-xs font-bold text-[#18372b]">{user?.name || 'Portal workspace'}</span>
         </div>
+      </div>
 
-        {/* Right: Exit / Sign Out */}
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-red-400/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-200 transition hover:bg-red-500/20 hover:text-white sm:px-3 sm:text-xs"
-            title="Sign out & return to portals page"
-          >
-            <LogOut size={13} />
-            <span>Sign out</span>
-          </button>
-        </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Link
+          href="/login"
+          className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#dfe5df] bg-white px-3 py-2 text-xs font-semibold text-[#385343] transition hover:border-[#cbd8c8] hover:bg-[#f5f8f3]"
+          title="Return to portals"
+        >
+          <LayoutGrid size={15} />
+          <span>Portals</span>
+        </Link>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#f1d8d5] bg-[#fff9f8] px-3 py-2 text-xs font-semibold text-[#9c4d45] transition hover:border-[#e9c2bd] hover:bg-[#fff1ef]"
+          title="Sign out"
+        >
+          <LogOut size={15} />
+          <span>Sign out</span>
+        </button>
       </div>
     </header>
   );

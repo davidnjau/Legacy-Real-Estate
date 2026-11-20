@@ -10,6 +10,7 @@ type ResponsivePortalSidebarProps = {
   className?: string;
   desktopWidthClass?: string;
   fillDesktopHeight?: boolean;
+  surface?: 'dark' | 'light';
 };
 
 export function ResponsivePortalSidebar({
@@ -18,12 +19,14 @@ export function ResponsivePortalSidebar({
   className = '',
   desktopWidthClass = 'md:w-64',
   fillDesktopHeight = false,
+  surface = 'dark',
 }: ResponsivePortalSidebarProps) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const panelId = `portal-nav-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  const isLightSurface = surface === 'light';
   // On desktop the sidebar fills the full height of the portal layout row,
   // stays fixed in place without shrinking, and scrolls internally if links exceed the viewport.
   void fillDesktopHeight;
@@ -117,7 +120,13 @@ export function ResponsivePortalSidebar({
         aria-modal={open ? true : undefined}
         className={`fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(20rem,88vw)] flex-col overflow-y-auto overscroll-contain shadow-2xl transition-transform duration-300 ease-out motion-reduce:transition-none md:static md:z-auto md:flex md:shrink-0 md:translate-x-0 md:flex-col md:overflow-y-auto md:overscroll-contain md:shadow-none ${desktopHeightClass} ${desktopWidthClass} ${open ? 'translate-x-0' : '-translate-x-full'} ${className}`}
       >
-        <div className="flex min-h-14 items-center justify-between border-b border-white/10 px-4 md:hidden">
+        <div
+          className={`flex min-h-14 items-center justify-between border-b px-4 md:hidden ${
+            isLightSurface
+              ? 'border-slate-200 text-slate-800'
+              : 'border-white/10 text-white'
+          }`}
+        >
           <span className="text-sm font-semibold">Navigation</span>
           <button
             type="button"
@@ -126,7 +135,11 @@ export function ResponsivePortalSidebar({
               setOpen(false);
               triggerRef.current?.focus();
             }}
-            className="grid h-11 w-11 place-items-center rounded-xl transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+            className={`grid h-11 w-11 place-items-center rounded-xl transition focus-visible:outline-none focus-visible:ring-2 ${
+              isLightSurface
+                ? 'hover:bg-slate-100 focus-visible:ring-emerald-500'
+                : 'hover:bg-white/10 focus-visible:ring-emerald-400'
+            }`}
           >
             <X size={20} aria-hidden="true" />
           </button>
