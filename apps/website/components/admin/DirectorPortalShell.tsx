@@ -79,8 +79,8 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
 
   return (
     <DirectorPortalContext.Provider value={{ agency, branchId, userName: user?.name || 'Director' }}>
-      <div className="min-h-screen bg-[#f5f6f4] text-[#172820]">
-        <header className="sticky top-0 z-30 flex min-h-[76px] flex-wrap items-center justify-between gap-3 border-b border-[#e6e9e5] bg-white/95 px-4 py-3 shadow-[0_3px_16px_rgba(20,40,31,0.04)] backdrop-blur sm:px-6 lg:px-8">
+      <div className="flex h-dvh flex-col overflow-hidden bg-[#f5f6f4] text-[#172820]">
+        <header className="shrink-0 z-30 flex min-h-[76px] flex-wrap items-center justify-between gap-3 border-b border-[#e6e9e5] bg-white/95 px-4 py-3 shadow-[0_3px_16px_rgba(20,40,31,0.04)] backdrop-blur sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-4">
             <Link href="/admin/dashboard" className="flex shrink-0 items-center gap-3">
               <span className="grid h-11 w-11 place-items-center rounded-2xl bg-[#163a2e] text-[#c5f06e] shadow-[0_5px_14px_rgba(22,58,46,0.18)]">
@@ -117,17 +117,17 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
             <SignOutButton />
           </div>
         </header>
-        <div className="mx-auto flex min-h-[calc(100dvh-4.75rem)] max-w-[1760px] flex-col md:flex-row">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
           <ResponsivePortalSidebar
             label="Director navigation"
             desktopWidthClass="md:w-[260px]"
             className="border-r border-[#e6e9e5] bg-white px-4 py-7"
           >
-            <div className="mb-5 px-3">
+            <div className="mb-5 px-3 shrink-0">
               <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#91a095]">Workspace</p>
               <p className="mt-1 text-xs text-[#8a978e]">{agency?.name || 'Agency administration'}</p>
             </div>
-            <nav className="space-y-1.5">
+            <nav className="flex-1 space-y-1.5 overflow-y-auto">
               {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
                 const active = pathname === href || (href === '/admin/dashboard' && pathname === '/admin');
                 return <Link key={href} href={href} aria-current={active ? 'page' : undefined}
@@ -138,15 +138,17 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
                 </Link>;
               })}
             </nav>
-            <div className="mt-auto rounded-2xl border border-[#e7ece5] bg-[#f8faf7] p-4">
-              <span className="grid h-8 w-8 place-items-center rounded-xl bg-white text-[#638256] shadow-sm"><LockKeyhole size={15} /></span>
-              <p className="mt-3 text-xs font-bold text-[#314b39]">Director access</p>
-              <p className="mt-1 text-[11px] leading-relaxed text-[#839087]">Your agency workspace is secured and access-controlled.</p>
+            <div className="mt-auto shrink-0 pt-4">
+              <div className="rounded-2xl border border-[#e7ece5] bg-[#f8faf7] p-4">
+                <span className="grid h-8 w-8 place-items-center rounded-xl bg-white text-[#638256] shadow-sm"><LockKeyhole size={15} /></span>
+                <p className="mt-3 text-xs font-bold text-[#314b39]">Director access</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-[#839087]">Your agency workspace is secured and access-controlled.</p>
+              </div>
             </div>
           </ResponsivePortalSidebar>
-          <main className="min-w-0 flex-1 overflow-x-hidden">
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
             {error ? <div role="alert" className="m-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div> : children}
-          </main>
+          </div>
         </div>
       </div>
     </DirectorPortalContext.Provider>

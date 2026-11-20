@@ -68,7 +68,7 @@ export function Sidebar() {
       label="Tenant navigation"
       className="bg-[#102820] text-white md:h-full md:border-r md:border-emerald-950/60"
     >
-      <div className="p-5 border-b border-emerald-900/40">
+      <div className="p-5 border-b border-emerald-900/40 shrink-0">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
             L
@@ -97,7 +97,7 @@ export function Sidebar() {
         </Link>
       </nav>
 
-      <div className="p-4 border-t border-emerald-900/40">
+      <div className="p-4 border-t border-emerald-900/40 shrink-0">
         <button 
           onClick={handleLogout}
           className="flex items-center gap-2.5 px-3 py-2 w-full text-left rounded-xl hover:bg-red-500/15 transition-colors text-red-300 text-xs font-semibold"

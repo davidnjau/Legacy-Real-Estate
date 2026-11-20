@@ -46,6 +46,7 @@ from users.access import accessible_branches
 from users.arrears import arrears_for_accessible_invoices, invoice_arrears
 from users.audit import record_audit_event
 from users.billing import generate_monthly_invoice, month_end, water_reading_status
+from users import daraja
 from users.email import email_delivery_is_configured, send_email
 from users.legacy_imports import import_legacy_data
 from users.models import (
@@ -100,6 +101,7 @@ from users.models import (
     PropertyUnitTypeUtility,
     PropertyViewing,
     Receipt,
+    RentStkRequest,
     SMSLoginChallenge,
     StaffActivationChallenge,
     Tenancy,
@@ -18869,3 +18871,264 @@ def publish_announcement(request, announcement_id):
         new_values=_announcement_payload(announcement),
     )
     return JsonResponse({"announcement": _announcement_payload(announcement)})
+
+
+@csrf_exempt
+@require_POST
+def tenant_rent_stk_payment(request):
+    if not request.user.is_authenticated:
+        return _problem(
+            401,
+            "Authentication required",
+            "Sign in first.",
+            "authentication-required",
+        )
+    if not _has_role(request.user, TENANT_PORTAL_ROLE):
+        return _problem(
+            403,
+            "Permission denied",
+            "Tenant portal access is required.",
+            "tenant-portal-access-denied",
+        )
+
+    tenant = Tenant.objects.filter(portal_user=request.user).first()
+    if tenant is None:
+        return _problem(
+            404,
+            "Tenant record not found",
+            "No tenant record is linked to this account.",
+            "tenant-record-not-found",
+        )
+
+    body = _json_body(request)
+    if body is None:
+        return _problem(
+            400, "Invalid request", "Expected a JSON object.", "invalid-request"
+        )
+
+    phone = body.get("phone")
+    if not phone or not isinstance(phone, str) or not phone.strip():
+        phone = tenant.phone
+    if not phone:
+        return _problem(
+            400,
+            "Phone number required",
+            "A Safaricom phone number is required to receive the M-Pesa prompt.",
+            "phone-required",
+        )
+
+    try:
+        normalized_phone = daraja.normalize_ke_phone(phone)
+    except ValueError as exc:
+        return _problem(400, "Invalid phone number", str(exc), "invalid-phone")
+
+    invoice_id = body.get("invoiceId")
+    invoice = None
+    if invoice_id:
+        try:
+            invoice = Invoice.objects.filter(
+                pk=int(invoice_id),
+                tenancy__tenant=tenant,
+                status=Invoice.STATUS_ISSUED,
+            ).first()
+        except (TypeError, ValueError):
+            return _problem(
+                400, "Invalid invoice", "Invalid invoice ID.", "invalid-invoice"
+            )
+        if invoice is None:
+            return _problem(
+                404,
+                "Invoice not found",
+                "The invoice was not found or is not outstanding.",
+                "invoice-not-found",
+            )
+    else:
+        invoices = Invoice.objects.filter(
+            tenancy__tenant=tenant,
+            status=Invoice.STATUS_ISSUED,
+        ).order_by("due_date", "id")
+        today = timezone.localdate()
+        for inv in invoices:
+            paid = (
+                PaymentAllocation.objects.filter(invoice=inv)
+                .exclude(
+                    payment__instrument_status__in=(
+                        Payment.INSTRUMENT_PENDING,
+                        Payment.INSTRUMENT_BOUNCED,
+                    )
+                )
+                .aggregate(total=models.Sum("amount"))["total"]
+                or Decimal("0.00")
+            )
+            waived = (
+                ArrearsWaiver.objects.filter(
+                    invoice=inv,
+                    approved_at__date__lte=today,
+                ).aggregate(total=models.Sum("amount"))["total"]
+                or Decimal("0.00")
+            )
+            arrears = invoice_arrears(
+                inv, today, allocated_amount=paid, waiver_amount=waived
+            )
+            if arrears["total_due"] > Decimal("0.00"):
+                invoice = inv
+                break
+        if invoice is None:
+            # Fall back to latest issued invoice or first invoice
+            invoice = (
+                Invoice.objects.filter(
+                    tenancy__tenant=tenant,
+                    status=Invoice.STATUS_ISSUED,
+                )
+                .order_by("-period_start", "-id")
+                .first()
+            )
+        if invoice is None:
+            return _problem(
+                400,
+                "No invoice available",
+                "You have no invoices linked to this tenant account.",
+                "no-invoices",
+            )
+
+    amount = body.get("amount")
+    if amount is not None:
+        try:
+            amount = Decimal(str(amount))
+        except (InvalidOperation, TypeError, ValueError):
+            return _problem(
+                400,
+                "Invalid amount",
+                "A valid payment amount is required.",
+                "invalid-amount",
+            )
+        if not amount.is_finite() or amount <= 0:
+            return _problem(
+                400,
+                "Invalid amount",
+                "Payment amount must be greater than zero.",
+                "invalid-amount",
+            )
+    else:
+        today = timezone.localdate()
+        paid = (
+            PaymentAllocation.objects.filter(invoice=invoice)
+            .exclude(
+                payment__instrument_status__in=(
+                    Payment.INSTRUMENT_PENDING,
+                    Payment.INSTRUMENT_BOUNCED,
+                )
+            )
+            .aggregate(total=models.Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        waived = (
+            ArrearsWaiver.objects.filter(
+                invoice=invoice,
+                approved_at__date__lte=today,
+            ).aggregate(total=models.Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        arrears = invoice_arrears(
+            invoice, today, allocated_amount=paid, waiver_amount=waived
+        )
+        amount = arrears["total_due"]
+        if amount <= Decimal("0.00"):
+            amount = invoice.total
+
+    amount = amount.quantize(Decimal("1"))
+
+    try:
+        result = daraja.stk_push(
+            normalized_phone,
+            amount,
+            invoice.number,
+            "Rent Payment",
+        )
+    except Exception as exc:
+        logger.exception("Rent STK push failed for tenant %s: %s", tenant.pk, exc)
+        return _problem(
+            502,
+            "Payment push failed",
+            f"Unable to trigger M-Pesa prompt: {exc}",
+            "stk-push-failed",
+        )
+
+    RentStkRequest.objects.create(
+        invoice=invoice,
+        tenant=tenant,
+        contact=None,
+        amount=amount,
+        phone=normalized_phone,
+        checkout_request_id=result["checkout_request_id"],
+        merchant_request_id=result.get("merchant_request_id", ""),
+    )
+
+    record_audit_event(
+        request,
+        "payment.rent_stk_initiated",
+        "RentStkRequest",
+        new_values={
+            "tenant_id": tenant.pk,
+            "invoice_id": invoice.pk,
+            "amount": str(amount),
+            "phone": normalized_phone,
+            "checkout_request_id": result["checkout_request_id"],
+        },
+    )
+
+    return JsonResponse(
+        {
+            "success": True,
+            "checkoutRequestId": result["checkout_request_id"],
+            "invoiceNumber": invoice.number,
+            "invoiceId": invoice.pk,
+            "amount": str(amount),
+            "phone": normalized_phone,
+            "message": f"M-Pesa payment prompt sent to {normalized_phone}. Enter your PIN on your phone to complete.",
+        },
+        status=201,
+    )
+
+
+def tenant_rent_stk_status(request, checkout_request_id):
+    if not request.user.is_authenticated:
+        return _problem(
+            401,
+            "Authentication required",
+            "Sign in first.",
+            "authentication-required",
+        )
+    tenant = Tenant.objects.filter(portal_user=request.user).first()
+    if tenant is None:
+        return _problem(
+            404,
+            "Tenant not found",
+            "No tenant record is linked to this account.",
+            "tenant-not-found",
+        )
+
+    stk_request = RentStkRequest.objects.filter(
+        checkout_request_id=checkout_request_id,
+        tenant=tenant,
+    ).first()
+    if stk_request is None:
+        return _problem(
+            404,
+            "STK request not found",
+            "The payment request was not found.",
+            "stk-request-not-found",
+        )
+
+    return JsonResponse({
+        "status": stk_request.status,
+        "resultCode": stk_request.result_code,
+        "resultDescription": stk_request.result_description,
+        "paymentId": stk_request.payment_id,
+        "amount": str(stk_request.amount),
+        "processedAt": (
+            stk_request.processed_at.isoformat()
+            if stk_request.processed_at
+            else None
+        ),
+    })

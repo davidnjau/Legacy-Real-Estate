@@ -539,19 +539,27 @@ def _start_pay_flow(contact, state):
 def _confirm_payment(contact, state, invoice_id):
     for invoice, due in _outstanding_invoices(contact.tenant):
         if invoice.pk == invoice_id:
-            state.state = {"flow": "pay", "step": "confirm", "invoice_id": invoice_id}
+            state.state = {
+                "flow": "pay",
+                "step": "awaiting_phone",
+                "invoice_id": invoice_id,
+            }
             _save_state(state)
+            candidate = contact.tenant.phone or contact.wa_id
             send_buttons(
                 contact.wa_id,
-                f"Pay KES {due:,.2f} for invoice {invoice.number} via M-PESA? "
-                "The prompt will appear on this phone.",
-                [(f"stk_{invoice_id}", "Pay now"), ("pay_cancel", "Cancel")],
+                f"💳 *Pay Rent via M-PESA*\n\n"
+                f"Invoice: {invoice.number}\n"
+                f"Amount Due: KES {due:,.2f}\n\n"
+                f"• Tap *Pay this number* to receive the M-PESA prompt on {candidate}\n"
+                f"• Or reply with a Safaricom phone number (e.g. 0712345678) to send the prompt to another line.",
+                [(f"stk_{invoice_id}", "Pay this number"), ("pay_cancel", "Cancel")],
             )
             return
     send_text(contact.wa_id, "That invoice is no longer outstanding.")
 
 
-def _initiate_stk(contact, state, invoice_id):
+def _initiate_stk(contact, state, invoice_id, phone=None):
     match = [
         (invoice, due)
         for invoice, due in _outstanding_invoices(contact.tenant)
@@ -562,18 +570,28 @@ def _initiate_stk(contact, state, invoice_id):
         return
     invoice, due = match[0]
     amount = due.quantize(Decimal("1"))
+    target_phone = phone or contact.tenant.phone or contact.wa_id
+    try:
+        normalized_phone = daraja.normalize_ke_phone(target_phone)
+    except ValueError as exc:
+        send_text(
+            contact.wa_id,
+            f"⚠️ {exc}\nPlease reply with a valid Kenyan Safaricom phone number (e.g. 0712345678).",
+        )
+        return
+
     try:
         result = daraja.stk_push(
-            contact.wa_id,
+            normalized_phone,
             amount,
             invoice.number,
             "Rent",
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Rent STK push could not be initiated.")
         send_buttons(
             contact.wa_id,
-            "The M-PESA request could not be started. Try again?",
+            f"The M-PESA request could not be started: {exc}\nWould you like to try again?",
             [(f"stk_{invoice_id}", "Try again"), ("pay_cancel", "Cancel")],
         )
         return
@@ -582,7 +600,7 @@ def _initiate_stk(contact, state, invoice_id):
         tenant=contact.tenant,
         contact=contact,
         amount=due,
-        phone=contact.wa_id,
+        phone=normalized_phone,
         checkout_request_id=result["checkout_request_id"],
         merchant_request_id=result["merchant_request_id"],
     )
@@ -590,8 +608,8 @@ def _initiate_stk(contact, state, invoice_id):
     _save_state(state)
     send_text(
         contact.wa_id,
-        f"📲 An M-PESA prompt for KES {due:,.2f} is on its way to this phone. "
-        "Enter your PIN to complete the payment — your receipt will arrive here.",
+        f"📲 An M-PESA PIN prompt for KES {due:,.2f} has been pushed to {normalized_phone}.\n"
+        "Please enter your PIN on your handset to complete the payment — your confirmation and official receipt will arrive here.",
     )
 
 
@@ -614,7 +632,11 @@ def _send_payment_receipt_email(tenant, reference, amount):
 
 
 def _complete_rent_payment(stk_request, receipt_number, paid_amount):
-    from users.sms import queue_template_sms, sms_backend_is_configured
+    from users.sms import (
+        dispatch_next_sms_delivery,
+        queue_template_sms,
+        sms_backend_is_configured,
+    )
     from users.views import _ensure_payment_receipt
 
     tenant = stk_request.tenant
@@ -655,9 +677,29 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
                     "agency_name": tenant.branch.agency.name,
                 },
             )
+            try:
+                dispatch_next_sms_delivery()
+            except Exception:
+                pass
         except Exception:
             logger.exception("Receipt SMS could not be queued.")
     _send_payment_receipt_email(tenant, receipt_number, paid_amount)
+
+    if stk_request.contact:
+        try:
+            send_text(
+                stk_request.contact.wa_id,
+                f"✅ *Payment Received & Confirmed!*\n\n"
+                f"Receipt No: *{receipt_number}*\n"
+                f"Amount: *KES {paid_amount:,.2f}*\n"
+                f"Invoice: *{invoice.number}*\n"
+                f"Tenant: *{tenant.name}*\n\n"
+                f"Your rent payment has been applied and your ledger is up to date.\n"
+                f"Thank you for choosing {tenant.branch.agency.name}!",
+            )
+        except Exception:
+            logger.exception("WhatsApp payment confirmation message failed.")
+
     AuditLog.objects.create(
         user=None,
         action="payment.rent_stk_completed",
@@ -666,7 +708,7 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
             "payment_id": payment.pk,
             "invoice_id": invoice.pk,
             "amount": str(paid_amount),
-            "source": "whatsapp_stk",
+            "source": "whatsapp_stk" if stk_request.contact else "web_portal_stk",
         },
     )
 
@@ -1150,6 +1192,11 @@ def _route_message(contact, state, message: dict) -> None:
     if choice.startswith("stk_"):
         _initiate_stk(contact, state, int(choice.removeprefix("stk_")))
         return
+    if flow == "pay" and step == "awaiting_phone" and text:
+        inv_id = state.state.get("invoice_id")
+        if inv_id:
+            _initiate_stk(contact, state, int(inv_id), phone=text.strip())
+            return
     if choice == "pay_cancel":
         _show_menu(contact, state)
         return
@@ -1256,12 +1303,13 @@ def receive_rent_stk_callback(request):
             ])
 
     if result_code != 0:
-        send_text(
-            stk_request.phone,
-            "❌ The M-PESA payment was not completed "
-            f"({callback.get('ResultDesc', 'cancelled')}). "
-            "Reply *pay* to try again.",
-        )
+        if stk_request.contact:
+            send_text(
+                stk_request.contact.wa_id,
+                "❌ The M-PESA payment was not completed "
+                f"({callback.get('ResultDesc', 'cancelled')}). "
+                "Reply *pay* to try again.",
+            )
         return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
 
     items = {

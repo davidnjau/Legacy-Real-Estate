@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { ClipboardCheck, Droplets, LayoutDashboard, Wrench } from 'lucide-react';
+import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 const navItems = [
@@ -49,7 +50,7 @@ export function CaretakerSidebar() {
       fillDesktopHeight
       className="border-emerald-950/60 bg-[#102820] text-white md:border-r"
     >
-      <div className="border-b border-emerald-900/40 p-5">
+      <div className="border-b border-emerald-900/40 p-5 shrink-0">
         <div className="flex items-center gap-2.5">
           <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-sm font-black text-[#102820]">
             L
@@ -82,6 +83,10 @@ export function CaretakerSidebar() {
           );
         })}
       </nav>
+
+      <div className="border-t border-emerald-900/40 p-4 shrink-0">
+        <SignOutButton />
+      </div>
     </ResponsivePortalSidebar>
   );
 }

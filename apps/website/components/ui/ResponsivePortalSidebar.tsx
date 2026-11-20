@@ -24,9 +24,10 @@ export function ResponsivePortalSidebar({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const panelId = `portal-nav-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
-  const desktopHeightClass = fillDesktopHeight
-    ? 'md:h-full md:max-h-full'
-    : 'md:h-auto md:max-h-[calc(100dvh-4.75rem)]';
+  // On desktop the sidebar fills the full height of the portal layout row,
+  // stays fixed in place without shrinking, and scrolls internally if links exceed the viewport.
+  void fillDesktopHeight;
+  const desktopHeightClass = 'md:h-full md:min-h-full';
 
   useEffect(() => {
     setOpen(false);
@@ -114,7 +115,7 @@ export function ResponsivePortalSidebar({
         aria-label={label}
         role={open ? 'dialog' : undefined}
         aria-modal={open ? true : undefined}
-        className={`fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(20rem,88vw)] flex-col overflow-y-auto overscroll-contain shadow-2xl transition-transform duration-300 ease-out motion-reduce:transition-none md:static md:z-auto md:translate-x-0 md:shadow-none ${desktopHeightClass} ${desktopWidthClass} ${open ? 'translate-x-0' : '-translate-x-full'} ${className}`}
+        className={`fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(20rem,88vw)] flex-col overflow-y-auto overscroll-contain shadow-2xl transition-transform duration-300 ease-out motion-reduce:transition-none md:static md:z-auto md:flex md:shrink-0 md:translate-x-0 md:flex-col md:overflow-y-auto md:overscroll-contain md:shadow-none ${desktopHeightClass} ${desktopWidthClass} ${open ? 'translate-x-0' : '-translate-x-full'} ${className}`}
       >
         <div className="flex min-h-14 items-center justify-between border-b border-white/10 px-4 md:hidden">
           <span className="text-sm font-semibold">Navigation</span>

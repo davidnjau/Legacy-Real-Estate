@@ -3,17 +3,21 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
+  AlertCircle,
   CalendarDays,
+  CheckCircle2,
   ChevronRight,
   ClipboardList,
   Home,
   Info,
+  Loader2,
   Megaphone,
   Receipt,
   RefreshCw,
   Smartphone,
   UserCircle,
   Wrench,
+  X,
 } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -270,6 +274,156 @@ export default function TenantDashboardPage() {
     }
   }
 
+  // M-Pesa STK Push Payment State
+  const [payModalOpen, setPayModalOpen] = useState(false);
+  const [payInvoiceId, setPayInvoiceId] = useState<number | null>(null);
+  const [payAmount, setPayAmount] = useState('');
+  const [payPhone, setPayPhone] = useState('');
+  const [payStatus, setPayStatus] = useState<
+    'idle' | 'initiating' | 'pending' | 'success' | 'failed'
+  >('idle');
+  const [payMessage, setPayMessage] = useState('');
+  const [, setCheckoutRequestId] = useState<string | null>(null);
+  const [pollingTimer, setPollingTimer] = useState<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollingTimer) clearInterval(pollingTimer);
+    };
+  }, [pollingTimer]);
+
+  const handleOpenPayModal = (
+    invoiceId?: number | null,
+    defaultAmount?: number
+  ) => {
+    if (pollingTimer) {
+      clearInterval(pollingTimer);
+      setPollingTimer(null);
+    }
+    setPayInvoiceId(invoiceId ?? null);
+    if (defaultAmount !== undefined && defaultAmount > 0) {
+      setPayAmount(String(defaultAmount));
+    } else if (dashboard && Number(dashboard.summary.balance_due) > 0) {
+      setPayAmount(dashboard.summary.balance_due);
+    } else {
+      setPayAmount('');
+    }
+    setPayPhone(dashboard?.tenant.phone || '');
+    setPayStatus('idle');
+    setPayMessage('');
+    setCheckoutRequestId(null);
+    setPayModalOpen(true);
+  };
+
+  const handleClosePayModal = () => {
+    if (pollingTimer) {
+      clearInterval(pollingTimer);
+      setPollingTimer(null);
+    }
+    setPayModalOpen(false);
+    if (payStatus === 'success') {
+      void loadDashboard();
+    }
+  };
+
+  const handleInitiatePay = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!payPhone.trim()) {
+      setPayMessage('Please enter a Safaricom phone number.');
+      setPayStatus('failed');
+      return;
+    }
+    const numAmount = Number(payAmount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      setPayMessage('Please enter a valid payment amount greater than zero.');
+      setPayStatus('failed');
+      return;
+    }
+
+    setPayStatus('initiating');
+    setPayMessage('Connecting to M-Pesa gateway & sending STK push prompt...');
+
+    try {
+      const res = await fetch('/api/tenant/pay-rent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: payPhone.trim(),
+          amount: payAmount,
+          invoiceId: payInvoiceId || undefined,
+        }),
+      });
+
+      const resData = await res.json();
+      if (!res.ok) {
+        throw new Error(
+          resData.detail ||
+            resData.error ||
+            'Failed to initiate M-Pesa payment prompt.'
+        );
+      }
+
+      const reqId = resData.checkoutRequestId;
+      setCheckoutRequestId(reqId);
+      setPayStatus('pending');
+      setPayMessage(
+        resData.message ||
+          'M-Pesa PIN prompt sent to your phone! Please enter your PIN.'
+      );
+
+      let elapsedSeconds = 0;
+      const timer = setInterval(async () => {
+        elapsedSeconds += 3;
+        if (elapsedSeconds > 60) {
+          clearInterval(timer);
+          setPollingTimer(null);
+          setPayStatus('failed');
+          setPayMessage(
+            'Payment verification timed out. If you entered your PIN, it may take a minute to reflect in your ledger.'
+          );
+          return;
+        }
+
+        try {
+          const statusRes = await fetch(
+            `/api/tenant/pay-rent/status/${encodeURIComponent(reqId)}`
+          );
+          if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            if (statusData.status === 'succeeded') {
+              clearInterval(timer);
+              setPollingTimer(null);
+              setPayStatus('success');
+              setPayMessage(
+                'Payment received and confirmed! Your ledger and receipt have been updated.'
+              );
+              void loadDashboard();
+            } else if (statusData.status === 'failed') {
+              clearInterval(timer);
+              setPollingTimer(null);
+              setPayStatus('failed');
+              setPayMessage(
+                statusData.resultDescription ||
+                  'M-Pesa payment was cancelled or declined.'
+              );
+            }
+          }
+        } catch {
+          // ignore transient polling errors
+        }
+      }, 3000);
+
+      setPollingTimer(timer);
+    } catch (err) {
+      setPayStatus('failed');
+      setPayMessage(
+        err instanceof Error
+          ? err.message
+          : 'Unable to send M-Pesa prompt.'
+      );
+    }
+  };
+
   if (loading && !dashboard) {
     return <p className="p-8 text-slate-500">Loading your tenant account…</p>;
   }
@@ -395,25 +549,35 @@ export default function TenantDashboardPage() {
               {currency.format(balance)}
             </p>
           </div>
-          <div className="flex flex-col items-end gap-2">
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
-                balance <= 0
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : balance < 15000
-                    ? 'bg-amber-100 text-amber-800'
-                    : 'bg-red-100 text-red-800'
-              }`}
-            >
-              <span className={`h-2 w-2 rounded-full ${indicator.bg}`} />
-              {indicator.label}
-            </span>
-            <p className="text-sm text-slate-500">
-              Next due:{' '}
-              <span className="font-semibold text-slate-800">
-                {formatDate(data.summary.next_due_date)}
+          <div className="flex flex-col items-end gap-3">
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                  balance <= 0
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : balance < 15000
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-red-100 text-red-800'
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${indicator.bg}`} />
+                {indicator.label}
               </span>
-            </p>
+              <p className="text-sm text-slate-500">
+                Next due:{' '}
+                <span className="font-semibold text-slate-800">
+                  {formatDate(data.summary.next_due_date)}
+                </span>
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenPayModal(null, balance > 0 ? balance : undefined)}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 active:bg-emerald-800"
+            >
+              <Smartphone size={18} />
+              Pay Rent via M-Pesa
+            </button>
           </div>
         </div>
       </section>
@@ -425,18 +589,28 @@ export default function TenantDashboardPage() {
         aria-labelledby="mpesa-heading"
         className="overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-teal-50/60 to-white p-6 shadow-sm"
       >
-        <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
-            <Smartphone size={24} />
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
+              <Smartphone size={24} />
+            </div>
+            <div>
+              <h2 id="mpesa-heading" className="text-lg font-bold text-slate-900">
+                Pay via M-Pesa
+              </h2>
+              <p className="text-sm text-slate-600">
+                Fast, secure rent payments via Lipa na M-Pesa Paybill or instant STK push
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 id="mpesa-heading" className="text-lg font-bold text-slate-900">
-              Pay via M-Pesa
-            </h2>
-            <p className="text-sm text-slate-600">
-              Fast, secure rent payments via Lipa na M-Pesa Paybill
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => handleOpenPayModal(null, balance > 0 ? balance : undefined)}
+            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:bg-emerald-800"
+          >
+            <Smartphone size={16} />
+            Trigger STK Push Prompt
+          </button>
         </div>
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -515,6 +689,7 @@ export default function TenantDashboardPage() {
                   <th className="px-5 py-3 font-semibold text-slate-600">Waiver</th>
                   <th className="px-5 py-3 font-semibold text-slate-600">Status</th>
                   <th className="px-5 py-3 font-semibold text-slate-600">Line Items</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -548,6 +723,23 @@ export default function TenantDashboardPage() {
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">
                       {inv.lines.map((l) => l.description).join(', ')}
+                    </td>
+                    <td className="px-5 py-4">
+                      {inv.status !== 'settled' && Number(inv.balance_due) > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPayModal(inv.id, Number(inv.balance_due))}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:bg-emerald-800"
+                        >
+                          <Smartphone size={13} />
+                          Pay
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                          <CheckCircle2 size={13} />
+                          Paid
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -850,6 +1042,180 @@ export default function TenantDashboardPage() {
           <ChevronRight size={20} className="text-slate-300 transition group-hover:text-emerald-500" />
         </Link>
       </section>
+
+      {/* ============================================================ */}
+      {/*  9. M-Pesa STK Push Payment Modal                            */}
+      {/* ============================================================ */}
+      {payModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl transition-all">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-emerald-800 to-teal-900 px-6 py-4 text-white">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/30 text-emerald-300 ring-1 ring-emerald-400/40">
+                  <Smartphone size={20} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg leading-tight">Pay Rent with M-Pesa</h3>
+                  <p className="text-xs text-emerald-200">Instant STK push prompt to your phone</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleClosePayModal}
+                disabled={payStatus === 'initiating'}
+                className="rounded-lg p-1.5 text-emerald-200 transition hover:bg-white/10 hover:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6">
+              {payStatus === 'success' ? (
+                <div className="flex flex-col items-center py-4 text-center">
+                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                    <CheckCircle2 size={36} />
+                  </div>
+                  <h4 className="text-xl font-bold text-slate-900">Payment Confirmed!</h4>
+                  <p className="mt-2 text-sm text-slate-600 max-w-sm">
+                    {payMessage ||
+                      'Your M-Pesa payment was successfully processed and allocated to your rent account.'}
+                  </p>
+                  <div className="mt-4 rounded-xl bg-emerald-50 border border-emerald-100 px-4 py-2.5 text-xs text-emerald-800">
+                    An SMS confirmation has been queued and your ledger has been updated.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleClosePayModal}
+                    className="mt-6 w-full rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : payStatus === 'pending' ? (
+                <div className="flex flex-col items-center py-4 text-center">
+                  <div className="relative mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                    <Smartphone size={38} className="animate-pulse" />
+                    <span className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-white text-xs">
+                      <Loader2 size={14} className="animate-spin" />
+                    </span>
+                  </div>
+                  <h4 className="text-xl font-bold text-slate-900">M-Pesa Prompt Sent!</h4>
+                  <p className="mt-2 text-sm text-slate-600 max-w-sm">
+                    Check your phone screen (<strong>{payPhone}</strong>) and enter your M-Pesa PIN to complete payment of{' '}
+                    <strong>{currency.format(Number(payAmount) || 0)}</strong>.
+                  </p>
+                  <div className="mt-5 flex items-center justify-center gap-2 text-xs text-slate-500">
+                    <Loader2 size={16} className="animate-spin text-emerald-600" />
+                    <span>Waiting for your PIN confirmation on Safaricom M-Pesa...</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleClosePayModal}
+                    className="mt-6 text-xs font-semibold text-slate-500 underline hover:text-slate-800"
+                  >
+                    Dismiss (payment will update automatically in background)
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleInitiatePay} className="space-y-4">
+                  {payMessage && payStatus === 'failed' && (
+                    <div className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+                      <AlertCircle size={16} className="mt-0.5 shrink-0 text-red-600" />
+                      <span>{payMessage}</span>
+                    </div>
+                  )}
+
+                  {payInvoiceId ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-xs text-slate-600">
+                      Paying for Invoice #{data.invoices.find((i) => i.id === payInvoiceId)?.number || payInvoiceId}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-xs text-emerald-900 flex items-center justify-between">
+                      <span>
+                        Account Balance: <strong>{currency.format(balance)}</strong>
+                      </span>
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-700 bg-white/80 px-2 py-0.5 rounded-md border border-emerald-200">
+                        Unit: {data.tenant.unit_code}
+                      </span>
+                    </div>
+                  )}
+
+                  <div>
+                    <label
+                      htmlFor="pay-phone"
+                      className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1"
+                    >
+                      Safaricom Phone Number
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="pay-phone"
+                        type="tel"
+                        required
+                        placeholder="0712345678"
+                        value={payPhone}
+                        onChange={(e) => setPayPhone(e.target.value)}
+                        className="w-full rounded-xl border border-slate-300 px-4 py-2.5 font-mono text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Enter the Safaricom line that will receive the M-Pesa PIN prompt (e.g. 07XXXXXXXX or 2547XXXXXXXX).
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="pay-amount"
+                      className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1"
+                    >
+                      Amount to Pay (KES)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-2.5 font-bold text-sm text-slate-400">KES</span>
+                      <input
+                        id="pay-amount"
+                        type="number"
+                        min="1"
+                        step="1"
+                        required
+                        placeholder="e.g. 25000"
+                        value={payAmount}
+                        onChange={(e) => setPayAmount(e.target.value)}
+                        className="w-full rounded-xl border border-slate-300 pl-14 pr-4 py-2.5 font-mono text-sm font-bold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      type="submit"
+                      disabled={payStatus === 'initiating'}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-md transition hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50"
+                    >
+                      {payStatus === 'initiating' ? (
+                        <>
+                          <Loader2 size={18} className="animate-spin" />
+                          <span>Sending Prompt...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Smartphone size={18} />
+                          <span>Push M-Pesa PIN Prompt</span>
+                        </>
+                      )}
+                    </button>
+                    <p className="mt-2 text-center text-[11px] text-slate-400">
+                      Powered by NCBA Bank & Safaricom Daraja M-Pesa Express.
+                    </p>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

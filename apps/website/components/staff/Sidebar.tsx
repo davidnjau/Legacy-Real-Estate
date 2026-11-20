@@ -52,8 +52,8 @@ export function StaffSidebar({ userRole = 'Operations Staff' }: StaffSidebarProp
   };
 
   return (
-    <ResponsivePortalSidebar label="Staff navigation" className="bg-[#102820] text-white">
-      <div className="flex items-center justify-between border-b border-emerald-900/50 p-5">
+    <ResponsivePortalSidebar label="Staff navigation" className="bg-[#102820] text-white md:border-r md:border-emerald-950/60">
+      <div className="flex items-center justify-between border-b border-emerald-900/50 p-5 shrink-0">
         <div>
           <div className="flex items-center gap-2">
             <span className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-400 text-[#102820] font-black text-sm">
@@ -99,7 +99,7 @@ export function StaffSidebar({ userRole = 'Operations Staff' }: StaffSidebarProp
         })}
       </nav>
 
-      <div className="border-t border-emerald-900/50 p-4">
+      <div className="border-t border-emerald-900/50 p-4 shrink-0">
         <button
           type="button"
           onClick={handleLogout}
