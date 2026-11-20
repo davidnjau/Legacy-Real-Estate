@@ -14,13 +14,12 @@ import json
 import logging
 import uuid
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Sum
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -40,7 +39,14 @@ from users.models import (
     RentStkRequest,
     Tenancy,
     Tenant,
+    TenantCredit,
     WhatsAppContact,
+)
+from users.payment_allocations import (
+    apply_tenant_credit,
+    available_tenant_credit,
+    invoice_outstanding_amount,
+    lock_tenant_invoice,
 )
 from users.object_storage import upload_private_object
 from users.roles import CARETAKER_ROLE, has_role
@@ -454,24 +460,9 @@ def _outstanding_invoices(tenant):
             status=Invoice.STATUS_ISSUED,
         ).order_by("-period_start", "-id")[:12]
     )
-    allocated = {
-        row["invoice_id"]: row["total"] or zero
-        for row in PaymentAllocation.objects.filter(
-            invoice_id__in=[invoice.pk for invoice in invoices],
-        )
-        .exclude(
-            payment__instrument_status__in=(
-                Payment.INSTRUMENT_PENDING,
-                Payment.INSTRUMENT_BOUNCED,
-            )
-        )
-        .values("invoice_id")
-        .annotate(total=Sum("amount"))
-        .values("invoice_id", "total")
-    }
     outstanding = []
     for invoice in invoices:
-        due = invoice.total - allocated.get(invoice.pk, zero)
+        due = invoice_outstanding_amount(invoice)
         if due > zero:
             outstanding.append((invoice, due))
     return outstanding
@@ -517,22 +508,86 @@ def _start_pay_flow(contact, state):
         return
     outstanding = _outstanding_invoices(contact.tenant)
     if not outstanding:
-        send_text(contact.wa_id, "🎉 You are fully paid up — nothing to pay.")
+        credit = available_tenant_credit(contact.tenant)
+        message = "🎉 You are fully paid up — nothing to pay."
+        if credit > 0:
+            message += f"\nYour available rent credit is KES {credit:,.2f}."
+        send_text(contact.wa_id, message)
         return
-    state.state = {"flow": "pay", "step": "choose_invoice"}
-    _save_state(state)
-    send_list(
-        contact.wa_id,
-        "💳 Which invoice would you like to pay?",
-        "Pick an invoice",
-        [
-            (
-                f"inv_{invoice.pk}",
-                f"{invoice.number}"[:24],
-                f"{invoice.period_start.strftime('%b %Y')} · KES {due:,.2f}",
+
+    invoice, due = outstanding[0]
+    credit = available_tenant_credit(contact.tenant)
+    if credit >= due:
+        with transaction.atomic():
+            invoice = lock_tenant_invoice(contact.tenant_id, invoice.pk)
+            credit_applied, remaining_due = apply_tenant_credit(invoice)
+        if remaining_due <= 0:
+            state.state = {"flow": "menu"}
+            _save_state(state)
+            send_text(
+                contact.wa_id,
+                f"✅ Your rent credit of KES {credit_applied:,.2f} has covered "
+                f"the latest outstanding invoice ({invoice.number}). "
+                "No M-PESA payment is needed.",
             )
-            for invoice, due in outstanding[:10]
-        ],
+            return
+        due = remaining_due
+        credit = Decimal("0.00")
+
+    amount_due = due - credit
+    amount_due = amount_due.to_integral_value(rounding=ROUND_CEILING)
+    state.state = {
+        "flow": "pay",
+        "step": "awaiting_phone",
+        "invoice_id": invoice.pk,
+    }
+    _save_state(state)
+    send_text(
+        contact.wa_id,
+        f"💳 *Pay Rent via M-PESA*\n\n"
+        f"Your latest outstanding invoice is *{invoice.number}*.\n"
+        f"Amount to pay after available rent credit: *KES {amount_due:,.0f}*.\n\n"
+        "Reply with the Safaricom phone number that should receive the "
+        "M-PESA PIN prompt (e.g. 0712345678). Enter your PIN on the M-PESA "
+        "prompt—not in this chat. I’ll send your confirmation and receipt here "
+        "after payment succeeds. Reply *cancel* to stop.",
+    )
+
+
+def _prompt_payment_amount(contact, state, invoice_id, phone):
+    match = next(
+        (
+            (invoice, due)
+            for invoice, due in _outstanding_invoices(contact.tenant)
+            if invoice.pk == invoice_id
+        ),
+        None,
+    )
+    if match is None:
+        send_text(contact.wa_id, "That invoice is no longer outstanding.")
+        return
+    invoice, due = match
+    credit = available_tenant_credit(contact.tenant)
+    amount_due = max(due - credit, Decimal("0.00")).to_integral_value(
+        rounding=ROUND_CEILING
+    )
+    state.state = {
+        "flow": "pay",
+        "step": "awaiting_amount",
+        "invoice_id": invoice_id,
+        "phone": phone,
+    }
+    _save_state(state)
+    send_text(
+        contact.wa_id,
+        f"Your latest outstanding invoice is *{invoice.number}*. "
+        f"Available rent credit: *KES {credit:,.2f}*.\n"
+        f"Reply *FULL* to pay the remaining *KES {amount_due:,.0f}*, or reply "
+        "with the amount you want to pay in whole shillings. You may pay "
+        "partially or pay extra; any amount above the invoice balance will "
+        "remain as rent credit.\n\n"
+        "I’ll send the M-PESA PIN prompt to the number you provided. "
+        "Reply *cancel* to stop.",
     )
 
 
@@ -545,21 +600,22 @@ def _confirm_payment(contact, state, invoice_id):
                 "invoice_id": invoice_id,
             }
             _save_state(state)
-            candidate = contact.tenant.phone or contact.wa_id
-            send_buttons(
+            send_text(
                 contact.wa_id,
                 f"💳 *Pay Rent via M-PESA*\n\n"
                 f"Invoice: {invoice.number}\n"
                 f"Amount Due: KES {due:,.2f}\n\n"
-                f"• Tap *Pay this number* to receive the M-PESA prompt on {candidate}\n"
-                f"• Or reply with a Safaricom phone number (e.g. 0712345678) to send the prompt to another line.",
-                [(f"stk_{invoice_id}", "Pay this number"), ("pay_cancel", "Cancel")],
+                "Reply with the Safaricom phone number that should receive the "
+                "M-PESA PIN prompt (e.g. 0712345678). After the prompt arrives, "
+                "enter your PIN in the M-PESA prompt—not in this chat. "
+                "I’ll send your confirmation and receipt here after payment succeeds. "
+                "Reply *cancel* to stop.",
             )
             return
     send_text(contact.wa_id, "That invoice is no longer outstanding.")
 
 
-def _initiate_stk(contact, state, invoice_id, phone=None):
+def _initiate_stk(contact, state, invoice_id, phone, amount_text):
     match = [
         (invoice, due)
         for invoice, due in _outstanding_invoices(contact.tenant)
@@ -569,10 +625,56 @@ def _initiate_stk(contact, state, invoice_id, phone=None):
         send_text(contact.wa_id, "That invoice is no longer outstanding.")
         return
     invoice, due = match[0]
-    amount = due.quantize(Decimal("1"))
-    target_phone = phone or contact.tenant.phone or contact.wa_id
+    credit = available_tenant_credit(contact.tenant)
+    amount_due = max(due - credit, Decimal("0.00"))
+    if amount_text.strip().lower() in {"full", "full amount", "all"}:
+        amount = amount_due.to_integral_value(rounding=ROUND_CEILING)
+    else:
+        try:
+            amount = Decimal(amount_text.strip())
+        except (InvalidOperation, TypeError, ValueError):
+            send_text(
+                contact.wa_id,
+                "Enter a whole-shilling amount (for example 15000) or reply "
+                "*FULL* for the remaining invoice balance.",
+            )
+            return
+        if (
+            not amount.is_finite()
+            or amount < 0
+            or amount != amount.to_integral_value()
+            or (amount == 0 and amount_due > 0)
+        ):
+            send_text(
+                contact.wa_id,
+                "Enter a positive whole-shilling amount, or reply *FULL* for "
+                "the remaining invoice balance.",
+            )
+            return
+
+    if amount == 0:
+        with transaction.atomic():
+            invoice = lock_tenant_invoice(contact.tenant_id, invoice.pk)
+            credit_applied, remaining_due = apply_tenant_credit(invoice)
+        if remaining_due <= 0:
+            state.state = {"flow": "menu"}
+            _save_state(state)
+            send_text(
+                contact.wa_id,
+                f"✅ Your rent credit of KES {credit_applied:,.2f} has covered "
+                f"the latest outstanding invoice ({invoice.number}). "
+                "No M-PESA payment is needed.",
+            )
+            return
+        send_text(
+            contact.wa_id,
+            "Your available credit no longer covers the invoice. Reply *FULL* "
+            "or enter an amount to continue.",
+        )
+        return
+
     try:
-        normalized_phone = daraja.normalize_ke_phone(target_phone)
+        normalized_phone = daraja.normalize_ke_phone(phone)
     except ValueError as exc:
         send_text(
             contact.wa_id,
@@ -587,19 +689,19 @@ def _initiate_stk(contact, state, invoice_id, phone=None):
             invoice.number,
             "Rent",
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Rent STK push could not be initiated.")
-        send_buttons(
+        send_text(
             contact.wa_id,
-            f"The M-PESA request could not be started: {exc}\nWould you like to try again?",
-            [(f"stk_{invoice_id}", "Try again"), ("pay_cancel", "Cancel")],
+            "The M-PESA prompt could not be started. Reply *FULL* or enter "
+            "the amount again to retry, or reply *cancel* to stop.",
         )
         return
     RentStkRequest.objects.create(
         invoice=invoice,
         tenant=contact.tenant,
         contact=contact,
-        amount=due,
+        amount=amount,
         phone=normalized_phone,
         checkout_request_id=result["checkout_request_id"],
         merchant_request_id=result["merchant_request_id"],
@@ -608,7 +710,7 @@ def _initiate_stk(contact, state, invoice_id, phone=None):
     _save_state(state)
     send_text(
         contact.wa_id,
-        f"📲 An M-PESA prompt for KES {due:,.2f} has been pushed to {normalized_phone}.\n"
+        f"📲 An M-PESA prompt for KES {amount:,.0f} has been pushed to {normalized_phone}.\n"
         "Please enter your PIN on your handset to complete the payment — your confirmation and official receipt will arrive here.",
     )
 
@@ -641,7 +743,14 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
 
     tenant = stk_request.tenant
     invoice = stk_request.invoice
+    credit_applied = Decimal("0.00")
+    new_credit = Decimal("0.00")
     with transaction.atomic():
+        invoice = lock_tenant_invoice(tenant.pk, invoice.pk)
+        credit_applied, outstanding = apply_tenant_credit(invoice)
+
+        allocated_amount = min(paid_amount, outstanding)
+        new_credit = paid_amount - allocated_amount
         payment = Payment.objects.create(
             tenant=tenant,
             amount=paid_amount,
@@ -650,19 +759,35 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
             account_reference=invoice.number,
             payer_phone=stk_request.phone,
             received_at=timezone.now(),
-            status=Payment.STATUS_ALLOCATED,
-            allocated_amount=paid_amount,
+            status=(
+                Payment.STATUS_CREDIT
+                if allocated_amount == 0
+                else Payment.STATUS_PARTIALLY_ALLOCATED
+                if new_credit
+                else Payment.STATUS_ALLOCATED
+            ),
+            allocated_amount=allocated_amount,
+            credit_amount=new_credit,
         )
-        PaymentAllocation.objects.create(
-            payment=payment,
-            invoice=invoice,
-            amount=paid_amount,
-        )
+        if allocated_amount:
+            PaymentAllocation.objects.create(
+                payment=payment,
+                invoice=invoice,
+                amount=allocated_amount,
+            )
+        if new_credit:
+            TenantCredit.objects.create(
+                tenant=tenant,
+                payment=payment,
+                amount=new_credit,
+                remaining_amount=new_credit,
+            )
         stk_request.status = RentStkRequest.STATUS_SUCCEEDED
+        stk_request.result_code = "0"
         stk_request.payment = payment
         stk_request.processed_at = timezone.now()
         stk_request.save(update_fields=[
-            "status", "payment", "processed_at", "updated_at",
+            "status", "result_code", "payment", "processed_at", "updated_at",
         ])
     # Receipt record + WhatsApp template fan-out (Phase 1 wiring)
     _ensure_payment_receipt(payment)
@@ -687,15 +812,28 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
 
     if stk_request.contact:
         try:
-            send_text(
-                stk_request.contact.wa_id,
+            confirmation = (
                 f"✅ *Payment Received & Confirmed!*\n\n"
                 f"Receipt No: *{receipt_number}*\n"
                 f"Amount: *KES {paid_amount:,.2f}*\n"
                 f"Invoice: *{invoice.number}*\n"
+            )
+            if credit_applied:
+                confirmation += (
+                    f"Rent credit applied: *KES {credit_applied:,.2f}*\n"
+                )
+            if new_credit:
+                confirmation += (
+                    f"Credit carried forward: *KES {new_credit:,.2f}*\n"
+                )
+            confirmation += (
                 f"Tenant: *{tenant.name}*\n\n"
-                f"Your rent payment has been applied and your ledger is up to date.\n"
-                f"Thank you for choosing {tenant.branch.agency.name}!",
+                "Your rent payment has been recorded and your ledger is up to date.\n"
+                f"Thank you for choosing {tenant.branch.agency.name}!"
+            )
+            send_text(
+                stk_request.contact.wa_id,
+                confirmation,
             )
         except Exception:
             logger.exception("WhatsApp payment confirmation message failed.")
@@ -708,6 +846,9 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
             "payment_id": payment.pk,
             "invoice_id": invoice.pk,
             "amount": str(paid_amount),
+            "allocated_amount": str(allocated_amount),
+            "credit_applied": str(credit_applied),
+            "credit_amount": str(new_credit),
             "source": "whatsapp_stk" if stk_request.contact else "web_portal_stk",
         },
     )
@@ -1065,20 +1206,25 @@ def _issue_submit(contact, state):
     )
     state.state = {"flow": "menu"}
     _save_state(state)
-    photo_count = len(draft.get("photos", []))
+    photo_count = len(ticket.photos)
+    photo_summary = (
+        "No photos attached"
+        if photo_count == 0
+        else f"{photo_count} photo{'s' if photo_count != 1 else ''} attached"
+    )
     description_preview = description[:200] + ("…" if len(description) > 200 else "")
     send_text(
         contact.wa_id,
-        "✅ Your maintenance request has been submitted successfully.\n\n"
-        "📋 Here is what we received:\n"
+        "✅ Thanks — your maintenance request has been logged for review.\n\n"
+        "📋 Request summary:\n"
         f"• Ticket: #{ticket.pk}\n"
-        f"• Property: {ticket.property.name}, unit {tenancy.unit.code}\n"
+        f"• Location: {ticket.property.name}, unit {tenancy.unit.code}\n"
         f"• Category: {ticket.get_category_display()}\n"
         f"• Priority: {ticket.get_priority_display()}\n"
-        f"• Description: {description_preview}\n"
-        f"• Photos: {photo_count}\n\n"
-        "The caretaker will be in touch. We'll update you here once it "
-        "has been attended to.",
+        f"• Issue: {description_preview}\n"
+        f"• Photos: {photo_summary}\n\n"
+        "Our property team will review it and coordinate the next steps. "
+        "Keep the ticket number for reference.",
     )
 
 
@@ -1189,13 +1335,30 @@ def _route_message(contact, state, message: dict) -> None:
     if choice.startswith("inv_") and flow == "pay":
         _confirm_payment(contact, state, int(choice.removeprefix("inv_")))
         return
-    if choice.startswith("stk_"):
-        _initiate_stk(contact, state, int(choice.removeprefix("stk_")))
+    if choice.startswith("stk_") and flow == "pay":
+        _confirm_payment(contact, state, int(choice.removeprefix("stk_")))
         return
     if flow == "pay" and step == "awaiting_phone" and text:
         inv_id = state.state.get("invoice_id")
         if inv_id:
-            _initiate_stk(contact, state, int(inv_id), phone=text.strip())
+            try:
+                phone = daraja.normalize_ke_phone(text.strip())
+            except ValueError as exc:
+                send_text(contact.wa_id, f"⚠️ {exc}\nPlease enter a valid Safaricom number.")
+                return
+            _prompt_payment_amount(contact, state, int(inv_id), phone)
+            return
+    if flow == "pay" and step == "awaiting_amount" and text:
+        inv_id = state.state.get("invoice_id")
+        phone = state.state.get("phone")
+        if inv_id and phone:
+            _initiate_stk(
+                contact,
+                state,
+                int(inv_id),
+                phone,
+                amount_text=text,
+            )
             return
     if choice == "pay_cancel":
         _show_menu(contact, state)
@@ -1276,9 +1439,38 @@ def receive_rent_stk_callback(request):
         payload = json.loads(request.body)
         callback = payload["Body"]["stkCallback"]
         checkout_request_id = callback["CheckoutRequestID"]
-        result_code = callback["ResultCode"]
-    except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError):
+        result_code = int(callback["ResultCode"])
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError, ValueError):
         return JsonResponse({"error": "Invalid callback payload."}, status=400)
+
+    callback_items = {}
+    callback_receipt = ""
+    callback_amount = Decimal("0")
+    callback_phone = ""
+    validation_error = ""
+    callback_merchant_request_id = str(
+        callback.get("MerchantRequestID", "")
+    ).strip()
+    if result_code == 0:
+        try:
+            callback_items = {
+                item["Name"]: item["Value"]
+                for item in callback["CallbackMetadata"]["Item"]
+            }
+            callback_amount = Decimal(str(callback_items["Amount"]))
+            callback_receipt = str(callback_items["MpesaReceiptNumber"]).strip()
+            callback_phone = daraja.normalize_ke_phone(
+                str(callback_items["PhoneNumber"])
+            )
+            if not callback_amount.is_finite() or not callback_receipt:
+                validation_error = "M-PESA success callback is missing valid payment details."
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            InvalidOperation,
+        ):
+            validation_error = "M-PESA success callback is missing valid payment details."
 
     with transaction.atomic():
         stk_request = (
@@ -1286,6 +1478,7 @@ def receive_rent_stk_callback(request):
             .filter(
                 checkout_request_id=checkout_request_id,
                 status=RentStkRequest.STATUS_PENDING,
+                result_code="",
             )
             .select_related("tenant__branch__agency", "invoice")
             .first()
@@ -1301,6 +1494,31 @@ def receive_rent_stk_callback(request):
             stk_request.save(update_fields=[
                 "status", "result_code", "result_description", "processed_at", "updated_at",
             ])
+        elif (
+            validation_error
+            or callback_amount != stk_request.amount
+            or callback_phone != stk_request.phone
+            or (
+                stk_request.merchant_request_id
+                and callback_merchant_request_id != stk_request.merchant_request_id
+            )
+        ):
+            stk_request.status = RentStkRequest.STATUS_FAILED
+            stk_request.result_code = "callback_mismatch"
+            stk_request.result_description = (
+                validation_error
+                or "M-PESA success details did not match the pending payment request."
+            )
+            stk_request.processed_at = timezone.now()
+            stk_request.save(update_fields=[
+                "status", "result_code", "result_description", "processed_at", "updated_at",
+            ])
+        else:
+            stk_request.result_code = "processing"
+            stk_request.result_description = str(callback.get("ResultDesc", ""))[:500]
+            stk_request.save(update_fields=[
+                "result_code", "result_description", "updated_at",
+            ])
 
     if result_code != 0:
         if stk_request.contact:
@@ -1312,17 +1530,42 @@ def receive_rent_stk_callback(request):
             )
         return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
 
-    items = {
-        item.get("Name"): item.get("Value")
-        for item in callback.get("CallbackMetadata", {}).get("Item", [])
-    }
-    receipt_number = str(items.get("MpesaReceiptNumber", "")) or checkout_request_id
-    paid_amount = Decimal(str(items.get("Amount", stk_request.amount)))
+    if stk_request.result_code == "callback_mismatch":
+        if stk_request.contact:
+            send_text(
+                stk_request.contact.wa_id,
+                "⚠️ M-PESA reported a payment, but we could not verify its details, "
+                "so your ledger has not been updated yet. If money was deducted, "
+                "please do not retry; contact management with your M-PESA receipt.",
+            )
+        return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
+
     try:
-        _complete_rent_payment(stk_request, receipt_number, paid_amount)
+        _complete_rent_payment(stk_request, callback_receipt, callback_amount)
     except Exception:
         logger.exception(
             "Rent STK callback %s could not be completed.", checkout_request_id
         )
+        stk_request.refresh_from_db()
+        if stk_request.status != RentStkRequest.STATUS_SUCCEEDED:
+            RentStkRequest.objects.filter(
+                pk=stk_request.pk,
+                status=RentStkRequest.STATUS_PENDING,
+                result_code="processing",
+            ).update(
+                status=RentStkRequest.STATUS_FAILED,
+                result_code="callback_processing",
+                result_description=(
+                    "M-PESA reported payment, but recording it failed. If money was "
+                    "deducted, do not retry; contact management."
+                ),
+                processed_at=timezone.now(),
+            )
+        if stk_request.contact and stk_request.status != RentStkRequest.STATUS_SUCCEEDED:
+            send_text(
+                stk_request.contact.wa_id,
+                "⚠️ M-PESA reported a payment, but we could not finish recording it. "
+                "If money was deducted, please do not retry; contact management.",
+            )
         return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
     return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})

@@ -175,8 +175,11 @@ Read flows call the existing endpoints with the identity resolved from
    `MaintenanceTicket` via the same service used by
    `POST /api/v1/tenant/maintenance-tickets/create` — property/unit derived
    from the tenancy, photos already attached, source recorded as `whatsapp`.
-7. Confirmation: "🔧 Ticket {{ticket_ref}} created. The caretaker will be in
-   touch. Reply *status* anytime."
+7. Confirmation reports that the request was logged for review and includes
+   the ticket number, property and unit, category, priority, issue summary, and
+   the number of photos attached (or that no photos were attached). The tenant
+   is asked to keep the ticket number for reference; the message does not
+   promise that a caretaker has already been assigned.
 8. **Thread bridging**: ticket comments (`/maintenance-tickets/<id>/comments`)
    flow both ways — staff portal comments are queued to WhatsApp (template if
    outside the 24h window); tenant replies while a ticket is open append to

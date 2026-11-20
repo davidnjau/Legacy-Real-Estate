@@ -68,7 +68,12 @@ type TenantDashboard = {
     move_in_date: string | null;
     notice_period_days: number | null;
   };
-  summary: { balance_due: string; next_due_date: string | null };
+  summary: {
+    balance_due: string;
+    credit_balance: string;
+    net_balance_due: string;
+    next_due_date: string | null;
+  };
   invoices: DashboardInvoice[];
   payments: DashboardPayment[];
   deposit: {
@@ -303,12 +308,26 @@ export default function TenantDashboardPage() {
     setPayInvoiceId(invoiceId ?? null);
     if (defaultAmount !== undefined && defaultAmount > 0) {
       setPayAmount(String(defaultAmount));
-    } else if (dashboard && Number(dashboard.summary.balance_due) > 0) {
-      setPayAmount(dashboard.summary.balance_due);
+    } else if (dashboard) {
+      const selectedDue = invoiceId
+        ? Number(
+            dashboard.invoices.find((invoice) => invoice.id === invoiceId)?.balance_due ??
+              defaultAmount ??
+              0,
+          )
+        : Number(dashboard.summary.balance_due);
+      setPayAmount(
+        String(
+          Math.max(
+            selectedDue - Number(dashboard.summary.credit_balance || 0),
+            0,
+          ),
+        ),
+      );
     } else {
       setPayAmount('');
     }
-    setPayPhone(dashboard?.tenant.phone || '');
+    setPayPhone('');
     setPayStatus('idle');
     setPayMessage('');
     setCheckoutRequestId(null);
@@ -328,14 +347,28 @@ export default function TenantDashboardPage() {
 
   const handleInitiatePay = async (e: FormEvent) => {
     e.preventDefault();
-    if (!payPhone.trim()) {
-      setPayMessage('Please enter a Safaricom phone number.');
+    const numAmount = Number(payAmount);
+    const invoiceDue = payInvoiceId
+      ? Number(
+          dashboard?.invoices.find((invoice) => invoice.id === payInvoiceId)?.balance_due ?? 0,
+        )
+      : Number(dashboard?.summary.balance_due ?? 0);
+    const availableCredit = Number(dashboard?.summary.credit_balance ?? 0);
+    const remainingAfterCredit = Math.max(invoiceDue - availableCredit, 0);
+    if (
+      !payAmount.trim() ||
+      !Number.isFinite(numAmount) ||
+      numAmount < 0 ||
+      (numAmount === 0 && remainingAfterCredit > 0)
+    ) {
+      setPayMessage(
+        'Enter a positive amount, or use available credit to cover the full invoice.',
+      );
       setPayStatus('failed');
       return;
     }
-    const numAmount = Number(payAmount);
-    if (isNaN(numAmount) || numAmount <= 0) {
-      setPayMessage('Please enter a valid payment amount greater than zero.');
+    if (numAmount > 0 && !payPhone.trim()) {
+      setPayMessage('Please enter a Safaricom phone number.');
       setPayStatus('failed');
       return;
     }
@@ -361,6 +394,15 @@ export default function TenantDashboardPage() {
             resData.error ||
             'Failed to initiate M-Pesa payment prompt.'
         );
+      }
+
+      if (resData.paymentCoveredByCredit) {
+        setPayStatus('success');
+        setPayMessage(
+          resData.message || 'Available rent credit covered this invoice.',
+        );
+        void loadDashboard();
+        return;
       }
 
       const reqId = resData.checkoutRequestId;
@@ -440,7 +482,12 @@ export default function TenantDashboardPage() {
   }
   const data = dashboard;
   const balance = Number(data.summary.balance_due);
-  const indicator = balanceIndicator(balance);
+  const creditBalance = Number(data.summary.credit_balance || 0);
+  const netBalance = Number(data.summary.net_balance_due || 0);
+  const firstOutstandingInvoice = data.invoices.find(
+    (invoice) => Number(invoice.balance_due) > 0,
+  );
+  const indicator = balanceIndicator(netBalance);
   const selectedMoveOutTenancy = moveOutContext?.tenancies.find(
     (tenancy) => tenancy.id === selectedMoveOutTenancyId,
   ) ?? (moveOutContext
@@ -527,9 +574,9 @@ export default function TenantDashboardPage() {
             <div className="mt-2 flex items-center gap-2">
               <span
                 className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold ${
-                  balance <= 0
+                  netBalance <= 0
                     ? 'bg-emerald-100 text-emerald-800'
-                    : balance < 15000
+                    : netBalance < 15000
                       ? 'bg-amber-100 text-amber-800'
                       : 'bg-red-100 text-red-800'
                 }`}
@@ -541,19 +588,37 @@ export default function TenantDashboardPage() {
                 Next due date: <strong className="text-slate-700">{formatDate(data.summary.next_due_date)}</strong>
               </span>
             </div>
+            <p className="mt-2 text-xs text-slate-600">
+              Available rent credit:{" "}
+              <strong className="text-emerald-700">{currency.format(creditBalance)}</strong>
+              <span className="mx-1.5">·</span>
+              Balance after credit:{" "}
+              <strong className="text-slate-800">{currency.format(netBalance)}</strong>
+            </p>
           </div>
 
           <div className="flex flex-col sm:items-end gap-2">
             <button
               type="button"
-              onClick={() => handleOpenPayModal(null, balance > 0 ? balance : undefined)}
-              className="inline-flex items-center justify-center gap-2.5 rounded-xl bg-emerald-600 px-6 py-3.5 text-sm font-bold text-white shadow-md transition hover:bg-emerald-700 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
+              onClick={() => {
+                if (firstOutstandingInvoice) {
+                  handleOpenPayModal(
+                    firstOutstandingInvoice.id,
+                    Math.max(
+                      Number(firstOutstandingInvoice.balance_due) - creditBalance,
+                      0,
+                    ),
+                  );
+                }
+              }}
+              disabled={!firstOutstandingInvoice}
+              className="inline-flex items-center justify-center gap-2.5 rounded-xl bg-emerald-600 px-6 py-3.5 text-sm font-bold text-white shadow-md transition hover:bg-emerald-700 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:opacity-50"
             >
               <Smartphone size={18} />
               <span>Pay Rent</span>
             </button>
             <p className="text-[11px] text-slate-500">
-              Instant M-Pesa PIN prompt sent to your phone
+              Choose a full or partial amount and enter the Safaricom number
             </p>
           </div>
         </div>
@@ -572,7 +637,7 @@ export default function TenantDashboardPage() {
                 <span>Click Pay Rent</span>
               </div>
               <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                Click the <strong>Pay Rent</strong> button above to start. You can choose to pay your outstanding balance or enter a custom amount.
+                Click <strong>Pay Rent</strong> to pay the latest outstanding invoice after rent credit. You can pay the full balance, a partial amount, or extra; excess becomes credit.
               </p>
             </div>
 
@@ -662,7 +727,12 @@ export default function TenantDashboardPage() {
                       {inv.status !== 'settled' && Number(inv.balance_due) > 0 ? (
                         <button
                           type="button"
-                          onClick={() => handleOpenPayModal(inv.id, Number(inv.balance_due))}
+                          onClick={() =>
+                            handleOpenPayModal(
+                              inv.id,
+                              Math.max(Number(inv.balance_due) - creditBalance, 0),
+                            )
+                          }
                           className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:bg-emerald-800"
                         >
                           <Smartphone size={13} />
@@ -1063,7 +1133,12 @@ export default function TenantDashboardPage() {
 
                   {payInvoiceId ? (
                     <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-xs text-slate-600">
-                      Paying for Invoice #{data.invoices.find((i) => i.id === payInvoiceId)?.number || payInvoiceId}
+                      <p>
+                        Paying for Invoice #{data.invoices.find((i) => i.id === payInvoiceId)?.number || payInvoiceId}
+                      </p>
+                      <p className="mt-1">
+                        Available rent credit: <strong>{currency.format(creditBalance)}</strong>
+                      </p>
                     </div>
                   ) : (
                     <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-xs text-emerald-900 flex items-center justify-between">
@@ -1087,7 +1162,7 @@ export default function TenantDashboardPage() {
                       <input
                         id="pay-phone"
                         type="tel"
-                        required
+                        required={Number(payAmount) > 0}
                         placeholder="0712345678"
                         value={payPhone}
                         onChange={(e) => setPayPhone(e.target.value)}
@@ -1100,18 +1175,38 @@ export default function TenantDashboardPage() {
                   </div>
 
                   <div>
-                    <label
-                      htmlFor="pay-amount"
-                      className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1"
-                    >
-                      Amount to Pay (KES)
-                    </label>
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <label
+                        htmlFor="pay-amount"
+                        className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1"
+                      >
+                        Amount to Pay (KES)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const selectedDue = payInvoiceId
+                            ? Number(
+                                data.invoices.find(
+                                  (invoice) => invoice.id === payInvoiceId,
+                                )?.balance_due ?? 0,
+                              )
+                            : balance;
+                          setPayAmount(
+                            String(Math.max(selectedDue - creditBalance, 0)),
+                          );
+                        }}
+                        className="text-[11px] font-semibold text-emerald-700 underline"
+                      >
+                        Use full amount
+                      </button>
+                    </div>
                     <div className="relative">
                       <span className="absolute left-3.5 top-2.5 font-bold text-sm text-slate-400">KES</span>
                       <input
                         id="pay-amount"
                         type="number"
-                        min="1"
+                        min="0"
                         step="1"
                         required
                         placeholder="e.g. 25000"
@@ -1120,6 +1215,9 @@ export default function TenantDashboardPage() {
                         className="w-full rounded-xl border border-slate-300 pl-14 pr-4 py-2.5 font-mono text-sm font-bold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
                       />
                     </div>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Available rent credit applies to this invoice. Enter a partial or full payment; any excess after the invoice is settled stays as credit.
+                    </p>
                   </div>
 
                   <div className="pt-2">

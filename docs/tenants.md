@@ -70,6 +70,31 @@ deposit ledger movements, and any move-out refund settlement status from these
 PostgreSQL records; it does not substitute sample records when an API request
 fails.
 
+## Rent STK payments
+
+The tenant portal and WhatsApp rent-payment flows use Safaricom Daraja STK Push.
+Configure `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`, `MPESA_SHORTCODE`,
+`MPESA_PASSKEY`, and `MPESA_BASE_URL` in the core service environment. The
+credentials must be issued for the Daraja app and shortcode; NCBA banking
+username, password, secret key, and account number are not substitutes.
+`MPESA_BASE_URL` defaults to the Safaricom sandbox URL. Use the production URL
+only after the Daraja app and shortcode are approved for live payments.
+
+The callback must be reachable over HTTPS from Safaricom. Set
+`MPESA_RENT_CALLBACK_URL` explicitly, or set `PUBLIC_SITE_URL` so the app can
+derive `/api/v1/payments/mpesa/rent-stk-callback`. Successful callbacks are
+matched to the pending STK request, merchant request, amount, payer phone, and
+invoice before recording the payment, allocation, and receipt. Tenants enter
+the number for each portal payment. WhatsApp automatically targets the latest
+outstanding invoice, asks for the Safaricom number, then asks whether to pay
+the full remaining balance or a custom whole-shilling amount. The portal also
+shows available rent credit and allows full, partial, or extra payments.
+Available tenant credit reduces the suggested full-payment amount and is
+allocated to the selected invoice; any payment amount beyond its remaining
+balance is recorded as credit for a later invoice. Confirmed payments queue an
+SMS receipt to the tenant's registered phone. Sandbox tests simulate payments;
+production payments debit real funds and are not automatically refunded.
+
 ## Legacy data import
 
 Property Officers register property profiles first; registration stores the

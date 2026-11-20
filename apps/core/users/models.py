@@ -3613,7 +3613,7 @@ class ConversationState(models.Model):
 
 
 class RentStkRequest(models.Model):
-    """An STK push initiated from WhatsApp against a specific invoice."""
+    """A tenant STK push against a specific invoice."""
 
     STATUS_PENDING = "pending"
     STATUS_SUCCEEDED = "succeeded"

@@ -1,4 +1,4 @@
-"""Minimal Safaricom Daraja and NCBA client for STK push rent payments."""
+"""Minimal Safaricom Daraja client for STK push rent payments."""
 
 import base64
 import json
@@ -84,7 +84,7 @@ def _access_token() -> str:
 def stk_push(phone: str, amount, account_reference: str, description: str) -> dict:
     """Initiate an STK push; returns CheckoutRequestID/MerchantRequestID."""
     if not mpesa_is_configured():
-        raise ImproperlyConfigured("Payment gateway settings (NCBA/M-Pesa Daraja) are not configured.")
+        raise ImproperlyConfigured("Safaricom Daraja payment settings are not configured.")
     normalized_phone = normalize_ke_phone(phone)
     timestamp = timezone.localtime().strftime("%Y%m%d%H%M%S")
     password = base64.b64encode(
@@ -98,9 +98,7 @@ def stk_push(phone: str, amount, account_reference: str, description: str) -> di
             + "/api/v1/payments/mpesa/rent-stk-callback"
         )
 
-    # Use NCBA Account Number if available as primary account ref, or invoice number
-    ref = getattr(settings, "NCBA_ACCOUNT_NUMBER", "") or account_reference
-    ref = str(ref).strip()[:12]
+    ref = str(account_reference).strip()[:12]
 
     payload = json.dumps({
         "BusinessShortCode": settings.MPESA_SHORTCODE,

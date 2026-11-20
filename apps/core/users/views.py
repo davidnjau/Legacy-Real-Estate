@@ -119,6 +119,11 @@ from users.models import (
     ViewingLead,
 )
 from users.move_in import confirmed_invoice_amount, sync_move_in_occupancy
+from users.payment_allocations import (
+    apply_tenant_credit,
+    available_tenant_credit,
+    lock_tenant_invoice,
+)
 from users.object_storage import (
     delete_private_object,
     read_private_object,
@@ -18571,6 +18576,10 @@ def tenant_dashboard(request):
         "move_in_date": active_tenancy.start_date.isoformat() if active_tenancy else None,
         "notice_period_days": active_tenancy.notice_period_days if active_tenancy else None,
     }
+    credit_balance = available_tenant_credit(tenant)
+    net_balance_due = max(current_balance - credit_balance, zero).quantize(
+        Decimal("0.01")
+    )
     record_audit_event(
         request,
         "tenant_dashboard.viewed",
@@ -18579,6 +18588,7 @@ def tenant_dashboard(request):
             "tenant_id": tenant.pk,
             "invoice_count": len(invoice_rows),
             "payment_count": len(payment_rows),
+            "credit_balance": str(credit_balance),
         },
     )
     return JsonResponse(
@@ -18586,6 +18596,8 @@ def tenant_dashboard(request):
             "tenant": profile,
             "summary": {
                 "balance_due": str(current_balance),
+                "credit_balance": str(credit_balance),
+                "net_balance_due": str(net_balance_due),
                 "next_due_date": (
                     min(outstanding_due_dates).isoformat()
                     if outstanding_due_dates
@@ -18906,22 +18918,6 @@ def tenant_rent_stk_payment(request):
             400, "Invalid request", "Expected a JSON object.", "invalid-request"
         )
 
-    phone = body.get("phone")
-    if not phone or not isinstance(phone, str) or not phone.strip():
-        phone = tenant.phone
-    if not phone:
-        return _problem(
-            400,
-            "Phone number required",
-            "A Safaricom phone number is required to receive the M-Pesa prompt.",
-            "phone-required",
-        )
-
-    try:
-        normalized_phone = daraja.normalize_ke_phone(phone)
-    except ValueError as exc:
-        return _problem(400, "Invalid phone number", str(exc), "invalid-phone")
-
     invoice_id = body.get("invoiceId")
     invoice = None
     if invoice_id:
@@ -18991,6 +18987,38 @@ def tenant_rent_stk_payment(request):
                 "no-invoices",
             )
 
+    today = timezone.localdate()
+    paid = (
+        PaymentAllocation.objects.filter(invoice=invoice)
+        .exclude(
+            payment__instrument_status__in=(
+                Payment.INSTRUMENT_PENDING,
+                Payment.INSTRUMENT_BOUNCED,
+            )
+        )
+        .aggregate(total=models.Sum("amount"))["total"]
+        or Decimal("0.00")
+    )
+    waived = (
+        ArrearsWaiver.objects.filter(
+            invoice=invoice,
+            approved_at__date__lte=today,
+        ).aggregate(total=models.Sum("amount"))["total"]
+        or Decimal("0.00")
+    )
+    amount_due = invoice_arrears(
+        invoice, today, allocated_amount=paid, waiver_amount=waived
+    )["total_due"]
+    if amount_due <= Decimal("0.00"):
+        return _problem(
+            400,
+            "No outstanding balance",
+            "This invoice has no remaining balance to pay.",
+            "invoice-already-paid",
+        )
+
+    credit_balance = available_tenant_credit(tenant)
+    cash_due = max(amount_due - credit_balance, Decimal("0.00"))
     amount = body.get("amount")
     if amount is not None:
         try:
@@ -19002,41 +19030,78 @@ def tenant_rent_stk_payment(request):
                 "A valid payment amount is required.",
                 "invalid-amount",
             )
-        if not amount.is_finite() or amount <= 0:
+        if (
+            not amount.is_finite()
+            or amount < 0
+            or amount != amount.to_integral_value()
+            or (amount == 0 and cash_due > 0)
+        ):
             return _problem(
                 400,
                 "Invalid amount",
-                "Payment amount must be greater than zero.",
+                "Payment amount must be a whole number of shillings; zero is "
+                "only valid when available rent credit covers the invoice.",
                 "invalid-amount",
             )
     else:
-        today = timezone.localdate()
-        paid = (
-            PaymentAllocation.objects.filter(invoice=invoice)
-            .exclude(
-                payment__instrument_status__in=(
-                    Payment.INSTRUMENT_PENDING,
-                    Payment.INSTRUMENT_BOUNCED,
-                )
-            )
-            .aggregate(total=models.Sum("amount"))["total"]
-            or Decimal("0.00")
-        )
-        waived = (
-            ArrearsWaiver.objects.filter(
-                invoice=invoice,
-                approved_at__date__lte=today,
-            ).aggregate(total=models.Sum("amount"))["total"]
-            or Decimal("0.00")
-        )
-        arrears = invoice_arrears(
-            invoice, today, allocated_amount=paid, waiver_amount=waived
-        )
-        amount = arrears["total_due"]
-        if amount <= Decimal("0.00"):
-            amount = invoice.total
+        amount = cash_due.to_integral_value(rounding=ROUND_CEILING)
 
     amount = amount.quantize(Decimal("1"))
+
+    if amount == 0:
+        with transaction.atomic():
+            invoice = lock_tenant_invoice(tenant.pk, invoice.pk)
+            current_due = invoice_arrears(invoice, timezone.localdate())["total_due"]
+            if available_tenant_credit(tenant) >= current_due:
+                credit_applied, remaining_due = apply_tenant_credit(
+                    invoice, outstanding_amount=current_due
+                )
+            else:
+                credit_applied = Decimal("0.00")
+                remaining_due = current_due
+        if remaining_due > 0:
+            return _problem(
+                409,
+                "Rent credit changed",
+                "Your available credit changed. Refresh your balance and try again.",
+                "credit-balance-changed",
+            )
+        record_audit_event(
+            request,
+            "payment.rent_credit_applied",
+            "TenantCredit",
+            new_values={
+                "tenant_id": tenant.pk,
+                "invoice_id": invoice.pk,
+                "amount": str(credit_applied),
+            },
+        )
+        return JsonResponse(
+            {
+                "success": True,
+                "paymentCoveredByCredit": True,
+                "invoiceNumber": invoice.number,
+                "amount": "0",
+                "creditApplied": str(credit_applied),
+                "message": (
+                    f"Your rent credit of KES {credit_applied:,.2f} covered "
+                    f"invoice {invoice.number}. No M-PESA payment was needed."
+                ),
+            }
+        )
+
+    phone = body.get("phone")
+    if not isinstance(phone, str) or not phone.strip():
+        return _problem(
+            400,
+            "Phone number required",
+            "A Safaricom phone number is required to receive the M-Pesa prompt.",
+            "phone-required",
+        )
+    try:
+        normalized_phone = daraja.normalize_ke_phone(phone)
+    except ValueError as exc:
+        return _problem(400, "Invalid phone number", str(exc), "invalid-phone")
 
     try:
         result = daraja.stk_push(

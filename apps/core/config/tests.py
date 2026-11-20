@@ -30,6 +30,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from openpyxl import Workbook
 
+from users import daraja
 from users.admin import AuditedGroupAdmin, AuditLogAdmin, BranchAdmin
 from users.audit import record_audit_event
 from users.move_in import sync_move_in_occupancy
@@ -112,6 +113,49 @@ from users.sms import (
     send_sms,
 )
 from users.totp import _code_for_counter, encrypt_secret, verify_code
+
+
+class DarajaClientTests(SimpleTestCase):
+    @override_settings(
+        MPESA_CONSUMER_KEY="test-key",
+        MPESA_CONSUMER_SECRET="test-secret",
+        MPESA_SHORTCODE="522533",
+        MPESA_PASSKEY="test-passkey",
+        MPESA_BASE_URL="https://sandbox.safaricom.co.ke",
+        MPESA_RENT_CALLBACK_URL=(
+            "https://example.test/api/v1/payments/mpesa/rent-stk-callback"
+        ),
+        MPESA_TIMEOUT_SECONDS=5,
+        NCBA_ACCOUNT_NUMBER="NCBA-ACCOUNT",
+    )
+    @patch("users.daraja._access_token", return_value="test-access-token")
+    @patch(
+        "users.daraja._request_json",
+        return_value={
+            "ResponseCode": "0",
+            "CheckoutRequestID": "ws_CO_TEST_001",
+            "MerchantRequestID": "mr_001",
+        },
+    )
+    def test_stk_push_uses_invoice_reference_not_ncba_account(
+        self, request_json, _access_token
+    ):
+        result = daraja.stk_push(
+            "0712345678",
+            Decimal("12500"),
+            "INV-2026-001",
+            "Rent Payment",
+        )
+
+        request = request_json.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(payload["AccountReference"], "INV-2026-001")
+        self.assertEqual(payload["BusinessShortCode"], "522533")
+        self.assertEqual(
+            request.full_url,
+            "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
+        )
+        self.assertEqual(result["checkout_request_id"], "ws_CO_TEST_001")
 
 
 class HealthCheckTests(SimpleTestCase):
@@ -9065,6 +9109,21 @@ class UserAccessTests(TestCase):
             invoice=prior_invoice,
             amount=Decimal("1000.00"),
         )
+        credit_payment = Payment.objects.create(
+            tenant=tenant,
+            amount=Decimal("1500.00"),
+            reference="TENANT-DASH-CREDIT",
+            source=Payment.SOURCE_MPESA,
+            received_at=timezone.now(),
+            status=Payment.STATUS_CREDIT,
+            credit_amount=Decimal("1500.00"),
+        )
+        TenantCredit.objects.create(
+            tenant=tenant,
+            payment=credit_payment,
+            amount=Decimal("1500.00"),
+            remaining_amount=Decimal("1500.00"),
+        )
         ArrearsWaiver.objects.create(
             tenancy=tenancy,
             invoice=prior_invoice,
@@ -9137,6 +9196,8 @@ class UserAccessTests(TestCase):
             "TENANT-DASH-DEPOSIT-1",
         )
         self.assertEqual(payload["summary"]["balance_due"], "7500.00")
+        self.assertEqual(payload["summary"]["credit_balance"], "1500.00")
+        self.assertEqual(payload["summary"]["net_balance_due"], "6000.00")
         self.assertEqual(payload["summary"]["next_due_date"], prior_invoice.due_date.isoformat())
         self.assertEqual(
             {item["number"] for item in payload["invoices"]},
@@ -12981,7 +13042,7 @@ class WhatsAppBotTests(TestCase):
         )
         ConversationState.objects.create(contact=contact, active_role="tenant")
 
-        with patch.object(whatsapp_bot, "_post_message"):
+        with patch.object(whatsapp_bot, "_post_message") as post:
             whatsapp_bot.handle_inbound_message(
                 self._message(contact.wa_id, choice="t_issue")
             )
@@ -13002,6 +13063,12 @@ class WhatsAppBotTests(TestCase):
                         image={"id": "media-1", "sha256": "abc", "mime_type": "image/jpeg"},
                     )
                 )
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={"id": "media-2", "sha256": "def", "mime_type": "image/jpeg"},
+                    )
+                )
             whatsapp_bot.handle_inbound_message(
                 self._message(contact.wa_id, text="done")
             )
@@ -13010,18 +13077,66 @@ class WhatsAppBotTests(TestCase):
         self.assertEqual(ticket.category, MaintenanceTicket.CATEGORY_PLUMBING)
         self.assertEqual(ticket.description, "Kitchen tap is leaking badly")
         self.assertEqual(ticket.reported_by, tenant.portal_user)
-        self.assertEqual(len(ticket.photos), 1)
         self.assertEqual(ticket.photos[0]["content_type"], "image/jpeg")
         self.assertTrue(
             ticket.photos[0]["storage_key"].startswith(f"maintenance/tenant/{tenant.pk}/")
         )
-        upload.assert_called_once()
+        self.assertEqual(len(ticket.photos), 2)
+        self.assertEqual(upload.call_count, 2)
         self.assertTrue(
             AuditLog.objects.filter(
                 action="maintenance_ticket.tenant_created",
                 new_values__source="whatsapp",
             ).exists()
         )
+        response_bodies = [
+            call.args[0]["text"]["body"]
+            for call in post.call_args_list
+            if call.args[0].get("type") == "text"
+        ]
+        self.assertTrue(any("📷 Photo 1 received." in body for body in response_bodies))
+        self.assertTrue(any("📷 Photo 2 received." in body for body in response_bodies))
+        confirmation = response_bodies[-1]
+        self.assertIn("maintenance request has been logged for review", confirmation)
+        self.assertIn(f"• Ticket: #{ticket.pk}", confirmation)
+        self.assertIn(f"• Location: {tenancy.unit.property.name}, unit {tenancy.unit.code}", confirmation)
+        self.assertIn("• Issue: Kitchen tap is leaking badly", confirmation)
+        self.assertIn("• Photos: 2 photos attached", confirmation)
+        self.assertIn("Keep the ticket number for reference.", confirmation)
+
+    def test_photo_maintenance_confirmation_reports_when_no_photos_were_attached(self):
+        from users.models import WhatsAppContact, ConversationState
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("34")
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001134",
+            tenant=tenant,
+            user=tenant.portal_user,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="tenant")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="t_issue")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cat_electrical")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Hallway light is not working")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="skip")
+            )
+
+        ticket = MaintenanceTicket.objects.get(unit=tenancy.unit)
+        self.assertEqual(ticket.photos, [])
+        confirmation = post.call_args.args[0]["text"]["body"]
+        self.assertIn("• Photos: No photos attached", confirmation)
+        self.assertIn("• Category: Electrical", confirmation)
+        self.assertIn("• Issue: Hallway light is not working", confirmation)
 
     def test_cancel_abandons_draft_ticket_and_returns_to_menu(self):
         from users.models import WhatsAppContact, ConversationState
@@ -13442,6 +13557,170 @@ class WhatsAppRentStkTests(TestCase):
             message["text"] = {"body": text}
         return message
 
+    def test_portal_stk_applies_credit_and_accepts_partial_or_extra_amounts(self):
+        group, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
+        self.portal_user.groups.add(group)
+        self.client.force_login(self.portal_user)
+
+        credit_payment = Payment.objects.create(
+            tenant=self.tenant,
+            amount=Decimal("5000.00"),
+            reference="PORTAL-CREDIT-001",
+            source=Payment.SOURCE_MPESA,
+            received_at=timezone.now(),
+            status=Payment.STATUS_CREDIT,
+            credit_amount=Decimal("5000.00"),
+        )
+        credit = TenantCredit.objects.create(
+            tenant=self.tenant,
+            payment=credit_payment,
+            amount=Decimal("5000.00"),
+            remaining_amount=Decimal("5000.00"),
+        )
+
+        with patch(
+            "users.views.daraja.stk_push",
+            side_effect=[
+                {
+                    "checkout_request_id": "portal_CO_TEST_001",
+                    "merchant_request_id": "portal_mr_001",
+                },
+                {
+                    "checkout_request_id": "portal_CO_TEST_002",
+                    "merchant_request_id": "portal_mr_002",
+                },
+                {
+                    "checkout_request_id": "portal_CO_TEST_003",
+                    "merchant_request_id": "portal_mr_003",
+                },
+            ],
+        ) as stk:
+            missing_phone = self.client.post(
+                "/api/v1/payments/rent/stk-push",
+                data={"invoiceId": self.invoice.pk},
+                content_type="application/json",
+            )
+            full_after_credit = self.client.post(
+                "/api/v1/payments/rent/stk-push",
+                data={
+                    "phone": "0712345678",
+                    "invoiceId": self.invoice.pk,
+                },
+                content_type="application/json",
+            )
+            extra_payment = self.client.post(
+                "/api/v1/payments/rent/stk-push",
+                data={
+                    "phone": "0712345678",
+                    "invoiceId": self.invoice.pk,
+                    "amount": "25001",
+                },
+                content_type="application/json",
+            )
+            partial_payment = self.client.post(
+                "/api/v1/payments/rent/stk-push",
+                data={
+                    "phone": "0712345678",
+                    "invoiceId": self.invoice.pk,
+                    "amount": "10000",
+                },
+                content_type="application/json",
+            )
+
+            self.assertEqual(missing_phone.status_code, 400)
+            self.assertEqual(full_after_credit.status_code, 201)
+            self.assertEqual(full_after_credit.json()["amount"], "15000")
+            self.assertEqual(extra_payment.status_code, 201)
+            self.assertEqual(extra_payment.json()["amount"], "25001")
+            self.assertEqual(partial_payment.status_code, 201)
+            self.assertEqual(partial_payment.json()["amount"], "10000")
+
+        self.assertEqual(stk.call_count, 3)
+        self.assertEqual(stk.call_args_list[0].args[1], Decimal("15000"))
+        self.assertEqual(stk.call_args_list[1].args[1], Decimal("25001"))
+        self.assertEqual(stk.call_args_list[2].args[1], Decimal("10000"))
+
+        callback = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "portal_mr_001",
+                    "CheckoutRequestID": "portal_CO_TEST_001",
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 15000},
+                            {"Name": "MpesaReceiptNumber", "Value": "PORTAL-CREDIT-PAID"},
+                            {"Name": "PhoneNumber", "Value": 254712345678},
+                        ],
+                    },
+                },
+            },
+        }
+        with patch("users.whatsapp_bot._send_payment_receipt_email"):
+            callback_response = self.client.post(
+                "/api/v1/payments/mpesa/rent-stk-callback",
+                json.dumps(callback),
+                content_type="application/json",
+            )
+
+        self.assertEqual(callback_response.status_code, 200)
+        credit.refresh_from_db()
+        credit_payment.refresh_from_db()
+        self.assertEqual(credit.remaining_amount, Decimal("0.00"))
+        self.assertEqual(credit_payment.credit_amount, Decimal("0.00"))
+        self.assertEqual(credit_payment.allocated_amount, Decimal("5000.00"))
+        self.assertEqual(
+            credit_payment.allocations.get(invoice=self.invoice).amount,
+            Decimal("5000.00"),
+        )
+        payment = Payment.objects.get(reference="PORTAL-CREDIT-PAID")
+        self.assertEqual(
+            payment.allocations.get(invoice=self.invoice).amount,
+            Decimal("15000.00"),
+        )
+
+    def test_portal_applies_full_rent_credit_without_sending_stk(self):
+        group, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
+        self.portal_user.groups.add(group)
+        self.client.force_login(self.portal_user)
+        credit_payment = Payment.objects.create(
+            tenant=self.tenant,
+            amount=Decimal("20000.00"),
+            reference="PORTAL-CREDIT-FULL",
+            source=Payment.SOURCE_MPESA,
+            received_at=timezone.now(),
+            status=Payment.STATUS_CREDIT,
+            credit_amount=Decimal("20000.00"),
+        )
+        credit = TenantCredit.objects.create(
+            tenant=self.tenant,
+            payment=credit_payment,
+            amount=Decimal("20000.00"),
+            remaining_amount=Decimal("20000.00"),
+        )
+
+        with patch("users.views.daraja.stk_push") as stk:
+            response = self.client.post(
+                "/api/v1/payments/rent/stk-push",
+                data={
+                    "phone": "0712345678",
+                    "invoiceId": self.invoice.pk,
+                    "amount": "0",
+                },
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["paymentCoveredByCredit"])
+        stk.assert_not_called()
+        credit.refresh_from_db()
+        self.assertEqual(credit.remaining_amount, Decimal("0.00"))
+        self.assertEqual(
+            credit_payment.allocations.get(invoice=self.invoice).amount,
+            Decimal("20000.00"),
+        )
+
     @override_settings(
         DEBUG=False,
         EMAIL_DELIVERY_BACKEND="mailpit",
@@ -13475,10 +13754,6 @@ class WhatsAppRentStkTests(TestCase):
         from users import whatsapp_bot
 
         with patch.object(whatsapp_bot, "_post_message") as post:
-            whatsapp_bot.handle_inbound_message(self._message(choice="t_pay"))
-            whatsapp_bot.handle_inbound_message(
-                self._message(choice=f"inv_{self.invoice.pk}")
-            )
             with patch.object(
                 whatsapp_bot.daraja,
                 "stk_push",
@@ -13487,15 +13762,38 @@ class WhatsAppRentStkTests(TestCase):
                     "merchant_request_id": "mr_001",
                 },
             ) as stk:
-                whatsapp_bot.handle_inbound_message(
-                    self._message(choice=f"stk_{self.invoice.pk}")
+                whatsapp_bot.handle_inbound_message(self._message(choice="t_pay"))
+                self.assertIn(
+                    self.invoice.number,
+                    post.call_args.args[0]["text"]["body"],
                 )
+                self.assertIn(
+                    "Reply with the Safaricom phone number",
+                    post.call_args.args[0]["text"]["body"],
+                )
+                stk.assert_not_called()
+                whatsapp_bot.handle_inbound_message(
+                    self._message(text="0712345678")
+                )
+                self.assertIn(
+                    "Reply *FULL*",
+                    post.call_args.args[0]["text"]["body"],
+                )
+                stk.assert_not_called()
+                whatsapp_bot.handle_inbound_message(self._message(text="FULL"))
 
-        stk.assert_called_once()
+        stk.assert_called_once_with(
+            "254712345678",
+            Decimal("20000"),
+            self.invoice.number,
+            "Rent",
+        )
         request_row = RentStkRequest.objects.get(checkout_request_id="ws_CO_TEST_001")
         self.assertEqual(request_row.invoice, self.invoice)
         self.assertEqual(request_row.status, RentStkRequest.STATUS_PENDING)
+        self.assertEqual(request_row.phone, "254712345678")
         self.assertIn("M-PESA prompt", post.call_args.args[0]["text"]["body"])
+        self.assertIn("PIN", post.call_args.args[0]["text"]["body"])
 
         callback = {
             "Body": {
@@ -13508,7 +13806,7 @@ class WhatsAppRentStkTests(TestCase):
                         "Item": [
                             {"Name": "Amount", "Value": 20000.00},
                             {"Name": "MpesaReceiptNumber", "Value": "SHK31XYZ9A"},
-                            {"Name": "PhoneNumber", "Value": 254700002211},
+                            {"Name": "PhoneNumber", "Value": 254712345678},
                         ],
                     },
                 },
@@ -13546,6 +13844,274 @@ class WhatsAppRentStkTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(Payment.objects.filter(reference="SHK31XYZ9A").count(), 1)
+
+    def test_whatsapp_overpayment_becomes_credit_for_the_next_invoice(self):
+        from users import whatsapp_bot
+        from users.models import RentStkRequest, TenantCredit
+
+        with patch.object(whatsapp_bot, "_post_message") as post, patch.object(
+            whatsapp_bot.daraja,
+            "stk_push",
+            return_value={
+                "checkout_request_id": "ws_CO_OVERPAY_01",
+                "merchant_request_id": "mr_overpay_01",
+            },
+        ) as stk:
+            whatsapp_bot.handle_inbound_message(self._message(choice="t_pay"))
+            whatsapp_bot.handle_inbound_message(
+                self._message(text="0712345678")
+            )
+            self.assertIn("KES 20,000", post.call_args.args[0]["text"]["body"])
+            whatsapp_bot.handle_inbound_message(self._message(text="21000"))
+            self.assertIn(
+                "M-PESA prompt",
+                post.call_args.args[0]["text"]["body"],
+                post.call_args.args[0]["text"]["body"],
+            )
+
+        stk.assert_called_once_with(
+            "254712345678",
+            Decimal(21000),
+            self.invoice.number,
+            "Rent",
+        )
+        request_row = RentStkRequest.objects.get(
+            checkout_request_id="ws_CO_OVERPAY_01"
+        )
+        callback = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "mr_overpay_01",
+                    "CheckoutRequestID": "ws_CO_OVERPAY_01",
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 21000},
+                            {"Name": "MpesaReceiptNumber", "Value": "SHK31OVERPAY"},
+                            {"Name": "PhoneNumber", "Value": 254712345678},
+                        ],
+                    },
+                },
+            },
+        }
+        with patch.object(whatsapp_bot, "_post_message"):
+            response = self.client.post(
+                "/api/v1/payments/mpesa/rent-stk-callback",
+                json.dumps(callback),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        request_row.refresh_from_db()
+        self.assertEqual(request_row.status, RentStkRequest.STATUS_SUCCEEDED)
+        payment = Payment.objects.get(reference="SHK31OVERPAY")
+        credit = TenantCredit.objects.get(payment=payment)
+        self.assertEqual(payment.allocated_amount, Decimal("20000.00"))
+        self.assertEqual(payment.credit_amount, Decimal("1000.00"))
+        self.assertEqual(credit.remaining_amount, Decimal("1000.00"))
+        self.assertEqual(
+            payment.allocations.get().amount,
+            Decimal("20000.00"),
+        )
+
+        next_invoice = Invoice.objects.create(
+            tenancy=self.tenancy,
+            branch=self.branch,
+            number="INV-STK-0002",
+            period_start=self.invoice.period_start + timedelta(days=31),
+            period_end=self.invoice.period_end + timedelta(days=31),
+            due_date=self.invoice.due_date + timedelta(days=31),
+            total=Decimal("25000.00"),
+            status=Invoice.STATUS_ISSUED,
+        )
+        with patch.object(whatsapp_bot, "_post_message") as post, patch.object(
+            whatsapp_bot.daraja,
+            "stk_push",
+            return_value={
+                "checkout_request_id": "ws_CO_NEXT_01",
+                "merchant_request_id": "mr_next_01",
+            },
+        ) as stk:
+            whatsapp_bot.handle_inbound_message(self._message(choice="t_pay"))
+            self.assertIn("KES 24,000", post.call_args.args[0]["text"]["body"])
+            whatsapp_bot.handle_inbound_message(
+                self._message(text="0712345678")
+            )
+            whatsapp_bot.handle_inbound_message(self._message(text="FULL"))
+
+        stk.assert_called_once_with(
+            "254712345678",
+            Decimal(24000),
+            next_invoice.number,
+            "Rent",
+        )
+        next_request = RentStkRequest.objects.get(
+            checkout_request_id="ws_CO_NEXT_01"
+        )
+        self.assertEqual(next_request.invoice, next_invoice)
+        self.assertEqual(next_request.amount, Decimal(24000))
+
+    def test_whatsapp_uses_existing_credit_to_reduce_payment_and_apply_invoice(self):
+        from users import whatsapp_bot
+        from users.models import RentStkRequest, TenantCredit
+
+        credit_payment = Payment.objects.create(
+            tenant=self.tenant,
+            amount=Decimal("5000.00"),
+            reference="SHK31CREDIT",
+            source=Payment.SOURCE_MPESA,
+            received_at=timezone.now(),
+            status=Payment.STATUS_CREDIT,
+            credit_amount=Decimal("5000.00"),
+        )
+        credit = TenantCredit.objects.create(
+            tenant=self.tenant,
+            payment=credit_payment,
+            amount=Decimal("5000.00"),
+            remaining_amount=Decimal("5000.00"),
+        )
+        with patch.object(whatsapp_bot, "_post_message") as post, patch.object(
+            whatsapp_bot.daraja,
+            "stk_push",
+            return_value={
+                "checkout_request_id": "ws_CO_CREDIT_01",
+                "merchant_request_id": "mr_credit_01",
+            },
+        ) as stk:
+            whatsapp_bot.handle_inbound_message(self._message(choice="t_pay"))
+            self.assertIn("KES 15,000", post.call_args.args[0]["text"]["body"])
+            whatsapp_bot.handle_inbound_message(
+                self._message(text="0712345678")
+            )
+            self.assertIn(
+                "Reply *FULL*",
+                post.call_args.args[0]["text"]["body"],
+            )
+            whatsapp_bot.handle_inbound_message(self._message(text="FULL"))
+
+        stk.assert_called_once_with(
+            "254712345678",
+            Decimal(15000),
+            self.invoice.number,
+            "Rent",
+        )
+        request_row = RentStkRequest.objects.get(
+            checkout_request_id="ws_CO_CREDIT_01"
+        )
+        callback = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "mr_credit_01",
+                    "CheckoutRequestID": "ws_CO_CREDIT_01",
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 15000},
+                            {"Name": "MpesaReceiptNumber", "Value": "SHK31CREDITPAY"},
+                            {"Name": "PhoneNumber", "Value": 254712345678},
+                        ],
+                    },
+                },
+            },
+        }
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            response = self.client.post(
+                "/api/v1/payments/mpesa/rent-stk-callback",
+                json.dumps(callback),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        credit.refresh_from_db()
+        credit_payment.refresh_from_db()
+        request_row.refresh_from_db()
+        self.assertEqual(credit.remaining_amount, Decimal("0.00"))
+        self.assertEqual(credit_payment.credit_amount, Decimal("0.00"))
+        self.assertEqual(credit_payment.allocated_amount, Decimal("5000.00"))
+        self.assertEqual(
+            credit_payment.allocations.get(invoice=self.invoice).amount,
+            Decimal("5000.00"),
+        )
+        payment = Payment.objects.get(reference="SHK31CREDITPAY")
+        self.assertEqual(
+            payment.allocations.get(invoice=self.invoice).amount,
+            Decimal("15000.00"),
+        )
+        self.assertIn("Rent credit applied: *KES 5,000.00*", post.call_args.args[0]["text"]["body"])
+
+    def test_tenant_dashboard_exposes_available_and_net_credit_balance(self):
+        group, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
+        self.portal_user.groups.add(group)
+        credit_payment = Payment.objects.create(
+            tenant=self.tenant,
+            amount=Decimal("3000.00"),
+            reference="DASHBOARD-CREDIT-001",
+            source=Payment.SOURCE_MPESA,
+            received_at=timezone.now(),
+            status=Payment.STATUS_CREDIT,
+            credit_amount=Decimal("3000.00"),
+        )
+        TenantCredit.objects.create(
+            tenant=self.tenant,
+            payment=credit_payment,
+            amount=Decimal("3000.00"),
+            remaining_amount=Decimal("3000.00"),
+        )
+
+        self.client.force_login(self.portal_user)
+        response = self.client.get("/api/v1/tenant/dashboard")
+
+        self.assertEqual(response.status_code, 200)
+        summary = response.json()["summary"]
+        self.assertEqual(summary["balance_due"], "20000.00")
+        self.assertEqual(summary["credit_balance"], "3000.00")
+        self.assertEqual(summary["net_balance_due"], "17000.00")
+
+    def test_success_callback_mismatch_is_not_recorded_as_a_payment(self):
+        from users.models import RentStkRequest
+        from users import whatsapp_bot
+
+        request_row = RentStkRequest.objects.create(
+            invoice=self.invoice,
+            tenant=self.tenant,
+            contact=self.contact,
+            amount=Decimal("20000.00"),
+            phone="254700002211",
+            checkout_request_id="ws_CO_MISMATCH_01",
+            merchant_request_id="mr_mismatch_01",
+        )
+        callback = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "mr_mismatch_01",
+                    "CheckoutRequestID": "ws_CO_MISMATCH_01",
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 19999},
+                            {"Name": "MpesaReceiptNumber", "Value": "SHK31MISMATCH"},
+                            {"Name": "PhoneNumber", "Value": 254700002211},
+                        ],
+                    },
+                },
+            },
+        }
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            response = self.client.post(
+                "/api/v1/payments/mpesa/rent-stk-callback",
+                json.dumps(callback),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        request_row.refresh_from_db()
+        self.assertEqual(request_row.status, RentStkRequest.STATUS_FAILED)
+        self.assertEqual(request_row.result_code, "callback_mismatch")
+        self.assertFalse(Payment.objects.exists())
+        self.assertIn("do not retry", post.call_args.args[0]["text"]["body"])
 
     def test_failed_stk_callback_marks_request_and_notifies(self):
         from users.models import RentStkRequest

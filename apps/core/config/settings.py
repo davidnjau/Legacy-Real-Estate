@@ -81,17 +81,13 @@ NCBA_BASE_URL = os.environ.get(
     "https://api.ncbagroup.com" if NCBA_ENVIRONMENT == "production" else "https://uat.ncbagroup.com",
 ).strip()
 
-MPESA_CONSUMER_KEY = (os.environ.get("MPESA_CONSUMER_KEY") or NCBA_USERNAME).strip()
-MPESA_CONSUMER_SECRET = (
-    os.environ.get("MPESA_CONSUMER_SECRET") or NCBA_SECRET_KEY or NCBA_PASSWORD
-).strip()
-MPESA_SHORTCODE = (os.environ.get("MPESA_SHORTCODE") or NCBA_PAYBILL_NUMBER).strip()
-MPESA_PASSKEY = (os.environ.get("MPESA_PASSKEY") or NCBA_SECRET_KEY or NCBA_PASSWORD).strip()
+MPESA_CONSUMER_KEY = os.environ.get("MPESA_CONSUMER_KEY", "").strip()
+MPESA_CONSUMER_SECRET = os.environ.get("MPESA_CONSUMER_SECRET", "").strip()
+MPESA_SHORTCODE = os.environ.get("MPESA_SHORTCODE", "").strip()
+MPESA_PASSKEY = os.environ.get("MPESA_PASSKEY", "").strip()
 MPESA_BASE_URL = os.environ.get(
     "MPESA_BASE_URL",
-    "https://api.safaricom.co.ke"
-    if NCBA_ENVIRONMENT == "production"
-    else "https://sandbox.safaricom.co.ke",
+    "https://sandbox.safaricom.co.ke",
 ).strip()
 MPESA_TIMEOUT_SECONDS = int(os.environ.get("MPESA_TIMEOUT_SECONDS", "30"))
 MPESA_RENT_CALLBACK_URL = os.environ.get("MPESA_RENT_CALLBACK_URL", "").strip()
