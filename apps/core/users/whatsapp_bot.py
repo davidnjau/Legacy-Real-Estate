@@ -50,6 +50,7 @@ from users.models import (
     Tenancy,
     Tenant,
     TenantCredit,
+    Unit,
     UtilityConfiguration,
     WhatsAppContact,
 )
@@ -430,20 +431,40 @@ def _show_menu(contact, state):
         )
         return
     if state.active_role == ROLE_CARETAKER:
+        property_obj = _caretaker_active_property(contact, state)
+        if property_obj is None:
+            if not _caretaker_assigned_properties(contact).exists():
+                state.state = {"flow": "menu"}
+                _save_state(state)
+                send_text(
+                    contact.wa_id,
+                    "No active properties are assigned to your caretaker account. "
+                    "Please contact your Property Officer.",
+                )
+            else:
+                _caretaker_property_selection_page(contact, state)
+            return
+        state.state = {"flow": "menu"}
+        _save_state(state)
         rows = [
+            ("c_occupancy", "Occupancy status", "Unit totals, occupancy and vacant units"),
             ("c_tickets", "Maintenance tickets", "View and update work at your properties"),
             ("c_report", "Report an issue", "Log an on-site maintenance issue"),
             ("c_checklists", "Checklists & inspections", "Move-in/out inspections and routine checks"),
         ]
+        if _caretaker_assigned_properties(contact).count() > 1:
+            rows.append(("c_switch_property", "Switch property", "Choose another assigned property"))
         if multi_role:
             rows.append(SWITCH_ROW)
         send_list(
             contact.wa_id,
-            "🔧 Caretaker services. What would you like to do?",
+            f"🔧 {property_obj.name}\nCaretaker services. What would you like to do?",
             "Caretaker menu",
             rows,
         )
         return
+    state.state = {"flow": "menu"}
+    _save_state(state)
     if contact.tenant is None:
         send_text(
             contact.wa_id,
@@ -973,7 +994,7 @@ def _decide_quotation(contact, state, quotation_id, approved, reason=""):
     send_text(contact.wa_id, f"Quotation #{quotation.pk} {verdict}. The team has been notified.")
 
 
-def _caretaker_properties(contact):
+def _caretaker_assigned_properties(contact):
     if not contact.user_id or not has_role(contact.user, CARETAKER_ROLE):
         return Property.objects.none()
     profile = getattr(contact.user, "profile", None)
@@ -984,6 +1005,161 @@ def _caretaker_properties(contact):
         caretaker_assignments__caretaker=contact.user,
         caretaker_assignments__ended_at__isnull=True,
     ).distinct()
+
+
+def _caretaker_active_property(contact, state):
+    properties = _caretaker_assigned_properties(contact).select_related("branch")
+    if state.active_property_id:
+        property_obj = properties.filter(pk=state.active_property_id).first()
+        if property_obj is not None:
+            return property_obj
+        state.active_property = None
+        state.save(update_fields=["active_property", "updated_at"])
+    if properties.count() == 1:
+        property_obj = properties.first()
+        state.active_property = property_obj
+        state.save(update_fields=["active_property", "updated_at"])
+        return property_obj
+    return None
+
+
+def _caretaker_properties(contact):
+    properties = _caretaker_assigned_properties(contact)
+    if not hasattr(contact, "conversation_state"):
+        return properties
+    active_property_id = contact.conversation_state.active_property_id
+    return properties.filter(pk=active_property_id) if active_property_id else properties
+
+
+def _caretaker_property_selection_page(contact, state, offset=0):
+    properties = _caretaker_assigned_properties(contact).order_by("name", "pk")
+    total = properties.count()
+    current_property = properties.filter(pk=state.active_property_id).first()
+    has_more = total > offset + (9 if current_property else 10)
+    page_size = (
+        8
+        if current_property and has_more
+        else 9
+        if current_property or has_more
+        else 10
+    )
+    page = list(properties[offset : offset + page_size])
+    if not page:
+        send_text(contact.wa_id, "No active properties are assigned to your caretaker account.")
+        return
+    rows = [
+        (
+            f"c_select_property_{property_obj.pk}",
+            property_obj.name[:24],
+            property_obj.branch.name[:72],
+        )
+        for property_obj in page
+    ]
+    next_offset = offset + len(page)
+    if total > next_offset:
+        rows.append(
+            (
+                f"c_property_select_page_{next_offset}",
+                "More properties",
+                "Show the next assigned properties",
+            )
+        )
+    if current_property:
+        rows.append(("c_property_select_back", "Back to menu", current_property.name[:72]))
+    state.state = {
+        "flow": "caretaker_property_select",
+        "property_offset": offset,
+    }
+    _save_state(state)
+    send_list(
+        contact.wa_id,
+        "Choose the property for your caretaker services.",
+        "Assigned properties",
+        rows,
+    )
+
+
+def _handle_caretaker_property_selection(contact, state, choice):
+    if choice.startswith("c_property_select_page_"):
+        try:
+            offset = int(choice.removeprefix("c_property_select_page_"))
+        except ValueError:
+            send_text(contact.wa_id, "That property page is invalid.")
+        else:
+            _caretaker_property_selection_page(contact, state, offset)
+        return True
+    if choice == "c_property_select_back" and state.active_property_id:
+        _show_menu(contact, state)
+        return True
+    if choice.startswith("c_select_property_"):
+        try:
+            property_id = int(choice.removeprefix("c_select_property_"))
+        except ValueError:
+            send_text(contact.wa_id, "That property selection is invalid.")
+            _caretaker_property_selection_page(contact, state)
+            return True
+        property_obj = _caretaker_assigned_properties(contact).filter(pk=property_id).first()
+        if property_obj is None:
+            send_text(contact.wa_id, "That property is not assigned to your caretaker account.")
+            _caretaker_property_selection_page(contact, state)
+            return True
+        state.active_property = property_obj
+        state.save(update_fields=["active_property", "updated_at"])
+        send_text(contact.wa_id, f"Selected {property_obj.name}.")
+        _show_menu(contact, state)
+        return True
+    send_text(contact.wa_id, "Choose an assigned property from the list.")
+    _caretaker_property_selection_page(contact, state)
+    return True
+
+
+def _caretaker_occupancy_summary(contact):
+    property_obj = _caretaker_properties(contact).first()
+    if property_obj is None:
+        send_text(contact.wa_id, "Select an assigned property before viewing occupancy.")
+        return
+    units = Unit.objects.filter(property=property_obj).exclude(
+        status__in=(Unit.STATUS_DRAFT, Unit.STATUS_ARCHIVED)
+    )
+    total_units = units.count()
+    occupied_units = units.filter(
+        status__in=(Unit.STATUS_OCCUPIED, Unit.STATUS_NOTICE_GIVEN)
+    ).count()
+    vacant_codes = list(
+        units.filter(status=Unit.STATUS_VACANT)
+        .order_by("code", "pk")
+        .values_list("code", flat=True)
+    )
+    occupancy = (
+        (Decimal(occupied_units) * Decimal("100") / Decimal(total_units)).quantize(
+            Decimal("0.1")
+        )
+        if total_units
+        else Decimal("0.0")
+    )
+    summary = (
+        f"🏢 Occupancy — {property_obj.name}\n"
+        f"Occupancy: {occupancy}%\n"
+        f"Total units: {total_units}\n"
+        f"Occupied units: {occupied_units}\n"
+        f"Vacant units: {len(vacant_codes)}"
+    )
+    codes = ", ".join(vacant_codes) or "None"
+    message = f"{summary}\nVacant unit codes: {codes}"
+    if len(message) <= 3500:
+        send_text(contact.wa_id, message)
+        return
+    send_text(contact.wa_id, f"{summary}\nVacant unit codes are listed below:")
+    chunk = ""
+    for code in vacant_codes:
+        next_code = f", {code}" if chunk else code
+        if len(chunk) + len(next_code) > 3000:
+            send_text(contact.wa_id, f"Vacant unit codes: {chunk}")
+            chunk = code
+        else:
+            chunk += next_code
+    if chunk:
+        send_text(contact.wa_id, f"Vacant unit codes: {chunk}")
 
 
 def _caretaker_tickets(contact):
@@ -3454,8 +3630,26 @@ def _handle_caretaker_message(contact, state, message, choice, text, kind):
     step = state.state.get("step", "")
     lowered = text.lower().strip()
 
+    if choice == "c_switch_property" or lowered in {"switch property", "change property"}:
+        _caretaker_property_selection_page(contact, state)
+        return True
     if lowered == "menu":
         _show_menu(contact, state)
+        return True
+    if flow == "caretaker_property_select":
+        return _handle_caretaker_property_selection(contact, state, choice)
+    if _caretaker_active_property(contact, state) is None:
+        if _caretaker_assigned_properties(contact).exists():
+            _caretaker_property_selection_page(contact, state)
+        else:
+            send_text(
+                contact.wa_id,
+                "No active properties are assigned to your caretaker account. "
+                "Please contact your Property Officer.",
+            )
+        return True
+    if choice == "c_occupancy":
+        _caretaker_occupancy_summary(contact)
         return True
     if choice == "c_tickets":
         _caretaker_ticket_list(contact, state)

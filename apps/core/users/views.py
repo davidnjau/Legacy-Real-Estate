@@ -9335,9 +9335,9 @@ def _send_move_in_activation(
                 if tenancy is None:
                     return _problem(409, "Activation unavailable", "The activated move-in tenancy could not be found.", "tenancy-not-found")
                 package = MoveInPackage.objects.filter(tenancy=tenancy).first()
-                if package is None or (
-                    assigned_caretaker
-                    and package.assigned_caretaker_id != assigned_caretaker.pk
+                if assigned_caretaker and (
+                    package is None
+                    or package.assigned_caretaker_id != assigned_caretaker.pk
                 ):
                     return _problem(
                         409,
@@ -9361,7 +9361,9 @@ def _send_move_in_activation(
                         "activation_sms_error": None,
                         "move_in_caretaker_sms_queued": caretaker_sms_queued,
                         "move_in_caretaker_sms_error": caretaker_sms_error,
-                        "move_in_caretaker_id": package.assigned_caretaker_id,
+                        "move_in_caretaker_id": (
+                            package.assigned_caretaker_id if package else None
+                        ),
                         "settlement": {
                             "id": locked.pk,
                             "activation_email_sent_at": locked.activation_email_sent_at.isoformat(),
@@ -9662,9 +9664,10 @@ def _send_move_in_activation(
         locked.activation_sms_error = ""
         locked.save(update_fields=["activation_sms_queued_at", "activation_sms_error", "updated_at"])
 
-    if move_in_accounting["package"].assigned_caretaker_id:
+    package = move_in_accounting["package"] if move_in_accounting else None
+    if package and package.assigned_caretaker_id:
         caretaker_sms_queued, caretaker_sms_error = _queue_move_in_handover_notification(
-            move_in_accounting["package"],
+            package,
             actor,
             request,
         )
@@ -9691,7 +9694,7 @@ def _send_move_in_activation(
         "activation_sms_error": sms_error,
         "move_in_caretaker_sms_queued": caretaker_sms_queued,
         "move_in_caretaker_sms_error": caretaker_sms_error,
-        "move_in_caretaker_id": move_in_accounting["package"].assigned_caretaker_id,
+        "move_in_caretaker_id": package.assigned_caretaker_id if package else None,
         "tenant": _tenant_payload(tenant),
         "tenancy": _tenancy_payload(tenancy),
         "settlement": {
@@ -11334,7 +11337,6 @@ def decide_landlord_remittance(request, remittance_id):
                 "status",
                 "reviewed_by",
                 "reviewed_at",
-                "approval_hash",
                 "rejection_reason",
                 "updated_at",
             ])

@@ -3681,6 +3681,13 @@ class ConversationState(models.Model):
         related_name="conversation_state",
     )
     active_role = models.CharField(max_length=20, blank=True)
+    active_property = models.ForeignKey(
+        Property,
+        on_delete=models.SET_NULL,
+        related_name="active_whatsapp_conversations",
+        blank=True,
+        null=True,
+    )
     state = models.JSONField(default=dict, blank=True)
     last_message_id = models.CharField(max_length=255, blank=True)
     expires_at = models.DateTimeField(blank=True, null=True)

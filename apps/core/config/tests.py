@@ -6791,6 +6791,8 @@ class UserAccessTests(TestCase):
             code="FIXED-01",
             unit_type="Studio",
         )
+        caretaker.profile.active_caretaker_property = property_obj
+        caretaker.profile.save(update_fields=["active_caretaker_property"])
 
         self.client.force_login(caretaker)
         readings = self.client.get("/api/v1/caretaker/water-readings")
@@ -6806,12 +6808,16 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(imported_baseline["previous_value"], "10.0000")
         self.assertEqual(imported_baseline["baseline_value"], "10.0000")
+        caretaker.profile.active_caretaker_property = fixed_property
+        caretaker.profile.save(update_fields=["active_caretaker_property"])
         dashboard = self.client.get("/api/v1/caretaker/dashboard")
         self.assertEqual(dashboard.status_code, 200, dashboard.content)
         fixed_dashboard_property = next(
             item for item in dashboard.json()["properties"] if item["id"] == fixed_property.pk
         )
         self.assertFalse(fixed_dashboard_property["has_metered_water"])
+        caretaker.profile.active_caretaker_property = property_obj
+        caretaker.profile.save(update_fields=["active_caretaker_property"])
 
         partial = self.client.post(
             "/api/v1/caretaker/water-readings/drafts",
@@ -13958,6 +13964,142 @@ class WhatsAppBotTests(TestCase):
         self.assertTrue(
             any("completed with 1 photo" in body.get("text", {}).get("body", "") for body in bodies)
         )
+
+    def test_caretaker_selects_and_switches_whatsapp_property_for_occupancy(self):
+        from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact
+        from users import whatsapp_bot
+
+        _, tenancy = self._tenant_with_tenancy("88")
+        _, other_tenancy = self._tenant_with_tenancy("89")
+        manager = self.user_model.objects.create_user(
+            username="wa-property-manager@example.com",
+            email="wa-property-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(manager, "Property Officer / Agent")
+        caretaker = self.user_model.objects.create_user(
+            username="wa-property-caretaker@example.com",
+            email="wa-property-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(caretaker, "Caretaker")
+        property_obj = tenancy.unit.property
+        second_property = other_tenancy.unit.property
+        Unit.objects.create(
+            property=property_obj,
+            code="WA-88-02",
+            unit_type="Studio",
+            status=Unit.STATUS_NOTICE_GIVEN,
+        )
+        Unit.objects.create(
+            property=property_obj,
+            code="WA-88-03",
+            unit_type="Studio",
+            status=Unit.STATUS_VACANT,
+        )
+        Unit.objects.create(
+            property=property_obj,
+            code="WA-88-04",
+            unit_type="Studio",
+            status=Unit.STATUS_VACANT,
+        )
+        Unit.objects.create(
+            property=property_obj,
+            code="WA-88-05",
+            unit_type="Studio",
+            status=Unit.STATUS_DRAFT,
+        )
+        Unit.objects.create(
+            property=property_obj,
+            code="WA-88-06",
+            unit_type="Studio",
+            status=Unit.STATUS_ARCHIVED,
+        )
+        for assigned_property in (property_obj, second_property):
+            PropertyCaretakerAssignment.objects.create(
+                property=assigned_property,
+                caretaker=caretaker,
+                assigned_by=manager,
+            )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001188",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(
+            contact=contact,
+            active_role="caretaker",
+        )
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_occupancy")
+            )
+            first_selector = post.call_args.args[0]
+            property_choices = [
+                row["id"]
+                for section in first_selector["interactive"]["action"]["sections"]
+                for row in section["rows"]
+            ]
+            self.assertIn(f"c_select_property_{property_obj.pk}", property_choices)
+            self.assertIn(f"c_select_property_{second_property.pk}", property_choices)
+            self.assertNotIn(
+                "Occupancy: 50.0%",
+                first_selector.get("text", {}).get("body", ""),
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="menu")
+            )
+            self.assertIn(
+                "Choose the property",
+                post.call_args.args[0]["interactive"]["body"]["text"],
+            )
+
+            whatsapp_bot.handle_inbound_message(
+                self._message(
+                    contact.wa_id,
+                    choice=f"c_select_property_{property_obj.pk}",
+                )
+            )
+            menu = post.call_args.args[0]
+            menu_choices = [
+                row["id"]
+                for section in menu["interactive"]["action"]["sections"]
+                for row in section["rows"]
+            ]
+            self.assertIn("c_occupancy", menu_choices)
+            self.assertIn("c_switch_property", menu_choices)
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_occupancy")
+            )
+            first_summary = post.call_args.args[0]["text"]["body"]
+            self.assertIn("Occupancy: 50.0%", first_summary)
+            self.assertIn("Total units: 4", first_summary)
+            self.assertIn("Occupied units: 2", first_summary)
+            self.assertIn("Vacant units: 2", first_summary)
+            self.assertIn("Vacant unit codes: WA-88-03, WA-88-04", first_summary)
+
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_switch_property")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(
+                    contact.wa_id,
+                    choice=f"c_select_property_{second_property.pk}",
+                )
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_occupancy")
+            )
+
+        second_summary = post.call_args.args[0]["text"]["body"]
+        self.assertIn("Occupancy: 100.0%", second_summary)
+        self.assertIn("Total units: 1", second_summary)
+        self.assertIn("Occupied units: 1", second_summary)
+        self.assertIn("Vacant units: 0", second_summary)
+        self.assertIn("Vacant unit codes: None", second_summary)
+        state.refresh_from_db()
+        self.assertEqual(state.active_property_id, second_property.pk)
 
     def test_caretaker_submits_move_in_handover_through_whatsapp(self):
         from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact

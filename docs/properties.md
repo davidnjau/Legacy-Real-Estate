@@ -221,6 +221,13 @@ checklist item, findings (required when no checklist exists), and optional
 recommendations, and is audited. Move-out/exit inspections remain in the
 separate caretaker dashboard workflow.
 
+Caretaker WhatsApp sessions retain a selected property. When multiple
+properties are assigned, the caretaker selects one before opening services and
+can switch properties from the caretaker menu; caretaker tasks and maintenance
+records are limited to that property. The menu's occupancy summary excludes
+draft and archived units from the total, counts occupied and notice-given units
+as occupied, and lists the unit codes currently marked vacant.
+
 Property expenses are managed through:
 
 - `GET /api/v1/property-expenses`
