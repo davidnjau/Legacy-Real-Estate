@@ -4,7 +4,18 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Home, ArrowRight, PlayCircle, CreditCard, Wrench, AlertTriangle, CheckCircle } from 'lucide-react';
 
-type MoveInSettlement = { status: string; total_required: number; total_paid: number; outstanding_balance: number; deposit_amount: number; rent_amount: number; garbage_amount: number; water_deposit_amount: number };
+type MoveInSettlement = {
+  status: string;
+  total_required: number;
+  total_paid: number;
+  outstanding_balance: number;
+  deposit_amount: number;
+  rent_amount: number;
+  first_month_rent_amount: number;
+  utility_deposits: Array<{ name: string; amount: number | string }>;
+  garbage_amount: number;
+  water_deposit_amount: number;
+};
 
 type Onboarding = {
   fullName: string;
@@ -122,14 +133,17 @@ export default function TenantWelcomePage() {
                   <strong className="text-slate-900 text-base">{currency.format(settlement.water_deposit_amount)}</strong>
                 </div>
                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <span className="text-slate-500 block text-xs">Rent</span>
-                  <strong className="text-slate-900 text-base">{currency.format(settlement.rent_amount)}</strong>
+                  <span className="text-slate-500 block text-xs">First-month rent (prorated)</span>
+                  <strong className="text-slate-900 text-base">{currency.format(settlement.first_month_rent_amount)}</strong>
                 </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  <span className="text-slate-500 block text-xs">Garbage</span>
-                  <strong className="text-slate-900 text-base">{currency.format(settlement.garbage_amount)}</strong>
-                </div>
+                {settlement.utility_deposits.map((deposit) => (
+                  <div key={deposit.name} className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                    <span className="text-slate-500 block text-xs">{deposit.name}</span>
+                    <strong className="text-slate-900 text-base">{currency.format(Number(deposit.amount))}</strong>
+                  </div>
+                ))}
               </div>
+              <p className="text-xs text-slate-500">Recurring charges and metered usage are billed separately.</p>
               <div className="flex justify-between items-center border-t border-slate-100 pt-4">
                 <span className="text-slate-500">Total Required:</span>
                 <strong className="text-lg text-emerald-600">{currency.format(settlement.total_required)}</strong>

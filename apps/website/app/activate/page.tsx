@@ -10,6 +10,7 @@ type TenantActivation = {
   email: string;
   unit_code: string;
   identity_required: boolean;
+  phone_verification_required: boolean;
 };
 
 export default function TenantActivationPage() {
@@ -39,6 +40,7 @@ export default function TenantActivationPage() {
           email: data.email,
           unit_code: data.unit_code,
           identity_required: data.identity_required === true,
+          phone_verification_required: data.phone_verification_required === true,
         };
         setActivation(context);
         setFullName(context.full_name);
@@ -65,6 +67,7 @@ export default function TenantActivationPage() {
         email: data.email,
         unit_code: data.unit_code,
         identity_required: data.identity_required === true,
+        phone_verification_required: data.phone_verification_required === true,
       });
       setFullName(data.full_name);
     } catch (cause) {
@@ -128,7 +131,11 @@ export default function TenantActivationPage() {
     <div className="flex min-h-screen flex-col justify-center bg-slate-50 py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h1 className="mt-6 text-center text-3xl font-extrabold text-slate-900">Activate Your Account</h1>
-        <p className="mt-2 text-center text-sm text-slate-600">Use the secure activation link and six-digit code sent to your email.</p>
+        <p className="mt-2 text-center text-sm text-slate-600">
+          {activation?.phone_verification_required
+            ? 'Use the secure activation link and six-digit code sent by SMS to verify your phone.'
+            : 'Use the secure activation link and six-digit code sent to your email.'}
+        </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
@@ -143,7 +150,7 @@ export default function TenantActivationPage() {
                 <input required value={unitCode} onChange={(event) => setUnitCode(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="e.g. A1" />
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Activation Code</label>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Six-digit activation code</label>
                 <div className="relative">
                   <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input required value={activationCode} onChange={(event) => setActivationCode(event.target.value.toUpperCase())} className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-4 font-mono uppercase tracking-widest" />
@@ -175,7 +182,9 @@ export default function TenantActivationPage() {
               )}
               {linkToken && (
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Six-digit email code</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    {activation.phone_verification_required ? 'Six-digit SMS verification code' : 'Six-digit email code'}
+                  </label>
                   <input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={activationCode}
                     onChange={(event) => setActivationCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
                     autoComplete="one-time-code"

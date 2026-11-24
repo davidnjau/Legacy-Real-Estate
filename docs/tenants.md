@@ -33,10 +33,9 @@ PostgreSQL:
 - Property Officer onboarding creates the tenant, tenancy, move-in package,
   and invoice before collecting payment. The tenant activation email is sent
   only after confirmed allocations cover the full move-in invoice; pending or
-  bounced cheques are excluded. The email contains a one-time activation link
-  and six-digit code, both required to set a password. Activation does not
-  sign the tenant in; they continue to the login page. An authorized Property
-  Officer can resend the email if needed.
+  bounced cheques are excluded. The email and queued SMS contain the same
+  one-time activation link and six-digit code, both required to set a password.
+  Activation does not sign the tenant in; they continue to the login page.
 - A new tenancy reserves its unit as `Booked`. The unit changes to `Occupied`
   only after confirmed payment allocations cover the complete move-in invoice
   and the tenancy start date has arrived. `GET
@@ -69,6 +68,14 @@ The tenant dashboard presents the invoice/payment history, receipt references,
 deposit ledger movements, and any move-out refund settlement status from these
 PostgreSQL records; it does not substitute sample records when an API request
 fails.
+
+## WhatsApp account linking
+
+Tenants can start a WhatsApp session from the dashboard's **Chat on WhatsApp**
+link or by messaging the business number, +254 183 666 549. An unlinked contact
+is prompted for the tenant's national ID or company registration number. After
+verification, select **Tenant** if asked to choose a role, then select a
+service from the WhatsApp menu.
 
 ## Rent STK payments
 
@@ -140,14 +147,20 @@ Property and payment-status filters are branch-scoped, and the ledger refreshes
 periodically while open.
 
 On commit, occupied-tenant rows provision inactive tenant portal accounts and
-send unique activation links and six-digit codes after the import transaction
-commits. Preview performs a transactional dry run and sends no email. Failed
-delivery is reported; re-importing the rows issues a fresh activation challenge.
+send unique activation links and six-digit codes by email and queued SMS after
+the import transaction commits. Preview performs a transactional dry run and
+sends no messages. Email delivery and SMS queueing are reported separately;
+failed delivery is reported per channel. Re-running the import reissues a fresh
+challenge for an inactive tenant account; active accounts are not re-invited.
 Existing unit/tenancy records are skipped and never overwritten. Invalid rows
-reject the entire batch atomically. A tenant without an identity document
-remains provisional until they provide it during account activation. After
-opening the link, the tenant must enter their email OTP, create and confirm a
-password, then sign in to access the tenant portal.
+reject the entire batch atomically.
+If the property has default handover inventory, each newly imported tenancy
+receives a legacy handover record with every configured item and quantity
+recorded as issued; properties without defaults create no handover record. A
+tenant without an identity document remains provisional until they provide it
+during account activation. After opening the link, the tenant must enter the
+six-digit OTP, create and confirm a password, then sign in to access the tenant
+portal.
 
 Published branch-wide and current-property announcements are served through
 `GET /api/v1/announcements`, which applies the same tenant session and tenancy
@@ -219,20 +232,32 @@ or withdrawal restores the prior tenancy end date and unit status. The tenant,
 scoped property-management staff, and assigned caretaker receive SMS
 notifications at notice and inspection milestones.
 
-An assigned caretaker completes the exit checklist and captures final readings,
-damage estimates, findings, and photo evidence. Property staff then prepare a
-settlement that itemizes the deposit held, invoice arrears, final utilities,
-damage deductions, refund, and any debt shortfall. Submitting the settlement
-moves the unit to **Deposit Pending** and makes the tenant's move-out tracker
-read-only for that unit; the tenancy is retained and is not closed until payout
-is recorded. Other active tenancies on the same tenant account remain usable.
+When a Property Officer accepts a notice, they assign an active caretaker in
+the same operation. The system creates a pending exit inspection for the
+proposed move-out date and notifies the caretaker and tenant by SMS. The
+caretaker completes the exit checklist and captures final readings, damage
+estimates, findings, and photo evidence. Property staff then prepare a
+settlement that itemizes the deposit held, invoice arrears, final metered
+utilities, damage deductions, refund, and any debt shortfall. Submitting the
+settlement moves the unit to **Deposit Pending** and makes the tenant's move-out
+tracker read-only for that unit; the tenancy is retained and is not closed
+until payout is recorded. Other active tenancies on the same tenant account
+remain usable.
 
-A different Branch Manager or Director must approve the settlement. An
+The ordinary move-out-month invoice includes the regular metered-water charge
+from the published monthly reading, but excludes rent and fixed monthly
+utilities for that month. Any metered usage from the regular reading through
+the caretaker's final reading is deducted from the deposit; it is not issued
+as a separate invoice.
+
+A different Branch Manager must approve the settlement. An
 Accountant with finance MFA records the manual payout reference and date and
 the deposit-ledger movements. On completion, the tenancy is closed and the unit
 becomes **Vacant** or **Maintenance** according to the inspection. The tracker
-shows inspection, approval, payout, itemized calculations, and authorized
-inspection photos. If the settlement has a shortfall, the tenant can use the
+shows inspection, ledger reconciliation, approval, refund status, itemized
+calculations, and authorized inspection photos. Download the final statement
+with `GET /api/v1/tenant/move-out-settlements/{settlement_id}/statement`; the
+payout SMS also includes its link. If the settlement has a shortfall, the tenant can use the
 property Paybill with the vacated unit code as the account reference or contact
 the Property Officer to arrange debt clearance. Historical tenant and financial
 records are retained.

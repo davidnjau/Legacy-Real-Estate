@@ -25,32 +25,78 @@ const navGroups = [
 export function CaretakerSidebar() {
   const pathname = usePathname();
   const [hasPaidWater, setHasPaidWater] = useState(false);
+  const [properties, setProperties] = useState<{ id: number; name: string; branch_name: string }[]>([]);
+  const [activePropertyId, setActivePropertyId] = useState('');
+  const [propertyError, setPropertyError] = useState('');
+  const [savingProperty, setSavingProperty] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void fetch('/api/caretaker/dashboard')
+    void fetch('/api/caretaker/properties', { cache: 'no-store' })
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) {
-          throw new Error(data.detail || data.message || 'Unable to load caretaker properties.');
+          throw new Error(data.detail || data.message || 'Unable to load assigned properties.');
         }
         return data;
       })
       .then((data) => {
-        if (active) {
-          setHasPaidWater(
-            Array.isArray(data.properties) &&
-              data.properties.some((property: { has_paid_water?: boolean }) => property.has_paid_water)
-          );
-        }
+        if (!active) return;
+        const assignedProperties = Array.isArray(data.properties) ? data.properties : [];
+        setProperties(assignedProperties);
+        setActivePropertyId(
+          String(data.activePropertyId ?? assignedProperties[0]?.id ?? ''),
+        );
+        return fetch('/api/caretaker/dashboard', { cache: 'no-store' })
+          .then(async (response) => {
+            const dashboard = await response.json();
+            if (!response.ok) {
+              throw new Error(dashboard.detail || dashboard.message || 'Unable to load the selected property.');
+            }
+            return dashboard;
+          })
+          .then((dashboard) => {
+            if (active) {
+              setHasPaidWater(
+                Array.isArray(dashboard.properties) &&
+                  dashboard.properties.some((property: { has_paid_water?: boolean }) => property.has_paid_water)
+              );
+            }
+          });
       })
       .catch((error: unknown) => {
-        console.error('Unable to determine caretaker water-reading access:', error);
+        if (active) {
+          setPropertyError(error instanceof Error ? error.message : 'Unable to load caretaker properties.');
+        }
       });
     return () => {
       active = false;
     };
   }, []);
+
+  async function selectProperty(propertyId: string) {
+    const parsedId = Number(propertyId);
+    if (!Number.isInteger(parsedId) || parsedId <= 0 || savingProperty) return;
+    setSavingProperty(true);
+    setPropertyError('');
+    try {
+      const response = await fetch('/api/caretaker/properties', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activePropertyId: parsedId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || 'Unable to select this property.');
+      }
+      setActivePropertyId(String(payload.activePropertyId));
+      window.location.reload();
+    } catch (error) {
+      setPropertyError(error instanceof Error ? error.message : 'Unable to select this property.');
+    } finally {
+      setSavingProperty(false);
+    }
+  }
 
   return (
     <ResponsivePortalSidebar
@@ -62,6 +108,26 @@ export function CaretakerSidebar() {
       <div className="mb-6 shrink-0 px-3">
         <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#91a095]">Workspace</p>
         <p className="mt-1 text-xs text-[#8a978e]">Caretaker operations</p>
+      </div>
+      <div className="mb-5 shrink-0 px-3">
+        <label htmlFor="caretaker-property" className="block text-[10px] font-bold uppercase tracking-[0.16em] text-[#91a095]">
+          Active property
+        </label>
+        <select
+          id="caretaker-property"
+          value={activePropertyId}
+          disabled={savingProperty || properties.length === 0}
+          onChange={(event) => void selectProperty(event.target.value)}
+          className="mt-2 w-full rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-xs font-semibold text-[#294534] disabled:opacity-60"
+        >
+          {properties.length === 0 && <option value="">No assigned properties</option>}
+          {properties.map((property) => (
+            <option key={property.id} value={property.id}>
+              {property.name}{property.branch_name ? ` · ${property.branch_name}` : ''}
+            </option>
+          ))}
+        </select>
+        {propertyError && <p role="alert" className="mt-2 text-xs text-red-700">{propertyError}</p>}
       </div>
 
       <nav

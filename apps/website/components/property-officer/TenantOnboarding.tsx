@@ -9,6 +9,7 @@ type PropertyRecord = {
   branch_id: number;
   name: string;
   rent_due_day: number;
+  caretakers?: { id: number; name: string; phone: string }[];
 };
 
 type UnitRecord = {
@@ -46,7 +47,6 @@ type MoveInQuote = {
   total: string;
   fingerprint: string;
   items: Array<{ name: string; amount: string; category: string }>;
-  monthly_charges: Array<{ name: string; amount: string }>;
 };
 
 type TenantPayload = {
@@ -66,6 +66,9 @@ type TenantPayload = {
   activation_email_error?: string | null;
   activation_sms_queued?: boolean;
   activation_sms_error?: string | null;
+  move_in_caretaker_sms_queued?: boolean | null;
+  move_in_caretaker_sms_error?: string | null;
+  move_in_caretaker_id?: number | null;
   document?: TenantDocumentRecord;
   error?: string;
   detail?: string;
@@ -111,12 +114,22 @@ export default function TenantOnboarding() {
   const [companyRegistrationNumber, setCompanyRegistrationNumber] = useState('');
   const [contactPerson, setContactPerson] = useState('');
   const [kraPin, setKraPin] = useState('');
+  const [occupation, setOccupation] = useState('');
+  const [employer, setEmployer] = useState('');
+  const [nextOfKinName, setNextOfKinName] = useState('');
+  const [nextOfKinPhone, setNextOfKinPhone] = useState('');
+  const [nextOfKinRelationship, setNextOfKinRelationship] = useState('');
   const [propertyId, setPropertyId] = useState<number | ''>('');
   const [unitId, setUnitId] = useState<number | ''>('');
+  const [caretakerId, setCaretakerId] = useState<number | ''>('');
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState('');
   const [dueDay, setDueDay] = useState(10);
   const [confirmPaid, setConfirmPaid] = useState(false);
+  const [paymentChannel, setPaymentChannel] = useState('mpesa');
+  const [transactionReference, setTransactionReference] = useState('');
+  const [paymentDate, setPaymentDate] = useState(today);
+  const [paymentAmount, setPaymentAmount] = useState('');
   const [quote, setQuote] = useState<MoveInQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
 
@@ -126,8 +139,11 @@ export default function TenantOnboarding() {
   const [activationEmailError, setActivationEmailError] = useState<string | null>(null);
   const [activationSmsQueued, setActivationSmsQueued] = useState(false);
   const [activationSmsError, setActivationSmsError] = useState<string | null>(null);
+  const [moveInCaretakerSmsQueued, setMoveInCaretakerSmsQueued] = useState<boolean | null>(null);
+  const [moveInCaretakerSmsError, setMoveInCaretakerSmsError] = useState<string | null>(null);
   const [documentType, setDocumentType] = useState('signed_agreement');
   const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [identityDocumentFile, setIdentityDocumentFile] = useState<File | null>(null);
   const [uploadedDocuments, setUploadedDocuments] = useState<
     NonNullable<TenantPayload['document']>[]
   >([]);
@@ -147,6 +163,9 @@ export default function TenantOnboarding() {
     () => visibleUnits.filter((unit) => unit.property_id === propertyId),
     [propertyId, visibleUnits],
   );
+  const availableCaretakers = propertyId === ''
+    ? []
+    : propertyById.get(propertyId)?.caretakers ?? [];
   const visibleTenants = useMemo(
     () => tenants.filter((tenant) => branchIds.has(tenant.branch_id)),
     [branchIds, tenants],
@@ -192,6 +211,12 @@ export default function TenantOnboarding() {
   }, [availableUnits, unitId]);
 
   useEffect(() => {
+    if (!availableCaretakers.some((caretaker) => caretaker.id === caretakerId)) {
+      setCaretakerId(availableCaretakers[0]?.id ?? '');
+    }
+  }, [availableCaretakers, caretakerId]);
+
+  useEffect(() => {
     const selectedUnit = availableUnits.find((item) => item.id === unitId);
     const selectedProperty = selectedUnit ? propertyById.get(selectedUnit.property_id) : undefined;
     if (selectedProperty) setDueDay(selectedProperty.rent_due_day);
@@ -227,10 +252,18 @@ export default function TenantOnboarding() {
     };
   }, [createdTenancy, startDate, unitId]);
 
+  useEffect(() => {
+    if (quote && !createdTenancy) setPaymentAmount(quote.total);
+  }, [createdTenancy, quote]);
+
   async function completeOnboarding(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const selectedUnitId = createdTenancy?.unit_id ?? unitId;
-    if (selectedUnitId === '' || !quote || !confirmPaid) return;
+    if (selectedUnitId === '' || caretakerId === '' || !quote || !confirmPaid) return;
+    if (!identityDocumentFile) {
+      setError("Upload the tenant's national ID or passport before completing onboarding.");
+      return;
+    }
     const unit = availableUnits.find((item) => item.id === selectedUnitId);
     const property = unit ? propertyById.get(unit.property_id) : undefined;
     if ((!unit || !property) && !createdTenancy) {
@@ -242,26 +275,42 @@ export default function TenantOnboarding() {
     setError('');
     setNotice('');
     try {
+      const formData = new FormData();
+      const onboardingFields: Record<string, string | number | boolean> = {
+        unit_id: selectedUnitId,
+        caretaker_id: caretakerId,
+        start_date: startDate,
+        end_date: endDate,
+        tenancy_type: endDate ? 'fixed_term' : 'month_to_month',
+        due_day: dueDay,
+        tenant_type: tenantType,
+        name,
+        email,
+        phone,
+        national_id_or_passport: identity,
+        company_registration_number: tenantType === 'company' ? companyRegistrationNumber : '',
+        contact_person: tenantType === 'company' ? contactPerson : '',
+        kra_pin: kraPin,
+        occupation,
+        employer,
+        next_of_kin_name: nextOfKinName,
+        next_of_kin_phone: nextOfKinPhone,
+        next_of_kin_relationship: nextOfKinRelationship,
+        confirm_paid: confirmPaid,
+        payment_channel: paymentChannel,
+        transaction_reference: transactionReference,
+        payment_date: paymentDate,
+        payment_amount: paymentAmount,
+        quote_total: quote.total,
+        quote_fingerprint: quote.fingerprint,
+      };
+      Object.entries(onboardingFields).forEach(([key, value]) => {
+        formData.set(key, String(value));
+      });
+      formData.set('identity_document', identityDocumentFile);
       const result = await requestJson<TenantPayload>('/api/property-officer/tenant-onboarding', {
         method: 'POST',
-        body: JSON.stringify({
-          unit_id: selectedUnitId,
-          start_date: startDate,
-          end_date: endDate || null,
-          tenancy_type: endDate ? 'fixed_term' : 'month_to_month',
-          due_day: dueDay,
-          tenant_type: tenantType,
-          name,
-          email,
-          phone,
-          national_id_or_passport: tenantType === 'individual' ? identity : '',
-          company_registration_number: tenantType === 'company' ? companyRegistrationNumber : '',
-          contact_person: tenantType === 'company' ? contactPerson : '',
-          kra_pin: kraPin,
-          confirm_paid: confirmPaid,
-          quote_total: quote.total,
-          quote_fingerprint: quote.fingerprint,
-        }),
+        body: formData,
       });
       const tenant = result.tenant;
       const tenancy = result.tenancy;
@@ -270,10 +319,14 @@ export default function TenantOnboarding() {
       }
       setCreatedTenant(tenant);
       setCreatedTenancy(tenancy);
+      setUploadedDocuments(tenant.documents ?? []);
+      setIdentityDocumentFile(null);
       setActivationEmailSent(Boolean(result.activation_email_sent));
       setActivationEmailError(result.activation_email_error ?? null);
       setActivationSmsQueued(Boolean(result.activation_sms_queued));
       setActivationSmsError(result.activation_sms_error ?? null);
+      setMoveInCaretakerSmsQueued(result.move_in_caretaker_sms_queued ?? null);
+      setMoveInCaretakerSmsError(result.move_in_caretaker_sms_error ?? null);
       setTenants((current) => [
         tenant,
         ...current.filter((record) => record.id !== tenant.id),
@@ -298,10 +351,13 @@ export default function TenantOnboarding() {
     setQuote(null);
     setUploadedDocuments([]);
     setDocumentFile(null);
+    setIdentityDocumentFile(null);
     setActivationEmailSent(false);
     setActivationEmailError(null);
     setActivationSmsQueued(false);
     setActivationSmsError(null);
+    setMoveInCaretakerSmsQueued(null);
+    setMoveInCaretakerSmsError(null);
     setTenantType('individual');
     setName('');
     setEmail('');
@@ -310,10 +366,19 @@ export default function TenantOnboarding() {
     setCompanyRegistrationNumber('');
     setContactPerson('');
     setKraPin('');
+    setOccupation('');
+    setEmployer('');
+    setNextOfKinName('');
+    setNextOfKinPhone('');
+    setNextOfKinRelationship('');
     setPropertyId(visibleProperties[0]?.id ?? '');
     setUnitId('');
     setStartDate(today);
     setEndDate('');
+    setPaymentChannel('mpesa');
+    setTransactionReference('');
+    setPaymentDate(today);
+    setPaymentAmount('');
     setNotice('');
     setError('');
   }
@@ -405,28 +470,68 @@ export default function TenantOnboarding() {
                 <input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} className={fieldClass} />
               </label>
             </div>
+            <label className="block text-sm font-semibold">Move-in inspection caretaker
+              <select required disabled={Boolean(createdTenancy) || saving} value={caretakerId}
+                onChange={(event) => setCaretakerId(Number(event.target.value) || '')}
+                className={fieldClass}>
+                <option value="" disabled>Select an assigned caretaker</option>
+                {availableCaretakers.map((caretaker) => (
+                  <option key={caretaker.id} value={caretaker.id}>
+                    {caretaker.name}{caretaker.phone ? '' : ' · phone required'}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                The inspection task will appear as pending immediately. SMS is queued to this caretaker, and the on-site checklist can be submitted from the move-in date.
+              </span>
+            </label>
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block text-sm font-semibold">Phone
                 <input required type="tel" autoComplete="tel" placeholder="07XX XXX XXX" value={phone} onChange={(event) => setPhone(event.target.value)} className={fieldClass} />
               </label>
-              {tenantType === 'individual' ? (
-                <label className="block text-sm font-semibold">National ID or passport
-                  <input required value={identity} onChange={(event) => setIdentity(event.target.value)} className={fieldClass} />
-                </label>
-              ) : (
+              <label className="block text-sm font-semibold">
+                {tenantType === 'individual' ? 'National ID or passport number' : "Contact person's national ID or passport number"}
+                <input required value={identity} onChange={(event) => setIdentity(event.target.value)} className={fieldClass} />
+              </label>
+            </div>
+            {tenantType === 'company' && (
+              <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block text-sm font-semibold">Company registration number
                   <input required value={companyRegistrationNumber} onChange={(event) => setCompanyRegistrationNumber(event.target.value)} className={fieldClass} />
                 </label>
-              )}
-            </div>
-            {tenantType === 'company' && (
-              <label className="block text-sm font-semibold">Contact person
-                <input required value={contactPerson} onChange={(event) => setContactPerson(event.target.value)} className={fieldClass} />
-              </label>
+                <label className="block text-sm font-semibold">Contact person
+                  <input required value={contactPerson} onChange={(event) => setContactPerson(event.target.value)} className={fieldClass} />
+                </label>
+              </div>
             )}
+            <label className="block text-sm font-semibold">
+              {tenantType === 'individual' ? 'National ID or passport document' : "Contact person's national ID or passport document"}
+              <input required type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp"
+                onChange={(event) => setIdentityDocumentFile(event.target.files?.[0] ?? null)} className={fieldClass} />
+              <span className="mt-1 block text-xs font-normal text-slate-500">PDF, JPEG, PNG, or WebP; maximum 10 MB. This is stored privately with the tenancy.</span>
+            </label>
             <label className="block text-sm font-semibold">KRA PIN <span className="font-normal text-slate-500">optional</span>
               <input value={kraPin} onChange={(event) => setKraPin(event.target.value)} className={fieldClass} />
             </label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block text-sm font-semibold">Occupation <span className="font-normal text-slate-500">optional</span>
+                <input maxLength={150} value={occupation} onChange={(event) => setOccupation(event.target.value)} className={fieldClass} />
+              </label>
+              <label className="block text-sm font-semibold">Employer <span className="font-normal text-slate-500">optional</span>
+                <input maxLength={255} value={employer} onChange={(event) => setEmployer(event.target.value)} className={fieldClass} />
+              </label>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="block text-sm font-semibold">Next-of-kin name <span className="font-normal text-slate-500">optional</span>
+                <input maxLength={255} value={nextOfKinName} onChange={(event) => setNextOfKinName(event.target.value)} className={fieldClass} />
+              </label>
+              <label className="block text-sm font-semibold">Next-of-kin phone <span className="font-normal text-slate-500">optional</span>
+                <input type="tel" placeholder="07XX XXX XXX" value={nextOfKinPhone} onChange={(event) => setNextOfKinPhone(event.target.value)} className={fieldClass} />
+              </label>
+              <label className="block text-sm font-semibold">Relationship <span className="font-normal text-slate-500">optional</span>
+                <input maxLength={100} value={nextOfKinRelationship} onChange={(event) => setNextOfKinRelationship(event.target.value)} className={fieldClass} />
+              </label>
+            </div>
           </fieldset>
 
           {createdTenant && (
@@ -493,14 +598,34 @@ export default function TenantOnboarding() {
                   </li>
                 ))}
               </ul>
-              {quote.monthly_charges.length > 0 && (
-                <p className="mt-2 text-xs text-emerald-900">
-                  Monthly utility charges billed separately: {quote.monthly_charges
-                    .map((charge) => `${charge.name} (KES ${Number(charge.amount).toLocaleString()})`)
-                    .join(', ')}.
-                </p>
-              )}
+              <p className="mt-2 text-xs text-emerald-900">
+                This upfront amount includes prorated rent through month-end, the security deposit, and configured utility deposits only. Recurring charges and metered usage are billed separately.
+              </p>
             </div>
+          )}
+          {quote && !createdTenancy && (
+            <fieldset disabled={saving} className="grid gap-4 rounded-xl border border-slate-200 p-4 sm:grid-cols-2 disabled:opacity-70">
+              <legend className="px-1 text-sm font-bold">Record move-in payment</legend>
+              <label className="block text-sm font-semibold">Payment channel
+                <select required value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)} className={fieldClass}>
+                  <option value="mpesa">M-Pesa</option>
+                  <option value="bank_transfer">Bank transfer</option>
+                  <option value="cash">Cash</option>
+                </select>
+              </label>
+              <label className="block text-sm font-semibold">Transaction / office receipt reference
+                <input required maxLength={100} value={transactionReference}
+                  onChange={(event) => setTransactionReference(event.target.value)} className={fieldClass} />
+              </label>
+              <label className="block text-sm font-semibold">Payment date
+                <input required type="date" max={today} value={paymentDate}
+                  onChange={(event) => setPaymentDate(event.target.value)} className={fieldClass} />
+              </label>
+              <label className="block text-sm font-semibold">Amount received (KES)
+                <input required type="number" min="0.01" step="0.01" value={paymentAmount}
+                  onChange={(event) => setPaymentAmount(event.target.value)} className={fieldClass} />
+              </label>
+            </fieldset>
           )}
           {quote && !createdTenancy && (
             <label className="flex items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm">
@@ -515,7 +640,10 @@ export default function TenantOnboarding() {
               Tenant {createdTenant?.name} and tenancy #{createdTenancy.id} are onboarded for {createdTenancy.unit_code}.
             </p>
           )}
-          <button type="submit" disabled={saving || loading || quoteLoading || (!createdTenancy && (unitId === '' || !quote || !confirmPaid))}
+          <button type="submit" disabled={saving || loading || quoteLoading || (!createdTenancy && (
+            unitId === '' || caretakerId === '' || !quote || !confirmPaid || !transactionReference.trim()
+            || !paymentDate || !paymentAmount
+          ))}
             className="w-full rounded-xl bg-emerald-800 px-4 py-3 font-bold text-white disabled:opacity-50">
             {saving ? 'Saving onboarding…' : createdTenancy ? 'Retry activation messages' : 'Confirm payment and onboard tenant'}
           </button>
@@ -531,7 +659,7 @@ export default function TenantOnboarding() {
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="font-bold">Activation delivery</h2>
             <p className="mt-2 text-sm text-slate-600">
-              After the payment confirmation is recorded, an activation link and one-time code are sent by email and SMS.
+              After the payment details are recorded, the activation link is sent by email and the verification code by SMS.
             </p>
             {createdTenancy && (
               <div className="mt-4 space-y-2 text-sm">
@@ -541,6 +669,11 @@ export default function TenantOnboarding() {
                 <p className={activationSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
                   SMS: {activationSmsQueued ? 'queued for delivery' : `not queued${activationSmsError ? ` — ${activationSmsError}` : ''}`}
                 </p>
+                <p className={moveInCaretakerSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
+                  Move-in inspection SMS: {moveInCaretakerSmsQueued
+                    ? 'queued for the assigned caretaker'
+                    : `not queued${moveInCaretakerSmsError ? ` — ${moveInCaretakerSmsError}` : ''}`}
+                </p>
               </div>
             )}
           </section>
@@ -549,7 +682,7 @@ export default function TenantOnboarding() {
             <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="font-bold">Tenancy documents</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Upload signed agreements, identity documents, or other move-in records. Files are stored privately.
+                The national ID or passport is included from onboarding. Upload signed agreements or other additional move-in records here.
               </p>
               <label className="mt-4 block text-sm font-semibold">Document type
                 <select value={documentType} onChange={(event) => setDocumentType(event.target.value)} className={fieldClass}>

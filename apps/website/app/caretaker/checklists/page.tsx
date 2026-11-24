@@ -21,9 +21,16 @@ type HandoverCondition = {
 
 type HandoverPhoto = {
   name: string;
+  evidence_type: string | null;
   content_type: string | null;
   size_bytes: number | null;
   url: string;
+};
+
+type HandoverInventoryItem = {
+  name: string;
+  property_quantity: number;
+  issued_quantity: number | null;
 };
 
 type MoveInHandover = {
@@ -33,8 +40,10 @@ type MoveInHandover = {
   unit_code: string;
   property_name: string;
   tenant_name: string;
+  move_in_date: string;
   status: string;
   keys_issued: number | null;
+  handover_inventory: HandoverInventoryItem[];
   condition_checklist: HandoverCondition[];
   meter_requirements: MeterRequirement[];
   initial_meter_readings: {
@@ -48,13 +57,30 @@ type MoveInHandover = {
 
 type HandoverForm = {
   keysIssued: string;
+  handoverInventory: (Omit<HandoverInventoryItem, 'issued_quantity'> & { issued_quantity: string })[];
   conditions: HandoverCondition[];
   readings: Record<string, string>;
+};
+
+type HandoverPhotoSelection = {
+  condition: File[];
+  waterMeter: File[];
 };
 
 type HandoverPayload = {
   handovers?: MoveInHandover[];
 };
+
+function nairobiDate() {
+  const dateParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const parts = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
 
 type RoutineChecklistEntry = {
   title: string;
@@ -84,7 +110,7 @@ type RoutineForm = {
 export default function CaretakerChecklistsPage() {
   const [handovers, setHandovers] = useState<MoveInHandover[]>([]);
   const [handoverForms, setHandoverForms] = useState<Record<number, HandoverForm>>({});
-  const [handoverPhotos, setHandoverPhotos] = useState<Record<number, File[]>>({});
+  const [handoverPhotos, setHandoverPhotos] = useState<Record<number, HandoverPhotoSelection>>({});
   const [inspections, setInspections] = useState<AssignedInspection[]>([]);
   const [routineForms, setRoutineForms] = useState<Record<number, RoutineForm>>({});
   const [loading, setLoading] = useState(true);
@@ -122,6 +148,10 @@ export default function CaretakerChecklistsPage() {
           handover.id,
           current[handover.id] ?? {
             keysIssued: handover.keys_issued === null ? '' : String(handover.keys_issued),
+            handoverInventory: handover.handover_inventory.map((item) => ({
+              ...item,
+              issued_quantity: item.issued_quantity === null ? '' : String(item.issued_quantity),
+            })),
             conditions: handover.condition_checklist.map((condition) => ({ ...condition })),
             readings: Object.fromEntries(
               handover.initial_meter_readings.map((reading) => [
@@ -160,10 +190,21 @@ export default function CaretakerChecklistsPage() {
   }, [loadItems]);
 
   const submitHandover = async (handover: MoveInHandover) => {
+    if (handover.move_in_date > nairobiDate()) {
+      setError(`This move-in inspection is pending until ${handover.move_in_date}.`);
+      return;
+    }
     const form = handoverForms[handover.id];
-    const selectedPhotos = handoverPhotos[handover.id] ?? [];
+    const selectedPhotoGroups = handoverPhotos[handover.id] ?? { condition: [], waterMeter: [] };
+    const selectedPhotos = [...selectedPhotoGroups.condition, ...selectedPhotoGroups.waterMeter];
     if (!form || !/^\d+$/.test(form.keysIssued) || Number(form.keysIssued) > 32767) {
       setError('Enter the whole number of keys and access devices issued (0–32,767).');
+      return;
+    }
+    if (form.handoverInventory.some(
+      (item) => !/^\d+$/.test(item.issued_quantity) || Number(item.issued_quantity) > 32767,
+    )) {
+      setError('Enter the whole number issued for every handover inventory item (0–32,767).');
       return;
     }
     if (handover.meter_requirements.some((requirement) => !requirement.configured)) {
@@ -184,8 +225,16 @@ export default function CaretakerChecklistsPage() {
       setError('Add a note for each condition marked as needing attention.');
       return;
     }
-    if (handover.photos.length === 0 && (handoverPhotos[handover.id] ?? []).length === 0) {
+    if (handover.photos.length === 0 && selectedPhotos.length === 0) {
       setError('Upload at least one move-in condition or meter photo.');
+      return;
+    }
+    if (
+      handover.meter_requirements.some((requirement) => requirement.utility_type === 'water')
+      && !handover.photos.some((photo) => photo.evidence_type === 'water_meter')
+      && selectedPhotoGroups.waterMeter.length === 0
+    ) {
+      setError('Upload a clear photo of the water meter and its reading.');
       return;
     }
     if (handover.photos.length + selectedPhotos.length > 10) {
@@ -205,7 +254,14 @@ export default function CaretakerChecklistsPage() {
       let submissionHandover = handover;
       if (selectedPhotos.length > 0) {
         const formData = new FormData();
-        selectedPhotos.forEach((file) => formData.append('photos', file));
+        selectedPhotoGroups.condition.forEach((file) => {
+          formData.append('photos', file);
+          formData.append('photo_types', 'condition');
+        });
+        selectedPhotoGroups.waterMeter.forEach((file) => {
+          formData.append('photos', file);
+          formData.append('photo_types', 'water_meter');
+        });
         const photoResponse = await fetch(`/api/caretaker/checklists/${handover.id}/photos`, {
           method: 'POST',
           body: formData,
@@ -222,7 +278,10 @@ export default function CaretakerChecklistsPage() {
         setHandovers((current) => current.map((item) => (
           item.id === handover.id ? updatedHandover : item
         )));
-        setHandoverPhotos((current) => ({ ...current, [handover.id]: [] }));
+        setHandoverPhotos((current) => ({
+          ...current,
+          [handover.id]: { condition: [], waterMeter: [] },
+        }));
         submissionHandover = updatedHandover;
       }
 
@@ -231,6 +290,10 @@ export default function CaretakerChecklistsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           keys_issued: Number(form.keysIssued),
+          handover_inventory: form.handoverInventory.map((item) => ({
+            name: item.name,
+            issued_quantity: Number(item.issued_quantity),
+          })),
           condition_checklist: form.conditions,
           initial_meter_readings: submissionHandover.meter_requirements.map((requirement) => ({
             utility_type: requirement.utility_type,
@@ -365,17 +428,25 @@ export default function CaretakerChecklistsPage() {
           <div>
             <h2 className="text-lg font-bold text-slate-900">Move-in handover</h2>
             <p className="text-sm text-slate-600">
-              Record each unit’s condition, keys, opening meter readings, and photo evidence for Property Officer review.
+              Record item counts, unit condition, keys, opening readings, and photo evidence for Property Officer review.
             </p>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
             {handovers.map((handover) => {
               const form = handoverForms[handover.id] ?? {
                 keysIssued: '',
+                handoverInventory: handover.handover_inventory.map((item) => ({
+                  ...item,
+                  issued_quantity: item.issued_quantity === null ? '' : String(item.issued_quantity),
+                })),
                 conditions: handover.condition_checklist,
                 readings: {},
               };
-              const selectedPhotos = handoverPhotos[handover.id] ?? [];
+              const selectedPhotos = handoverPhotos[handover.id] ?? { condition: [], waterMeter: [] };
+              const moveInDue = handover.move_in_date <= nairobiDate();
+              const waterMeterRequired = handover.meter_requirements.some(
+                (requirement) => requirement.utility_type === 'water',
+              );
               return (
                 <article key={handover.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex items-start gap-3">
@@ -385,9 +456,14 @@ export default function CaretakerChecklistsPage() {
                     <div className="min-w-0 flex-1">
                       <h2 className="font-semibold text-slate-900">{handover.property_name} · Unit {handover.unit_code}</h2>
                       <p className="mt-1 text-sm text-slate-600">Tenant: {handover.tenant_name}</p>
+                      <p className="mt-1 text-sm text-slate-600">Move-in date: {handover.move_in_date}</p>
                     </div>
                   </div>
+                  <p className={`mt-3 rounded-lg px-3 py-2 text-sm font-semibold ${moveInDue ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-900'}`}>
+                    {moveInDue ? 'Inspection can be completed today' : 'Pending — inspection opens on the move-in date'}
+                  </p>
 
+                  <fieldset disabled={!moveInDue} className="space-y-5">
                   <label className="mt-5 block text-sm font-medium text-slate-700">
                     Keys and access devices issued
                     <input
@@ -400,6 +476,36 @@ export default function CaretakerChecklistsPage() {
                       className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
                     />
                   </label>
+
+                  <fieldset className="mt-5 space-y-3">
+                    <legend className="text-sm font-semibold text-slate-800">Handover inventory</legend>
+                    {form.handoverInventory.length === 0 && (
+                      <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+                        No property handover inventory items are configured.
+                      </p>
+                    )}
+                    {form.handoverInventory.map((item, index) => (
+                      <label key={item.name} className="block text-sm font-medium text-slate-700">
+                        {item.name} <span className="font-normal text-slate-500">(expected: {item.property_quantity})</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="32767"
+                          step="1"
+                          value={item.issued_quantity}
+                          onChange={(event) => {
+                            const handoverInventory = form.handoverInventory.map((entry, entryIndex) => (
+                              entryIndex === index
+                                ? { ...entry, issued_quantity: event.target.value }
+                                : entry
+                            ));
+                            updateHandoverForm(handover.id, { handoverInventory });
+                          }}
+                          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                        />
+                      </label>
+                    ))}
+                  </fieldset>
 
                   <fieldset className="mt-5 space-y-3">
                     <legend className="text-sm font-semibold text-slate-800">Room and fixture condition</legend>
@@ -478,20 +584,49 @@ export default function CaretakerChecklistsPage() {
 
                   <div className="mt-5">
                     <label className="block text-sm font-semibold text-slate-800">
-                      Handover photos
+                      Condition photos
                       <input
                         type="file"
                         accept="image/jpeg,image/png,image/webp"
                         multiple
-                        onChange={(event) => setHandoverPhotos((current) => ({
-                          ...current,
-                          [handover.id]: Array.from(event.target.files ?? []),
-                        }))}
+                        onChange={(event) => setHandoverPhotos((current) => {
+                          const existing = current[handover.id] ?? { condition: [], waterMeter: [] };
+                          return {
+                            ...current,
+                            [handover.id]: {
+                              ...existing,
+                              condition: Array.from(event.target.files ?? []),
+                            },
+                          };
+                        })}
                         className="mt-2 block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:font-semibold file:text-emerald-800"
                       />
                     </label>
+                    {waterMeterRequired && (
+                      <label className="mt-4 block text-sm font-semibold text-slate-800">
+                        Water meter photo (required)
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          multiple
+                          onChange={(event) => setHandoverPhotos((current) => {
+                            const existing = current[handover.id] ?? { condition: [], waterMeter: [] };
+                            return {
+                              ...current,
+                              [handover.id]: {
+                                ...existing,
+                                waterMeter: Array.from(event.target.files ?? []),
+                              },
+                            };
+                          })}
+                          className="mt-2 block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:font-semibold file:text-emerald-800"
+                        />
+                      </label>
+                    )}
                     <p className="mt-1 text-xs text-slate-500">JPEG, PNG, or WebP; up to 5 MB per photo and 10 photos total.</p>
-                    {(handover.photos.length > 0 || selectedPhotos.length > 0) && (
+                    {(handover.photos.length > 0
+                      || selectedPhotos.condition.length > 0
+                      || selectedPhotos.waterMeter.length > 0) && (
                       <div className="mt-3 flex flex-wrap gap-3">
                         {handover.photos.map((photo) => (
                           <a
@@ -499,11 +634,12 @@ export default function CaretakerChecklistsPage() {
                             href={photo.url}
                             target="_blank"
                             rel="noreferrer"
+                            aria-label={`${photo.evidence_type === 'water_meter' ? 'Water meter' : photo.evidence_type === 'condition' ? 'Condition' : 'Handover'} photo: ${photo.name}`}
                             className="overflow-hidden rounded-lg border border-slate-200"
                           >
                             <Image
                               src={photo.url}
-                              alt={photo.name}
+                              alt={`${photo.evidence_type === 'water_meter' ? 'Water meter' : photo.evidence_type === 'condition' ? 'Condition' : 'Handover'} photo: ${photo.name}`}
                               width={112}
                               height={80}
                               unoptimized
@@ -511,22 +647,28 @@ export default function CaretakerChecklistsPage() {
                             />
                           </a>
                         ))}
-                        {selectedPhotos.map((photo) => (
-                          <span key={`${photo.name}-${photo.size}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                            {photo.name}
+                        {selectedPhotos.condition.map((photo) => (
+                          <span key={`condition-${photo.name}-${photo.size}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                            Condition: {photo.name}
+                          </span>
+                        ))}
+                        {selectedPhotos.waterMeter.map((photo) => (
+                          <span key={`water-meter-${photo.name}-${photo.size}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                            Water meter: {photo.name}
                           </span>
                         ))}
                       </div>
                     )}
                   </div>
+                  </fieldset>
 
                   <button
                     type="button"
                     onClick={() => void submitHandover(handover)}
-                    disabled={savingHandoverId !== null}
+                    disabled={savingHandoverId !== null || !moveInDue}
                     className="mt-5 inline-flex items-center gap-2 rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                   >
-                    {savingHandoverId === handover.id ? 'Submitting…' : 'Submit handover for review'}
+                    {savingHandoverId === handover.id ? 'Submitting…' : moveInDue ? 'Submit handover for review' : 'Available on move-in date'}
                   </button>
                 </article>
               );

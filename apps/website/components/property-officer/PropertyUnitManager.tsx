@@ -21,11 +21,13 @@ type PropertyRecord = {
   default_unit_type: string;
   default_rent: string;
   security_deposit: string;
+  move_in_letting_fee: string;
   water_deposit: string;
   default_garbage_charge: string;
   default_water_rate: string;
   amenities: unknown;
   house_rules: unknown;
+  default_handover_items: { name: string; quantity: number }[];
   unit_types?: UnitTypeRecord[];
 };
 
@@ -93,6 +95,7 @@ type LandlordRecord = {
 };
 
 type InventoryResponse = {
+  property?: PropertyRecord;
   properties?: PropertyRecord[];
   units?: UnitRecord[];
   landlords?: LandlordRecord[];
@@ -143,6 +146,92 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+function MoveInSettingsEditor({
+  property,
+  onSaved,
+}: {
+  property: PropertyRecord;
+  onSaved: (property: PropertyRecord) => void;
+}) {
+  const [lettingFee, setLettingFee] = useState(property.move_in_letting_fee || '0.00');
+  const [items, setItems] = useState(
+    property.default_handover_items?.map((item) => ({
+      name: item.name,
+      quantity: String(item.quantity),
+    })) ?? [],
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await requestJson<InventoryResponse>(
+        `/api/property-officer/properties/${property.id}/move-in-settings`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            move_in_letting_fee: lettingFee,
+            default_handover_items: items.map((item) => ({
+              name: item.name.trim(),
+              quantity: Number(item.quantity),
+            })),
+          }),
+        },
+      );
+      if (!result.property) throw new Error('The saved property settings were not returned.');
+      onSaved(result.property);
+      setNotice('Move-in settings saved.');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to save move-in settings.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mt-4 space-y-3 border-t border-slate-100 pt-4">
+      <h3 className="text-xs font-bold uppercase tracking-wide text-slate-600">Move-in settings</h3>
+      <label className="block text-xs font-semibold text-slate-700">One-time letting fee (KES)
+        <input type="number" min="0" step="0.01" value={lettingFee}
+          onChange={(event) => setLettingFee(event.target.value)} className={fieldClass} />
+      </label>
+      <p className="text-xs text-slate-500">This setting is not charged on the move-in invoice.</p>
+      <div className="space-y-2">
+        {items.map((item, index) => (
+          <div key={index} className="grid grid-cols-[minmax(0,1fr)_7rem_auto] gap-2">
+            <label className="sr-only" htmlFor={`handover-name-${property.id}-${index}`}>Item name</label>
+            <input id={`handover-name-${property.id}-${index}`} maxLength={100}
+              value={item.name} onChange={(event) => setItems((current) => current.map((entry, entryIndex) => (
+                entryIndex === index ? { ...entry, name: event.target.value } : entry
+              )))} placeholder="Keys, access cards…" className={fieldClass} />
+            <label className="sr-only" htmlFor={`handover-quantity-${property.id}-${index}`}>Quantity</label>
+            <input id={`handover-quantity-${property.id}-${index}`} type="number" min="0" max="32767" step="1"
+              value={item.quantity} onChange={(event) => setItems((current) => current.map((entry, entryIndex) => (
+                entryIndex === index ? { ...entry, quantity: event.target.value } : entry
+              )))} className={fieldClass} />
+            <button type="button" onClick={() => setItems((current) => current.filter((_, entryIndex) => entryIndex !== index))}
+              className="px-2 text-xs font-semibold text-red-700">Remove</button>
+          </div>
+        ))}
+        <button type="button" disabled={items.length >= 30}
+          onClick={() => setItems((current) => [...current, { name: '', quantity: '0' }])}
+          className="text-xs font-bold text-emerald-900 disabled:opacity-50">+ Add handover item</button>
+      </div>
+      {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
+      {notice && <p role="status" className="text-xs text-emerald-800">{notice}</p>}
+      <button type="submit" disabled={saving}
+        className="rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+        {saving ? 'Saving…' : 'Save move-in settings'}
+      </button>
+    </form>
+  );
+}
+
 export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'units' }) {
   const { agency, branchIds } = usePropertyOfficerPortal();
   const [properties, setProperties] = useState<PropertyRecord[]>([]);
@@ -166,6 +255,7 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
   const [rentDueDay, setRentDueDay] = useState(10);
   const [amenities, setAmenities] = useState('');
   const [houseRules, setHouseRules] = useState(['']);
+  const [handoverItems, setHandoverItems] = useState<{ name: string; quantity: string }[]>([]);
   const [unitTypes, setUnitTypes] = useState<UnitTypeDraft[]>([newUnitType()]);
   const [unitCount, setUnitCount] = useState(0);
   const unitTypeCount = unitTypes.reduce(
@@ -250,6 +340,14 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
       );
       return;
     }
+    if (handoverItems.some(
+      (item) => !item.name.trim()
+        || !/^\d+$/.test(item.quantity)
+        || Number(item.quantity) > 32767,
+    )) {
+      setError('Enter a name and a whole-number quantity from 0 to 32,767 for each handover item.');
+      return;
+    }
     setSubmitting(true);
     setError('');
     setNotice('');
@@ -285,6 +383,10 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
             house_rules: {
               statements: houseRules.map((rule) => rule.trim()).filter(Boolean),
             },
+            default_handover_items: handoverItems.map((item) => ({
+              name: item.name.trim(),
+              quantity: Number(item.quantity),
+            })),
           }),
         },
       );
@@ -294,6 +396,7 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
       setAddress('');
       setLandlordId('');
       setHouseRules(['']);
+      setHandoverItems([]);
       setUnitTypes([newUnitType()]);
       setUnitCount(0);
       setReloadKey((key) => key + 1);
@@ -380,6 +483,12 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
                       </ul>
                     </div>
                   )}
+                  <MoveInSettingsEditor
+                    property={property}
+                    onSaved={(updatedProperty) => setProperties((current) => current.map((item) => (
+                      item.id === updatedProperty.id ? updatedProperty : item
+                    )))}
+                  />
                 </article>
               ))
             ) : null}
@@ -422,6 +531,71 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
             <label className="block text-sm font-semibold">Amenities (comma separated)
               <input className={fieldClass} value={amenities} onChange={(event) => setAmenities(event.target.value)} placeholder="Parking, water tank, security" />
             </label>
+            <section className="space-y-3 rounded-xl border border-slate-200 p-4" aria-label="Move-in handover items">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Move-in handover items (optional)</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Add each item tenants should receive and the expected quantity. Leave this empty if there are no items to issue.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={handoverItems.length >= 30}
+                  onClick={() => setHandoverItems((current) => [...current, { name: '', quantity: '0' }])}
+                  className="shrink-0 rounded-lg border border-emerald-800 px-3 py-2 text-xs font-bold text-emerald-900 disabled:opacity-50"
+                >
+                  Add item
+                </button>
+              </div>
+              {handoverItems.length === 0 ? (
+                <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+                  No handover items configured.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {handoverItems.map((item, index) => (
+                    <div key={index} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Item name
+                        <input
+                          required
+                          maxLength={100}
+                          className={fieldClass}
+                          value={item.name}
+                          onChange={(event) => setHandoverItems((current) => current.map((entry, entryIndex) => (
+                            entryIndex === index ? { ...entry, name: event.target.value } : entry
+                          )))}
+                          placeholder="Keys, access cards…"
+                        />
+                      </label>
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Quantity
+                        <input
+                          required
+                          min="0"
+                          max="32767"
+                          step="1"
+                          type="number"
+                          className={fieldClass}
+                          value={item.quantity}
+                          onChange={(event) => setHandoverItems((current) => current.map((entry, entryIndex) => (
+                            entryIndex === index ? { ...entry, quantity: event.target.value } : entry
+                          )))}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setHandoverItems((current) => current.filter((_, entryIndex) => entryIndex !== index))}
+                        className="self-end px-2 py-2 text-xs font-semibold text-red-700"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
             <section className="space-y-2 rounded-xl border border-slate-200 p-4">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-sm font-bold text-slate-900">House rules</h3>

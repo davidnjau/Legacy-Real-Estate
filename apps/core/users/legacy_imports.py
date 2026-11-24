@@ -12,7 +12,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import IntegrityError, models, transaction
+from django.db import DatabaseError, IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -26,6 +26,7 @@ from users.models import (
     Invoice,
     InvoiceLine,
     MeterReading,
+    MoveInPackage,
     Payment,
     PaymentAllocation,
     AgencyMembership,
@@ -40,6 +41,7 @@ from users.models import (
     UserProfile,
 )
 from users.roles import TENANT_PORTAL_ROLE
+from users.sms import queue_template_sms
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +357,15 @@ def _prepare_tenant_activation(
         _problem(sheet, row, "Occupied tenant records need tenant_email to receive an activation link and code.")
     if not settings.PUBLIC_SITE_URL:
         _problem(sheet, row, "PUBLIC_SITE_URL must be configured before importing tenants for activation.")
+    from users.views import _normalize_ke_phone
+
+    try:
+        activation_phone = _normalize_ke_phone(tenant.phone)
+    except ValueError as exc:
+        _problem(sheet, row, f"Occupied tenants need a valid phone number for SMS activation: {exc}")
+    if tenant.phone != activation_phone:
+        tenant.phone = activation_phone
+        tenant.save(update_fields=["phone", "updated_at"])
 
     tenant_role, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
 
@@ -436,6 +447,7 @@ def _prepare_tenant_activation(
         unit=tenancy.unit,
         token_hash=_activation_hash(token),
         code_hash=_activation_hash(activation_code),
+        phone_verification_required=True,
         expires_at=now + timedelta(hours=48),
     )
     activation_emails.append(
@@ -443,13 +455,35 @@ def _prepare_tenant_activation(
             "challenge_id": challenge.pk,
             "full_name": tenant.name,
             "email": tenant.email,
+            "phone": activation_phone,
             "unit_code": tenancy.unit.code,
             "property_name": tenancy.unit.property.name,
             "activation_url": f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate?token={token}",
             "activation_code": activation_code,
+            "expires_at": challenge.expires_at,
         }
     )
     activation_keys.add(activation_key)
+
+
+def _create_imported_handover_record(tenancy, property_obj, created):
+    inventory = property_obj.default_handover_items or []
+    if not inventory:
+        return
+    MoveInPackage.objects.create(
+        tenancy=tenancy,
+        agreement_reference=f"MIA-{timezone.now():%Y%m%d}-{secrets.token_hex(4).upper()}",
+        handover_status=MoveInPackage.HANDOVER_STATUS_LEGACY,
+        handover_inventory=[
+            {
+                "name": item["name"],
+                "property_quantity": item["quantity"],
+                "issued_quantity": item["quantity"],
+            }
+            for item in inventory
+        ],
+    )
+    created["move_in_packages"] = created.get("move_in_packages", 0) + 1
 
 
 def _month_start(value, sheet, row, field):
@@ -570,7 +604,7 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
                 "row": 1,
                 "message": "Register at least one unit type for this property before importing its inventory.",
             }],
-            "activation": {"prepared": 0, "sent": 0, "failed": []},
+            "activation": {"prepared": 0, "sent": 0, "sms_queued": 0, "failed": []},
         }
 
     def skip(sheet, row, reason):
@@ -994,6 +1028,7 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
                 tenancy.full_clean()
                 tenancy.save()
                 created["tenancies"] += 1
+                _create_imported_handover_record(tenancy, property_obj, created)
                 target_deposit = sum(
                     (
                         _decimal(
@@ -1098,6 +1133,7 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
                 "activation": {
                     "prepared": len(activation_emails),
                     "sent": 0,
+                    "sms_queued": 0,
                     "failed": [],
                 },
             }
@@ -1110,7 +1146,7 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
             "created": {key: 0 for key in created},
             "skipped": skipped,
             "errors": [exc.issue],
-            "activation": {"prepared": 0, "sent": 0, "failed": []},
+            "activation": {"prepared": 0, "sent": 0, "sms_queued": 0, "failed": []},
         }
     except ValidationError as exc:
         detail = exc.message_dict if hasattr(exc, "message_dict") else str(exc)
@@ -1118,7 +1154,7 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
             "created": {key: 0 for key in created},
             "skipped": skipped,
             "errors": [{"sheet": "batch", "row": 1, "message": str(detail)}],
-            "activation": {"prepared": 0, "sent": 0, "failed": []},
+            "activation": {"prepared": 0, "sent": 0, "sms_queued": 0, "failed": []},
         }
     except IntegrityError:
         return {
@@ -1129,7 +1165,7 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
                 "row": 1,
                 "message": "A record conflicted with existing inventory or ledger data. No records were imported; preview the file again.",
             }],
-            "activation": {"prepared": 0, "sent": 0, "failed": []},
+            "activation": {"prepared": 0, "sent": 0, "sms_queued": 0, "failed": []},
         }
 
     _deliver_activation_emails(report, activation_emails)
@@ -1150,6 +1186,7 @@ def _deliver_activation_emails(report, activation_emails):
                 invitation["property_name"],
                 invitation["activation_url"],
                 invitation["activation_code"],
+                phone_verification_required=True,
             )
         except (
             ImproperlyConfigured,
@@ -1169,7 +1206,7 @@ def _deliver_activation_emails(report, activation_emails):
                 {
                     "unit_code": invitation["unit_code"],
                     "email": invitation["email"],
-                    "message": "Activation email delivery failed. Re-import the property unit data to issue a fresh link and code.",
+                    "message": "Activation email delivery failed; check the SMS result before retrying the invitation.",
                 }
             )
         else:
@@ -1177,6 +1214,37 @@ def _deliver_activation_emails(report, activation_emails):
                 pk=invitation["challenge_id"]
             ).update(email_sent_at=timezone.now(), email_delivery_error="")
             report["activation"]["sent"] += 1
+        try:
+            queue_template_sms(
+                invitation["phone"],
+                "tenant_activation",
+                {
+                    "tenant_name": invitation["full_name"],
+                    "activation_url": invitation["activation_url"],
+                    "code": invitation["activation_code"],
+                },
+                expires_at=invitation["expires_at"],
+            )
+        except (
+            DatabaseError,
+            ImproperlyConfigured,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as error:
+            logger.warning(
+                "Legacy tenant activation SMS could not be queued (%s).",
+                type(error).__name__,
+            )
+            report["activation"]["failed"].append(
+                {
+                    "unit_code": invitation["unit_code"],
+                    "email": invitation["email"],
+                    "message": "Activation SMS could not be queued. The email delivery status is reported separately.",
+                }
+            )
+        else:
+            report["activation"]["sms_queued"] += 1
 
 
 def import_legacy_data(branch, user, files, *, commit, property_obj=None):
@@ -1665,6 +1733,7 @@ def import_legacy_data(branch, user, files, *, commit, property_obj=None):
                 "activation": {
                     "prepared": len(activation_emails),
                     "sent": 0,
+                    "sms_queued": 0,
                     "failed": [],
                 },
             }
@@ -1686,43 +1755,5 @@ def import_legacy_data(branch, user, files, *, commit, property_obj=None):
             "skipped": skipped,
             "errors": [{"sheet": "batch", "row": 1, "message": "A record conflicted with an existing ledger entry. No records were imported; preview the file again."}],
         }
-    if activation_emails:
-        from users.views import _send_tenant_activation_email
-
-        for invitation in activation_emails:
-            try:
-                _send_tenant_activation_email(
-                    invitation["full_name"],
-                    invitation["email"],
-                    invitation["unit_code"],
-                    invitation["property_name"],
-                    invitation["activation_url"],
-                    invitation["activation_code"],
-                )
-            except (
-                ImproperlyConfigured,
-                OSError,
-                RuntimeError,
-                smtplib.SMTPException,
-                ValueError,
-            ) as error:
-                TenantActivationChallenge.objects.filter(
-                    pk=invitation["challenge_id"]
-                ).update(email_delivery_error=type(error).__name__)
-                logger.warning(
-                    "Legacy tenant activation email delivery failed (%s).",
-                    type(error).__name__,
-                )
-                report["activation"]["failed"].append(
-                    {
-                        "unit_code": invitation["unit_code"],
-                        "email": invitation["email"],
-                        "message": "Activation email delivery failed. Re-import the property unit data to issue a fresh link and code.",
-                    }
-                )
-            else:
-                TenantActivationChallenge.objects.filter(
-                    pk=invitation["challenge_id"]
-                ).update(email_sent_at=timezone.now(), email_delivery_error="")
-                report["activation"]["sent"] += 1
+    _deliver_activation_emails(report, activation_emails)
     return report

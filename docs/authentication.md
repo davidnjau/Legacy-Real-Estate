@@ -150,10 +150,11 @@ does not add business workflows or permissions beyond the approved SRS.
   code are both required; only their hashes are stored. Invitations expire
   after `AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS` (15 minutes by default), allow
   at most five failed code attempts, and are consumed once when the caretaker
-  account and durable property assignment are created. Authorized staff capture
-  the caretaker's name, email, phone, ID or registration number, and optional
-  KRA PIN when inviting them; these details are stored on the profile when the
-  caretaker activates. The API does not return the raw activation link or code.
+  account and durable assignments for the selected properties are created.
+  Authorized staff capture the caretaker's name, email, phone, ID or
+  registration number, and optional KRA PIN when inviting them; these details
+  are stored on the profile when the caretaker activates. The API does not
+  return the raw activation link or code.
 - Tenant activation for a Property Officer move-in package is sent by email
   only after confirmed allocations fully pay the move-in invoice. Pending or
   bounced cheques do not count as payment. The email contains a one-time link

@@ -14,6 +14,8 @@ property can also include:
 
 - property type, location, GPS coordinates, amenities, house rules, and photo
   references;
+- optional move-in handover inventory items and their expected quantities; the
+  list can remain empty for properties with nothing to issue;
 - one or more caretakers, who must have the `Caretaker` role and branch access;
 - blocks and floors, with unique block names per property and unique floor levels
   per block; and
@@ -99,9 +101,18 @@ also removes the legacy property caretaker relation. Caretakers can only view
 properties with an active assignment.
 
 The caretaker dashboard is available through `GET /api/v1/caretaker/dashboard`.
-It returns assigned properties, unit status counts, the current month's reading
-status, recent readings, and pending move-in checklist items. Maintenance
-tickets in the caretaker's property scope are included as well.
+The caretaker property selector uses `GET` and `PATCH /api/v1/caretaker/properties`
+to list assignments and persist the active property. Caretaker portal data is
+scoped to that selected property; switching properties refreshes the dashboard,
+readings, checklists, inspections, and maintenance views.
+
+The dashboard returns the selected property's unit status counts, the current
+month's reading status, recent readings, and pending move-in checklist items.
+Maintenance tickets in the selected property's scope are included as well.
+
+Authorized property staff can invite a caretaker to one or more accessible
+properties in a single registration. The invitation's activation creates one
+caretaker account and an active assignment for each selected property.
 
 Move-in handovers are submitted through `GET /api/v1/caretaker/checklists`,
 `POST /api/v1/caretaker/checklists/{package_id}/photos`, and
@@ -109,6 +120,9 @@ Move-in handovers are submitted through `GET /api/v1/caretaker/checklists`,
 keys issued, a room/fixture condition checklist, opening readings for configured
 metered water and electricity, and private photo evidence. Water readings become
 the tenancy's opening billing baseline after Property Officer confirmation.
+Property Officer onboarding assigns one active caretaker to the task and queues
+an SMS immediately. The pending task is visible before the move-in date, but
+photo uploads and checklist submission are enabled only on or after that date.
 Submitted handovers are reviewed through
 `GET /api/v1/property-officer/move-in-handovers` and confirmed through
 `POST /api/v1/property-officer/move-in-handovers/{package_id}/confirm`.
@@ -137,6 +151,14 @@ reports are supported when an issue is in a common area. Assigned caretakers
 must attach private completion photos before submitting a completed ticket.
 Completion queues SMS updates for scoped property staff and, when the ticket is
 for an occupied unit, the active tenant.
+
+Verified caretaker WhatsApp contacts can also view tickets in their active
+assigned-property scope, claim open unassigned tickets, start their assigned
+work, view and reply to ticket comments, and report property-wide on-site issues.
+Completing an in-progress ticket requires the technician/fundi name, a
+non-negative repair cost, and at least one JPEG, PNG, or WebP completion photo.
+Ticket actions are audited; completion queues the same staff and tenant SMS
+notifications as the portal and a tenant WhatsApp notification when enabled.
 
 The vendor/fundi registry is managed by authorized property staff through:
 
@@ -182,6 +204,22 @@ their accessible branches. Only completed reports can be shared. Sharing
 enables an opaque UUID token, while the public report response excludes that
 token and other management-only metadata. Inspection creation, completion, and
 sharing are audited.
+
+Verified caretaker WhatsApp contacts can also submit pending move-in handovers
+for their actively assigned properties and complete their own scheduled or
+in-progress routine inspections. Handovers collect keys and access devices
+issued, expected-versus-issued quantities for each configured property
+inventory item, every required room/fixture condition and notes for issues,
+and opening readings for configured metered utilities. At least one privately
+stored photo is required; when water is metered, a separately identified water
+meter photo is also required. Photos must be JPEG, PNG, or WebP, up to 10 total
+and 5 MB each. The portal and WhatsApp collect the same handover data, and
+Property Officers can review the item counts and labelled photos before
+confirming. Submission is audited and queues the same scoped staff SMS
+notification as the portal. Routine inspection completion records every
+checklist item, findings (required when no checklist exists), and optional
+recommendations, and is audited. Move-out/exit inspections remain in the
+separate caretaker dashboard workflow.
 
 Property expenses are managed through:
 
@@ -422,13 +460,40 @@ Move-in packages are generated through:
 
 - `POST /api/v1/tenancies/{tenancy_id}/move-in-package`
 - `GET /api/v1/tenancies/{tenancy_id}/move-in-agreement.pdf`
+- `POST /api/v1/tenancies/{tenancy_id}/move-in-invoice`
 
-Package generation is idempotent. It selects effective unit charges at the
-tenancy start date, prorates rent from that date through the end of the month,
-includes deposits and recurring charges, and creates a five-item move-in
-inspection and handover checklist. The PDF endpoint renders the persisted
-package terms and charges as an agreement document; binary object-storage
-archival remains part of the later storage integration.
+Package generation is idempotent. The opening move-in invoice includes rent
+prorated by actual calendar days from the move-in date through month-end,
+security and configured utility deposits, and no recurring charges or letting
+fees. Recurring charges and metered usage are billed separately; opening meter
+readings are recorded during handover. The package also creates a five-item
+move-in inspection and handover checklist. Invoice issuance requires a package
+and is idempotent for the tenancy's move-in period.
+
+Property-officer onboarding uses:
+
+- `GET /api/v1/property-officer/move-in-quote`
+- `POST /api/v1/property-officer/tenant-onboarding`
+
+The quote includes only prorated first-month rent, the security deposit, and
+configured utility deposits. Rent is prorated from the move-in day through
+month-end, inclusive, using actual calendar days. Onboarding requires
+confirmation of the full quoted payment and records its channel, reference,
+and date, plus a tenant national ID/passport number and document (for a
+company, the authorized contact person's). The upload is validated and stored
+before activation; submit the onboarding request as `multipart/form-data`.
+Onboarding creates the provisional tenant and tenancy, opening package and
+invoice, allocates the confirmed payment through the standard payment ledger,
+and issues a receipt. Recurring charges and metered usage are billed
+separately. Landlord-created move-in reservations use the same upfront charge
+composition; their recurring-charge snapshots are retained for subsequent
+billing. The identity document, generated agreement, and receipt PDFs are
+stored as private tenant documents and are served through the existing
+authorized tenant-document endpoint.
+
+Activation sends the verification code by SMS and requires phone verification
+before the tenant account is activated. Move-in notifications currently use
+email and SMS; WhatsApp notifications are deferred.
 
 Tenant activation is managed through:
 
@@ -493,29 +558,50 @@ and marks the unit **Notice Given**; rejection or withdrawal restores the prior
 end date and occupancy status. Notice submission, staff recording, and review
 queue scoped SMS notifications through the configured Softlink outbox.
 
-An assigned caretaker completes the `move_out` or `exit` inspection through
-`POST /api/v1/inspections/{inspection_id}/complete` and can attach evidence with
-`POST /api/v1/inspections/{inspection_id}/photos`. The inspection captures the
-actual move-out date, final readings for each configured metered utility,
-itemized damage estimates, findings, and whether the unit requires maintenance.
-Completion notifies the tenant and property-management staff by SMS.
+Accepting a notice requires the Property Officer to select an active caretaker
+assigned to that property. Acceptance creates a pending `move_out` inspection
+for 9:00 a.m. Africa/Nairobi time on the proposed move-out date, assigns it to
+that caretaker, and sends the caretaker and tenant SMS notifications.
+Withdrawing the notice cancels the scheduled task; withdrawal is blocked once
+the task has started.
+The caretaker sees the pending task in the dashboard or in the verified
+WhatsApp bot under **Checklists & inspections → Move-out inspections**. Either
+path records the actual move-out date, every configured final meter reading,
+itemized damage, findings, recommendations, maintenance needs, and optional
+evidence photos. The dashboard uses
+`POST /api/v1/inspections/{inspection_id}/complete` and
+`POST /api/v1/inspections/{inspection_id}/photos`; WhatsApp submits through the
+same completion workflow. Completion notifies the tenant and
+property-management staff by SMS.
+
+For an accepted move-out, the ordinary monthly invoice retains the regular
+metered-water charge based on the published monthly reading, but excludes rent
+and fixed monthly utilities for the month the tenant is leaving. The final
+reading measures any additional usage since that regular reading through the
+actual move-out date; its charge is deducted from the deposit, not issued as a
+second invoice.
 
 Property staff prepare the financial settlement with
 `POST /api/v1/move-out-settlements/create`. The service derives the deposit
-balance and issued-invoice arrears, calculates utility charges from the
-caretaker's final readings, and applies itemized damage estimates. Manual
-prorated rent credits and overstay penalties are not part of this workflow.
+balance and issued-invoice arrears, calculates the final metered-utility charge
+from the caretaker's final readings, and applies that charge and itemized
+damage estimates to the deposit settlement. Manual prorated rent credits and
+overstay penalties are not part of this workflow.
 The settlement records any amount not covered by the deposit as a tenant debt
 shortfall; issued invoices remain immutable. The unit moves to **Deposit
 Pending**, but the tenancy is not closed yet.
 
-A different Branch Manager or Director must approve or reject the settlement.
+A different Branch Manager must approve or reject the settlement.
 An Accountant with finance MFA records the manual payout reference and date
 through `POST /api/v1/move-out-settlements/{settlement_id}/payout`; this records
 the deposit-ledger movements, closes the tenancy, and marks the unit **Vacant**
 or **Maintenance** according to the inspection decision. Payout execution
 remains manual; this endpoint does not initiate an M-Pesa B2C transfer.
-Critical notice, inspection, settlement, approval, and payout steps queue SMS.
+Changes to invoice balances between preparation, approval, and payout require
+settlement recalculation. The tenant can download the scoped final statement
+from `GET /api/v1/tenant/move-out-settlements/{settlement_id}/statement`.
+Critical notice, inspection, settlement, approval, and payout steps queue SMS;
+the payout SMS includes the statement link.
 Changes, readings, and financial movements are audit logged. Rejected
 settlements can be corrected and resubmitted.
 

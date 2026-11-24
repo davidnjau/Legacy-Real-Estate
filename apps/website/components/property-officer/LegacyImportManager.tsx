@@ -11,6 +11,7 @@ type ImportReport = {
   activation?: {
     prepared: number;
     sent: number;
+    sms_queued?: number;
     failed: { unit_code: string; email: string; message: string }[];
   };
 };
@@ -19,6 +20,7 @@ type PropertyOption = {
   id: number;
   branch_id: number;
   name: string;
+  default_handover_items?: { name: string; quantity: number }[];
   has_water_utility?: boolean;
   unit_types?: {
     name: string;
@@ -158,6 +160,13 @@ export default function LegacyImportManager() {
               : 'No water utility is configured for this property. Do not include water meter or water reading columns; kplc_meter_no remains optional.'}
           </p>
         )}
+        {selectedProperty && (
+          <p className="mt-3 max-w-2xl rounded-lg bg-violet-50 p-3 text-xs text-violet-950">
+            {selectedProperty.default_handover_items?.length
+              ? `Each newly imported tenant will have the property's default handover items recorded as issued: ${selectedProperty.default_handover_items.map((item) => `${item.name} (${item.quantity})`).join(', ')}.`
+              : 'No default handover items are configured for this property, so newly imported tenants will not be assigned handover items automatically.'}
+          </p>
+        )}
         <label className="mt-4 block text-sm font-semibold text-slate-700">CSV files or one XLSX workbook
           <input
             type="file"
@@ -191,8 +200,8 @@ export default function LegacyImportManager() {
               <h3 className="font-bold">Tenant account activation</h3>
               <p className="mt-1">
                 {report.mode === 'preview'
-                  ? `${report.activation.prepared} occupied tenant account${report.activation.prepared === 1 ? '' : 's'} will be provisioned and emailed after commit.`
-                  : `${report.activation.sent} of ${report.activation.prepared} activation email${report.activation.prepared === 1 ? '' : 's'} sent.`}
+                  ? `${report.activation.prepared} occupied tenant account${report.activation.prepared === 1 ? '' : 's'} will be provisioned and sent a welcome email and SMS after commit.`
+                  : `${report.activation.sent} of ${report.activation.prepared} welcome email${report.activation.prepared === 1 ? '' : 's'} sent; ${report.activation.sms_queued ?? 0} SMS message${report.activation.sms_queued === 1 ? '' : 's'} queued.`}
               </p>
               {report.activation.failed.length > 0 && (
                 <ul className="mt-2 list-inside list-disc">

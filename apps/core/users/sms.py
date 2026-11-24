@@ -34,8 +34,9 @@ SMS_TEMPLATES = {
         "Thank you, {agency_name}."
     ),
     "tenant_activation": (
-        "Hi {tenant_name}, activate your Legacy Real Estate tenant account at "
-        "{activation_url} using code {code}. This link expires in 48 hours."
+        "Hi {tenant_name}, welcome to Legacy Real Estate! Your tenant account "
+        "has been successfully onboarded. Create your password at {activation_url} "
+        "using OTP {code}. This link expires in 48 hours."
     ),
     "invoice_reminder": (
         "Your rent account has an outstanding balance of KES {amount}. "
@@ -65,12 +66,18 @@ SMS_TEMPLATES = {
         "Your move-out notice for {property_name} / {unit_code} is {status}. "
         "Proposed exit: {move_out_date}.{note}"
     ),
+    "move_in_handover_assigned": (
+        "Move-in inspection assigned: {property_name} / {unit_code} for "
+        "{tenant_name}. Complete the pending checklist on {move_in_date}."
+    ),
     "move_out_inspection_assigned": (
-        "Exit inspection assigned: {property_name} / {unit_code} for {tenant_name}. "
+        "Exit inspection assigned: {property_name} / {unit_code} for {tenant_name} "
+        "on {move_out_date}. "
         "Please complete the condition checklist, photos, and final meter readings."
     ),
     "tenant_move_out_inspection_scheduled": (
-        "An exit inspection is scheduled for {property_name} / {unit_code}. "
+        "An exit inspection is scheduled for {property_name} / {unit_code} "
+        "on {move_out_date}. "
         "The caretaker will record the unit condition and final meter readings."
     ),
     "move_out_inspection_completed": (
@@ -93,7 +100,7 @@ SMS_TEMPLATES = {
     "move_out_settlement_paid": (
         "Move-out settlement completed for {property_name} / {unit_code}. "
         "Refund KES {refund}; deductions KES {deductions}; shortfall KES {shortfall}. "
-        "Payout reference: {reference}."
+        "Payout reference: {reference}. Statement: {statement_url}"
     ),
     "move_in_handover_submitted": (
         "Move-in handover submitted for {tenant_name}, {property_name} / {unit_code}. "

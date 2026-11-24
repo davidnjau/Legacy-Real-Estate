@@ -344,9 +344,11 @@ class Property(models.Model):
     default_unit_type = models.CharField(max_length=100, blank=True)
     default_rent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     security_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    move_in_letting_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     water_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     default_garbage_charge = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     default_water_rate = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    default_handover_items = models.JSONField(default=list, blank=True)
     gps_coordinates = models.JSONField(default=dict, blank=True)
     amenities = models.JSONField(default=list, blank=True)
     house_rules = models.JSONField(default=dict, blank=True)
@@ -368,6 +370,7 @@ class Property(models.Model):
                     & models.Q(rent_due_day__lte=28)
                     & models.Q(default_rent__gte=0)
                     & models.Q(security_deposit__gte=0)
+                    & models.Q(move_in_letting_fee__gte=0)
                     & models.Q(water_deposit__gte=0)
                     & models.Q(default_garbage_charge__gte=0)
                     & models.Q(default_water_rate__gte=0)
@@ -637,6 +640,11 @@ class CaretakerInvitation(models.Model):
         Property,
         on_delete=models.PROTECT,
         related_name="caretaker_invitations",
+    )
+    properties = models.ManyToManyField(
+        Property,
+        related_name="multi_caretaker_invitations",
+        blank=True,
     )
     email = models.EmailField()
     full_name = models.CharField(max_length=255, blank=True)
@@ -1265,6 +1273,13 @@ class PropertyInspection(models.Model):
         blank=True,
         null=True,
     )
+    move_out_notice = models.ForeignKey(
+        "MoveOutNotice",
+        on_delete=models.PROTECT,
+        related_name="inspections",
+        blank=True,
+        null=True,
+    )
     title = models.CharField(max_length=255)
     inspection_type = models.CharField(max_length=100)
     scheduled_for = models.DateTimeField()
@@ -1283,6 +1298,13 @@ class PropertyInspection(models.Model):
     photos = models.JSONField(default=list, blank=True)
     actual_move_out_date = models.DateField(blank=True, null=True)
     final_readings = models.JSONField(default=list, blank=True)
+    closing_utility_invoice = models.ForeignKey(
+        "Invoice",
+        on_delete=models.PROTECT,
+        related_name="move_out_inspections",
+        blank=True,
+        null=True,
+    )
     damage_items = models.JSONField(default=list, blank=True)
     maintenance_required = models.BooleanField(default=False)
     findings = models.TextField(blank=True)
@@ -1940,6 +1962,12 @@ class InvoiceNumberSequence(models.Model):
 
 
 class Invoice(models.Model):
+    TYPE_STANDARD = "standard"
+    TYPE_MOVE_OUT_UTILITY = "move_out_utility"
+    TYPE_CHOICES = (
+        (TYPE_STANDARD, "Standard"),
+        (TYPE_MOVE_OUT_UTILITY, "Move-out utility"),
+    )
     STATUS_DRAFT = "draft"
     STATUS_ISSUED = "issued"
     STATUS_VOID = "void"
@@ -1955,6 +1983,11 @@ class Invoice(models.Model):
     period_start = models.DateField()
     period_end = models.DateField()
     due_date = models.DateField()
+    invoice_type = models.CharField(
+        max_length=30,
+        choices=TYPE_CHOICES,
+        default=TYPE_STANDARD,
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ISSUED)
     total = models.DecimalField(max_digits=12, decimal_places=2)
     issued_at = models.DateTimeField(blank=True, null=True)
@@ -1964,7 +1997,7 @@ class Invoice(models.Model):
         ordering = ["-period_start", "-id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["tenancy", "period_start", "period_end"],
+                fields=["tenancy", "period_start", "period_end", "invoice_type"],
                 name="users_invoice_tenancy_period_unique",
             ),
             models.CheckConstraint(
@@ -2386,11 +2419,13 @@ class MoveOutNotice(models.Model):
 class MoveOutSettlement(models.Model):
     STATUS_AWAITING_APPROVAL = "awaiting_approval"
     STATUS_REJECTED = "rejected"
+    STATUS_RECALCULATION_REQUIRED = "recalculation_required"
     STATUS_APPROVED = "approved"
     STATUS_PAID = "paid"
     STATUS_CHOICES = (
         (STATUS_AWAITING_APPROVAL, "Awaiting approval"),
         (STATUS_REJECTED, "Rejected"),
+        (STATUS_RECALCULATION_REQUIRED, "Recalculation required"),
         (STATUS_APPROVED, "Approved"),
         (STATUS_PAID, "Paid"),
     )
@@ -2413,6 +2448,7 @@ class MoveOutSettlement(models.Model):
     deduction_from_deposit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     shortfall_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    invoice_balance_snapshot = models.JSONField(default=dict, blank=True)
     status = models.CharField(
         max_length=30,
         choices=STATUS_CHOICES,
@@ -2431,6 +2467,7 @@ class MoveOutSettlement(models.Model):
         null=True,
     )
     reviewed_at = models.DateTimeField(blank=True, null=True)
+    approval_hash = models.CharField(max_length=64, blank=True)
     rejection_reason = models.TextField(blank=True)
     payout_reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
     payout_date = models.DateField(blank=True, null=True)
@@ -2490,6 +2527,8 @@ class MoveOutSettlement(models.Model):
             self.reviewed_by_id is None or self.reviewed_at is None
         ):
             raise ValidationError({"reviewed_by": "Approved settlements require review details."})
+        if self.status in {self.STATUS_APPROVED, self.STATUS_PAID} and not self.approval_hash:
+            raise ValidationError({"approval_hash": "Approved settlements require a verified approval hash."})
         if self.status == self.STATUS_PAID and (
             self.payout_date is None
             or self.payout_recorded_by_id is None
@@ -2851,6 +2890,15 @@ class MoveInPackage(models.Model):
         on_delete=models.PROTECT,
         related_name="move_in_package",
     )
+    assigned_caretaker = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="assigned_move_in_handovers",
+        blank=True,
+        null=True,
+    )
+    caretaker_notification_queued_at = models.DateTimeField(blank=True, null=True)
+    caretaker_notification_error = models.CharField(max_length=500, blank=True)
     agreement_reference = models.CharField(max_length=100, unique=True)
     handover_status = models.CharField(
         max_length=20,
@@ -2858,6 +2906,7 @@ class MoveInPackage(models.Model):
         default=HANDOVER_STATUS_PENDING,
     )
     keys_issued = models.PositiveSmallIntegerField(blank=True, null=True)
+    handover_inventory = models.JSONField(default=list, blank=True)
     condition_checklist = models.JSONField(default=list, blank=True)
     initial_meter_readings = models.JSONField(default=list, blank=True)
     handover_photos = models.JSONField(default=list, blank=True)
@@ -2959,6 +3008,7 @@ class TenantActivationChallenge(models.Model):
     )
     token_hash = models.CharField(max_length=128, unique=True)
     code_hash = models.CharField(max_length=64, unique=True, blank=True, null=True)
+    phone_verification_required = models.BooleanField(default=False)
     unit = models.ForeignKey(
         "Unit",
         on_delete=models.PROTECT,
@@ -3026,6 +3076,13 @@ class MoveInSettlement(models.Model):
     company_registration_number = models.CharField(max_length=100, blank=True)
     contact_person = models.CharField(max_length=255, blank=True)
     kra_pin = models.CharField(max_length=20, blank=True)
+    occupation = models.CharField(max_length=150, blank=True)
+    employer = models.CharField(max_length=255, blank=True)
+    next_of_kin_name = models.CharField(max_length=255, blank=True)
+    next_of_kin_phone = models.CharField(max_length=12, blank=True)
+    next_of_kin_relationship = models.CharField(max_length=100, blank=True)
+    move_in_letting_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    whatsapp_opt_in = models.BooleanField(default=False)
     tenancy_type = models.CharField(
         max_length=30,
         choices=Tenancy.TENANCY_TYPE_CHOICES,
@@ -3145,6 +3202,14 @@ class MoveInPayment(models.Model):
         (METHOD_STK_PUSH, "STK push"),
         (METHOD_OFFICER_CONFIRMATION, "Property officer payment confirmation"),
     )
+    CHANNEL_MPESA = "mpesa"
+    CHANNEL_BANK_TRANSFER = "bank_transfer"
+    CHANNEL_CASH = "cash"
+    CHANNEL_CHOICES = (
+        (CHANNEL_MPESA, "M-Pesa"),
+        (CHANNEL_BANK_TRANSFER, "Bank transfer"),
+        (CHANNEL_CASH, "Cash"),
+    )
     STATUS_PENDING = "pending"
     STATUS_SUCCESS = "success"
     STATUS_FAILED = "failed"
@@ -3163,6 +3228,9 @@ class MoveInPayment(models.Model):
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    payment_channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES, blank=True)
+    transaction_reference = models.CharField(max_length=100, blank=True)
+    payment_date = models.DateField(blank=True, null=True)
     mpesa_reference = models.CharField(max_length=100, blank=True)
     checkout_request_id = models.CharField(max_length=100, blank=True, null=True)
     recorded_by = models.ForeignKey(
@@ -3207,6 +3275,11 @@ class Tenant(models.Model):
     national_id_or_passport = models.CharField(max_length=100, blank=True)
     is_provisional = models.BooleanField(default=False)
     kra_pin = models.CharField(max_length=20, blank=True)
+    occupation = models.CharField(max_length=150, blank=True)
+    employer = models.CharField(max_length=255, blank=True)
+    next_of_kin_name = models.CharField(max_length=255, blank=True)
+    next_of_kin_phone = models.CharField(max_length=12, blank=True)
+    next_of_kin_relationship = models.CharField(max_length=100, blank=True)
     phone = models.CharField(
         max_length=12,
         validators=[
@@ -3216,6 +3289,8 @@ class Tenant(models.Model):
             )
         ],
     )
+    phone_verified_at = models.DateTimeField(blank=True, null=True)
+    whatsapp_opted_in_at = models.DateTimeField(blank=True, null=True)
     email = models.EmailField(blank=True)
     is_blacklisted = models.BooleanField(default=False)
     blacklist_reason = models.TextField(blank=True)
@@ -3312,6 +3387,13 @@ class UserProfile(models.Model):
     id_or_registration_number = models.CharField(max_length=100, blank=True)
     kra_pin = models.CharField(max_length=20, blank=True)
     branches = models.ManyToManyField(Branch, related_name="user_profiles", blank=True)
+    active_caretaker_property = models.ForeignKey(
+        Property,
+        on_delete=models.SET_NULL,
+        related_name="active_caretaker_profiles",
+        blank=True,
+        null=True,
+    )
     active_property = models.ForeignKey(
         Property,
         on_delete=models.SET_NULL,

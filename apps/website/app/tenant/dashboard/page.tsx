@@ -12,6 +12,7 @@ import {
   Info,
   Loader2,
   Megaphone,
+  MessageCircle,
   Receipt,
   RefreshCw,
   Smartphone,
@@ -27,6 +28,7 @@ import {
 type DashboardInvoice = {
   id: number;
   number: string;
+  invoice_type: 'standard' | 'move_out_utility';
   period_start: string;
   period_end: string;
   due_date: string;
@@ -555,6 +557,35 @@ export default function TenantDashboardPage() {
         </div>
       </header>
 
+      <section
+        aria-labelledby="whatsapp-link-heading"
+        className="flex flex-col gap-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="flex items-start gap-3">
+          <MessageCircle size={20} className="mt-0.5 shrink-0 text-emerald-700" aria-hidden="true" />
+          <div>
+            <h2 id="whatsapp-link-heading" className="font-bold text-emerald-950">
+              Connect to Legacy Real Estate on WhatsApp
+            </h2>
+            <p className="mt-1 max-w-2xl text-sm text-emerald-900">
+              Send us a message to link your WhatsApp number to your account. If prompted, reply with your national ID or company registration number. Then choose Tenant and select the service you need.
+            </p>
+            <p className="mt-2 text-xs font-medium text-emerald-800">
+              WhatsApp: +254 183 666 549
+            </p>
+          </div>
+        </div>
+        <a
+          href="https://wa.me/254183666549?text=Hello"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-800 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-emerald-900 focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:ring-offset-2"
+        >
+          <MessageCircle size={16} aria-hidden="true" />
+          Chat on WhatsApp
+        </a>
+      </section>
+
       {loadError && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{loadError}</p>}
 
       {/* ============================================================ */}
@@ -721,6 +752,9 @@ export default function TenantDashboardPage() {
                       </span>
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">
+                      {inv.invoice_type === 'move_out_utility' && (
+                        <span className="mb-1 block font-semibold text-amber-800">Final utility invoice</span>
+                      )}
                       {inv.lines.map((l) => l.description).join(', ')}
                     </td>
                     <td className="px-5 py-4">
@@ -736,7 +770,7 @@ export default function TenantDashboardPage() {
                           className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:bg-emerald-800"
                         >
                           <Smartphone size={13} />
-                          Pay Rent
+                          {inv.invoice_type === 'move_out_utility' ? 'Pay invoice' : 'Pay Rent'}
                         </button>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
@@ -852,8 +886,9 @@ export default function TenantDashboardPage() {
               const milestones = [
                 ['Notice recorded', true],
                 ['Exit inspection', Boolean(settlement.inspection_completed_at)],
-                ['Manager approval', settlement.status === 'approved' || settlement.status === 'paid'],
-                ['Payout recorded', settlement.status === 'paid'],
+                ['Ledger reconciliation', ['awaiting_approval', 'approved', 'paid'].includes(settlement.status)],
+                ['Management approval', settlement.status === 'approved' || settlement.status === 'paid'],
+                ['Refund disbursed', settlement.status === 'paid'],
               ] as const;
               return (
                 <article key={settlement.id} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -864,7 +899,7 @@ export default function TenantDashboardPage() {
                     </div>
                     <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">{settlement.maintenance_required ? 'Under maintenance' : 'Vacancy processing'}</span>
                   </header>
-                  <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
                     {milestones.map(([label, complete]) => (
                       <li key={label} className={`rounded-lg p-3 text-sm ${complete ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-500'}`}>
                         <span className="block text-xs font-semibold uppercase">{complete ? 'Complete' : 'Pending'}</span>
@@ -916,6 +951,12 @@ export default function TenantDashboardPage() {
                     </p>
                   )}
                   {settlement.rejection_reason && <p className="text-sm text-red-700">Settlement review note: {settlement.rejection_reason}</p>}
+                  <a
+                    href={`/api/tenant/move-out-settlements/${settlement.id}/statement`}
+                    className="inline-flex items-center gap-2 rounded-lg border border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-50"
+                  >
+                    Download final settlement statement
+                  </a>
                 </article>
               );
             })}

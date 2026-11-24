@@ -302,13 +302,23 @@ def _send_tenant_activation_email(
     property_name,
     activation_url,
     activation_code,
+    *,
+    phone_verification_required=False,
 ):
     if not settings.PUBLIC_SITE_URL:
         raise ImproperlyConfigured("PUBLIC_SITE_URL must be configured for tenant activation.")
+    code_message = (
+        f"Your six-digit activation OTP is {activation_code}.\n"
+        + (
+            "The same code was also sent by SMS to your registered phone.\n"
+            if phone_verification_required
+            else ""
+        )
+    )
     text_content = (
-        f"Hi {full_name},\n\n"
-        f"Your tenant account for {property_name}, unit {unit_code}, is ready to activate.\n"
-        f"One-time code: {activation_code}.\n"
+        f"Hi {full_name}, welcome to Legacy Real Estate!\n\n"
+        f"Your tenant account for {property_name}, unit {unit_code}, has been successfully onboarded.\n"
+        f"{code_message}"
         f"Use this secure link and code to create your password: {activation_url}\n\n"
         "The link expires in 48 hours."
     )
@@ -317,16 +327,25 @@ def _send_tenant_activation_email(
     safe_property_name = html.escape(property_name)
     safe_unit_code = html.escape(unit_code)
     safe_url = html.escape(activation_url, quote=True)
+    phone_code_note = (
+        "<p>The same code was also sent by SMS to your registered phone.</p>"
+        if phone_verification_required
+        else ""
+    )
+    code_html = (
+        f'<p>Your six-digit activation OTP is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{html.escape(activation_code)}</span>.</p>'
+        f"{phone_code_note}"
+    )
     html_content = (
-        f"<p>Hi {safe_full_name},</p>"
-        f"<p>Your tenant account for {safe_property_name}, unit {safe_unit_code}, is ready.</p>"
-        f'<p>Your one-time activation code is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{html.escape(activation_code)}</span>.</p>'
+        f"<p>Hi {safe_full_name}, welcome to Legacy Real Estate!</p>"
+        f"<p>Your tenant account for {safe_property_name}, unit {safe_unit_code}, has been successfully onboarded.</p>"
+        f"{code_html}"
         f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{safe_url}">Activate your account</a></p>'
         f"<p>This link is for {safe_email} and expires in 48 hours.</p>"
     )
     send_email(
         email,
-        f"Activate your {property_name} account",
+        "Welcome to Legacy Real Estate - activate your tenant account",
         text_content,
         html_content=html_content,
         recipient_name=full_name,
@@ -951,6 +970,8 @@ def _accessible_properties(user, role_names=LANDLORD_MANAGEMENT_ROLE_NAMES):
     profile = getattr(user, "profile", None)
     if profile is None:
         return Property.objects.none()
+    if _is_caretaker(user) and not _has_landlord_management_access(user):
+        return _caretaker_selected_properties(user)
     manager_branches = profile.accessible_branches(role_names=role_names)
     caretaker_branches = profile.accessible_branches(role_names=(CARETAKER_ROLE,))
     return Property.objects.filter(
@@ -961,6 +982,28 @@ def _accessible_properties(user, role_names=LANDLORD_MANAGEMENT_ROLE_NAMES):
             caretaker_assignments__ended_at__isnull=True,
         )
     ).distinct()
+
+
+def _caretaker_assigned_properties(user):
+    if not getattr(user, "profile", None) or not _is_caretaker(user):
+        return Property.objects.none()
+    return Property.objects.filter(
+        branch__agency__is_active=True,
+        caretaker_assignments__caretaker=user,
+        caretaker_assignments__ended_at__isnull=True,
+    ).distinct()
+
+
+def _caretaker_selected_properties(user):
+    properties = _caretaker_assigned_properties(user)
+    profile = getattr(user, "profile", None)
+    if profile is None:
+        return properties.none()
+    selected_id = profile.active_caretaker_property_id
+    if selected_id is not None and properties.filter(pk=selected_id).exists():
+        return properties.filter(pk=selected_id)
+    first_property_id = properties.order_by("name", "pk").values_list("pk", flat=True).first()
+    return properties.filter(pk=first_property_id) if first_property_id else properties.none()
 
 
 def _accessible_tenants(user):
@@ -1054,6 +1097,7 @@ def _property_payload(property_obj):
         "default_unit_type": property_obj.default_unit_type,
         "default_rent": str(property_obj.default_rent),
         "security_deposit": str(property_obj.security_deposit),
+        "move_in_letting_fee": str(property_obj.move_in_letting_fee),
         "water_deposit": str(property_obj.water_deposit),
         "default_garbage_charge": str(property_obj.default_garbage_charge),
         "default_water_rate": str(property_obj.default_water_rate),
@@ -1061,6 +1105,7 @@ def _property_payload(property_obj):
         "gps_coordinates": property_obj.gps_coordinates,
         "amenities": property_obj.amenities,
         "house_rules": property_obj.house_rules,
+        "default_handover_items": property_obj.default_handover_items,
         "photos": property_obj.photos,
         "unit_types": [
             {
@@ -1106,6 +1151,7 @@ def _property_payload(property_obj):
                 "id": assignment.caretaker_id,
                 "name": assignment.caretaker.profile.name,
                 "email": assignment.caretaker.email,
+                "phone": assignment.caretaker.profile.phone,
                 "assigned_at": assignment.assigned_at.isoformat(),
             }
             for assignment in property_obj.caretaker_assignments.filter(
@@ -1136,6 +1182,28 @@ def _property_payload(property_obj):
             for document in property_obj.documents.all()
         ],
     }
+
+
+def _validated_handover_inventory(raw_items):
+    if not isinstance(raw_items, list) or len(raw_items) > 30:
+        raise ValueError("The handover inventory must contain no more than 30 items.")
+    items = []
+    seen_names = set()
+    for index, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Handover item {index} must be an object.")
+        name = item.get("name")
+        quantity = item.get("quantity")
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 100:
+            raise ValueError(f"Handover item {index} needs a name of at most 100 characters.")
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or not 0 <= quantity <= 32767:
+            raise ValueError(f"Quantity for {name.strip()} must be a whole number from 0 to 32,767.")
+        normalized_name = name.strip()
+        if normalized_name.casefold() in seen_names:
+            raise ValueError(f"Handover item {normalized_name} is listed more than once.")
+        seen_names.add(normalized_name.casefold())
+        items.append({"name": normalized_name, "quantity": quantity})
+    return items
 
 
 def _landlord_property_payload(property_obj):
@@ -1469,9 +1537,16 @@ def _move_in_settlement_payload(settlement):
         "tenant_name": settlement.tenant_name,
         "tenant_email": settlement.tenant_email,
         "tenant_phone": settlement.tenant_phone,
+        "occupation": settlement.occupation or None,
+        "employer": settlement.employer or None,
+        "next_of_kin_name": settlement.next_of_kin_name or None,
+        "next_of_kin_phone": settlement.next_of_kin_phone or None,
+        "next_of_kin_relationship": settlement.next_of_kin_relationship or None,
+        "whatsapp_opt_in": settlement.whatsapp_opt_in,
         "deposit_amount": float(settlement.deposit_amount),
         "rent_amount": float(settlement.rent_amount),
         "garbage_amount": float(settlement.garbage_amount),
+        "move_in_letting_fee": float(settlement.move_in_letting_fee),
         "water_deposit_amount": float(settlement.water_deposit_amount),
         "utility_deposit_amount": float(settlement.utility_deposit_amount),
         "utility_deposits": settlement.utility_deposits,
@@ -1505,6 +1580,9 @@ def _move_in_settlement_payload(settlement):
                 "id": payment.pk,
                 "amount": float(payment.amount),
                 "method": payment.method,
+                "payment_channel": payment.payment_channel or None,
+                "transaction_reference": payment.transaction_reference or None,
+                "payment_date": payment.payment_date.isoformat() if payment.payment_date else None,
                 "mpesa_reference": payment.mpesa_reference or None,
                 "status": payment.status,
                 "created_at": payment.created_at.isoformat(),
@@ -1656,6 +1734,12 @@ def _tenant_payload(tenant):
         "national_id_or_passport": tenant.national_id_or_passport or None,
         "is_provisional": tenant.is_provisional,
         "kra_pin": tenant.kra_pin or None,
+        "occupation": tenant.occupation or None,
+        "employer": tenant.employer or None,
+        "next_of_kin_name": tenant.next_of_kin_name or None,
+        "next_of_kin_phone": tenant.next_of_kin_phone or None,
+        "next_of_kin_relationship": tenant.next_of_kin_relationship or None,
+        "whatsapp_opted_in": tenant.whatsapp_opted_in_at is not None,
         "phone": tenant.phone,
         "email": tenant.email or None,
         "is_blacklisted": tenant.is_blacklisted,
@@ -1725,6 +1809,7 @@ def _invoice_payload(invoice):
         "branch_id": invoice.branch_id,
         "tenancy_id": invoice.tenancy_id,
         "number": invoice.number,
+        "invoice_type": invoice.invoice_type,
         "period_start": invoice.period_start.isoformat(),
         "period_end": invoice.period_end.isoformat(),
         "due_date": invoice.due_date.isoformat(),
@@ -1848,6 +1933,7 @@ def property_officer_billing(request):
         Invoice.objects.filter(
             tenancy__unit__property__in=properties,
             period_start=period_start,
+            invoice_type=Invoice.TYPE_STANDARD,
             status__in=(Invoice.STATUS_DRAFT, Invoice.STATUS_ISSUED),
         )
         .select_related("tenancy__tenant", "tenancy__unit__property")
@@ -2443,7 +2529,7 @@ def _receipt_payload(receipt):
     }
 
 
-def _ensure_payment_receipt(payment):
+def _ensure_payment_receipt(payment, *, notify_whatsapp=True):
     if not payment.tenant_id:
         return None
     receipt, created = Receipt.objects.get_or_create(
@@ -2455,7 +2541,11 @@ def _ensure_payment_receipt(payment):
             "balance_after": _payment_balance_after(payment),
         },
     )
-    if created:
+    if (
+        created
+        and notify_whatsapp
+        and payment.tenant.whatsapp_opted_in_at
+    ):
         queue_template_whatsapp_if_enabled(
             payment.tenant.phone,
             "payment_receipt",
@@ -3329,6 +3419,33 @@ def _move_out_staff_error(request):
     return None
 
 
+def _move_out_available_caretakers(property_obj):
+    assignments = (
+        PropertyCaretakerAssignment.objects.filter(
+            property=property_obj,
+            ended_at__isnull=True,
+            caretaker__is_active=True,
+        )
+        .select_related("caretaker")
+        .order_by("caretaker__first_name", "caretaker__last_name", "caretaker__username")
+    )
+    caretakers = []
+    for assignment in assignments:
+        caretaker = assignment.caretaker
+        if not _is_caretaker(caretaker) or not UserProfile.objects.filter(
+            user=caretaker,
+            branches=property_obj.branch,
+        ).exists():
+            continue
+        caretakers.append(
+            {
+                "id": caretaker.pk,
+                "name": caretaker.get_full_name().strip() or caretaker.get_username(),
+            }
+        )
+    return caretakers
+
+
 def _move_out_notice_payload(notice):
     tenancy = notice.tenancy
     return {
@@ -3363,6 +3480,9 @@ def _move_out_settlement_payload(settlement):
         "tenancy_id": tenancy.pk,
         "notice_id": settlement.notice_id,
         "exit_inspection_id": settlement.exit_inspection_id,
+        "closing_utility_invoice_id": (
+            settlement.exit_inspection.closing_utility_invoice_id
+        ),
         "property_id": tenancy.unit.property_id,
         "property_name": tenancy.unit.property.name,
         "unit_id": tenancy.unit_id,
@@ -3384,6 +3504,7 @@ def _move_out_settlement_payload(settlement):
         "prepared_by": settlement.prepared_by_id,
         "reviewed_by": settlement.reviewed_by_id,
         "reviewed_at": settlement.reviewed_at.isoformat() if settlement.reviewed_at else None,
+        "approval_hash": settlement.approval_hash,
         "rejection_reason": settlement.rejection_reason,
         "payout_reference": settlement.payout_reference,
         "payout_date": settlement.payout_date.isoformat() if settlement.payout_date else None,
@@ -3539,12 +3660,39 @@ def _move_out_settlement_context(settlement):
 def _move_out_arrears(tenancy, as_of):
     invoices = Invoice.objects.filter(
         tenancy=tenancy,
+        invoice_type=Invoice.TYPE_STANDARD,
         status=Invoice.STATUS_ISSUED,
-    ).select_related("branch__arrears_policy")
+    ).select_related("branch__arrears_policy").prefetch_related("arrears_waivers")
     return sum(
-        (invoice_arrears(invoice, as_of)["total_due"] for invoice in invoices),
+        (_move_out_invoice_due(invoice, as_of) for invoice in invoices),
         Decimal("0.00"),
     )
+
+
+def _move_out_invoice_due(invoice, as_of, *, include_penalty=True):
+    allocated = (
+        PaymentAllocation.objects.filter(invoice=invoice)
+        .exclude(
+            payment__instrument_status__in=(
+                Payment.INSTRUMENT_PENDING,
+                Payment.INSTRUMENT_BOUNCED,
+            )
+        )
+        .aggregate(total=Sum("amount"))["total"]
+        or Decimal("0.00")
+    )
+    waived = (
+        invoice.arrears_waivers.filter(approved_at__date__lte=timezone.localdate())
+        .aggregate(total=Sum("amount"))["total"]
+        or Decimal("0.00")
+    )
+    balance = invoice_arrears(
+        invoice,
+        as_of,
+        allocated_amount=allocated,
+        waiver_amount=waived,
+    )
+    return balance["total_due"] if include_penalty else balance["outstanding"]
 
 
 def _move_out_utility_configs(unit, as_of):
@@ -3638,11 +3786,15 @@ def _move_out_final_readings(unit, as_of, readings, request):
             )
             reading.full_clean()
             reading.save()
+            reading_payload = _meter_reading_payload(reading)
+            audit_source = getattr(request, "audit_source", "")
+            if audit_source:
+                reading_payload["source"] = audit_source
             record_audit_event(
                 request,
                 "meter_reading.created",
                 "MeterReading",
-                new_values=_meter_reading_payload(reading),
+                new_values=reading_payload,
             )
 
         usage = current_value - previous.current_value
@@ -3667,6 +3819,124 @@ def _move_out_final_readings(unit, as_of, readings, request):
             }
         )
     return reading_payloads, total
+
+
+def _move_out_invoice_balance_snapshot(tenancy, as_of, utility_invoice):
+    balances = {
+        str(invoice.pk): str(_move_out_invoice_due(invoice, as_of))
+        for invoice in Invoice.objects.filter(
+            tenancy=tenancy,
+            invoice_type=Invoice.TYPE_STANDARD,
+            status=Invoice.STATUS_ISSUED,
+        ).select_related("branch__arrears_policy")
+    }
+    utility_balance = (
+        _move_out_invoice_due(utility_invoice, as_of, include_penalty=False)
+        if utility_invoice and utility_invoice.status == Invoice.STATUS_ISSUED
+        else Decimal("0.00")
+    )
+    return {
+        "standard_invoice_balances": balances,
+        "utility_invoice_id": utility_invoice.pk if utility_invoice else None,
+        "utility_invoice_balance": str(utility_balance),
+    }
+
+
+def _move_out_approval_hash(settlement):
+    snapshot = {
+        "id": settlement.pk,
+        "tenancy_id": settlement.tenancy_id,
+        "notice_id": settlement.notice_id,
+        "exit_inspection_id": settlement.exit_inspection_id,
+        "actual_move_out_date": settlement.actual_move_out_date.isoformat(),
+        "final_readings": settlement.final_readings,
+        "damage_items": settlement.damage_items,
+        "maintenance_required": settlement.maintenance_required,
+        "deposit_balance": str(settlement.deposit_balance),
+        "arrears_amount": str(settlement.arrears_amount),
+        "utility_amount": str(settlement.utility_amount),
+        "damages_amount": str(settlement.damages_amount),
+        "deduction_from_deposit": str(settlement.deduction_from_deposit),
+        "refund_amount": str(settlement.refund_amount),
+        "shortfall_amount": str(settlement.shortfall_amount),
+        "invoice_balance_snapshot": settlement.invoice_balance_snapshot,
+        "prepared_by_id": settlement.prepared_by_id,
+        "reviewed_by_id": settlement.reviewed_by_id,
+        "reviewed_at": settlement.reviewed_at.isoformat() if settlement.reviewed_at else None,
+    }
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _move_out_settlement_balances_changed(settlement):
+    if not settlement.invoice_balance_snapshot:
+        return True
+    current = _move_out_invoice_balance_snapshot(
+        settlement.tenancy,
+        settlement.actual_move_out_date,
+        None,
+    )
+    return current != settlement.invoice_balance_snapshot
+
+
+def _move_out_settlement_pdf(settlement):
+    tenancy = settlement.tenancy
+    lines = [
+        "FINAL MOVE-OUT SETTLEMENT STATEMENT",
+        f"Tenant: {tenancy.tenant.name}",
+        f"Property: {tenancy.unit.property.name}",
+        f"Unit: {tenancy.unit.code}",
+        f"Move-out date: {settlement.actual_move_out_date.isoformat()}",
+        f"Statement status: {settlement.status.replace('_', ' ').title()}",
+        "",
+        "SETTLEMENT",
+        f"Security deposit held: KES {settlement.deposit_balance}",
+        f"Rent and other arrears: KES {settlement.arrears_amount}",
+        f"Final metered utilities deducted from deposit: KES {settlement.utility_amount}",
+    ]
+    for reading in settlement.final_readings:
+        lines.append(
+            f"{reading['name']}: {reading['usage']} units x KES "
+            f"{reading['rate_per_unit']} = KES {reading['amount']}"
+        )
+    lines.extend([
+        f"Damage deductions: KES {settlement.damages_amount}",
+        f"Total deposit deduction: KES {settlement.deduction_from_deposit}",
+        f"Refund due: KES {settlement.refund_amount}",
+        f"Tenant shortfall: KES {settlement.shortfall_amount}",
+        f"Payment reference: {settlement.payout_reference or 'Not recorded'}",
+        f"Payout date: {settlement.payout_date.isoformat() if settlement.payout_date else 'Not recorded'}",
+        "",
+        "This statement is retained in the tenant portal. Contact property management",
+        "if any settlement amount or final meter reading requires clarification.",
+    ])
+    return _simple_pdf(lines)
+
+
+def _require_move_out_recalculation(settlement, request, reason):
+    old_values = _move_out_settlement_payload(settlement)
+    settlement.status = MoveOutSettlement.STATUS_RECALCULATION_REQUIRED
+    settlement.reviewed_by = None
+    settlement.reviewed_at = None
+    settlement.approval_hash = ""
+    settlement.rejection_reason = reason
+    settlement.save(
+        update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "approval_hash",
+            "rejection_reason",
+            "updated_at",
+        ]
+    )
+    record_audit_event(
+        request,
+        "move_out_settlement.recalculation_required",
+        "MoveOutSettlement",
+        old_values=old_values,
+        new_values=_move_out_settlement_payload(settlement),
+    )
 
 
 def _validate_move_out_inspection_readings(unit, as_of, readings):
@@ -3950,11 +4220,17 @@ def list_move_out_workflows(request):
     for notice in active_notices:
         tenancy = notice.tenancy
         existing_settlement = MoveOutSettlement.objects.filter(tenancy=tenancy).first()
-        if existing_settlement and existing_settlement.status != MoveOutSettlement.STATUS_REJECTED:
+        if existing_settlement and existing_settlement.status not in {
+            MoveOutSettlement.STATUS_REJECTED,
+            MoveOutSettlement.STATUS_RECALCULATION_REQUIRED,
+        }:
             continue
         if tenancy.status != Tenancy.STATUS_ACTIVE and not (
             existing_settlement
-            and existing_settlement.status == MoveOutSettlement.STATUS_REJECTED
+            and existing_settlement.status in {
+                MoveOutSettlement.STATUS_REJECTED,
+                MoveOutSettlement.STATUS_RECALCULATION_REQUIRED,
+            }
         ):
             continue
         account = DepositAccount.objects.filter(tenancy=tenancy).first()
@@ -3988,7 +4264,17 @@ def list_move_out_workflows(request):
         )
     return JsonResponse(
         {
-            "notices": [_move_out_notice_payload(notice) for notice in notices],
+            "notices": [
+                {
+                    **_move_out_notice_payload(notice),
+                    "available_caretakers": (
+                        _move_out_available_caretakers(notice.tenancy.unit.property)
+                        if notice.status == MoveOutNotice.STATUS_SUBMITTED
+                        else []
+                    ),
+                }
+                for notice in notices
+            ],
             "settlements": [_move_out_settlement_payload(item) for item in settlements],
             "eligible_tenancies": candidates,
         }
@@ -4122,6 +4408,7 @@ def decide_move_out_notice(request, notice_id):
         if notice is None:
             return _problem(404, "Notice not found", "The move-out notice is unavailable.", "move-out-notice-not-found")
         unit = Unit.objects.select_for_update().get(pk=tenancy.unit_id)
+        caretaker = None
         if action == "accept":
             if notice.status != MoveOutNotice.STATUS_SUBMITTED:
                 return _problem(409, "Notice unavailable", "Only a submitted notice can be accepted.", "move-out-notice-conflict")
@@ -4129,6 +4416,38 @@ def decide_move_out_notice(request, notice_id):
                 return _problem(409, "Tenancy unavailable", "Only an active tenancy can be accepted for move-out.", "move-out-notice-conflict")
             if unit.status not in {Unit.STATUS_OCCUPIED, Unit.STATUS_NOTICE_GIVEN}:
                 return _problem(409, "Unit unavailable", "The tenancy unit is not in an occupiable status.", "move-out-unit-conflict")
+            try:
+                caretaker_id = int(body.get("caretaker_id"))
+            except (TypeError, ValueError):
+                return _problem(
+                    400,
+                    "Caretaker required",
+                    "Select an active caretaker assigned to this property before accepting the notice.",
+                    "move-out-caretaker-required",
+                )
+            caretaker = get_user_model().objects.filter(
+                pk=caretaker_id,
+                is_active=True,
+            ).first()
+            if (
+                caretaker is None
+                or not _is_caretaker(caretaker)
+                or not UserProfile.objects.filter(
+                    user=caretaker,
+                    branches=unit.property.branch,
+                ).exists()
+                or not PropertyCaretakerAssignment.objects.filter(
+                    property=unit.property,
+                    caretaker=caretaker,
+                    ended_at__isnull=True,
+                ).exists()
+            ):
+                return _problem(
+                    400,
+                    "Invalid caretaker",
+                    "The selected caretaker must be active, belong to the property branch, and be assigned to this property.",
+                    "invalid-move-out-caretaker",
+                )
             notice.status = MoveOutNotice.STATUS_ACCEPTED
             notice.reviewed_by = request.user
             notice.reviewed_at = timezone.now()
@@ -4158,6 +4477,18 @@ def decide_move_out_notice(request, notice_id):
                 return _problem(409, "Notice unavailable", "Only an accepted notice can be withdrawn by staff.", "move-out-notice-conflict")
             if MoveOutSettlement.objects.filter(tenancy=tenancy).exists():
                 return _problem(409, "Settlement exists", "A move-out settlement prevents notice withdrawal.", "move-out-settlement-exists")
+            if notice.inspections.filter(
+                status__in=(
+                    PropertyInspection.STATUS_IN_PROGRESS,
+                    PropertyInspection.STATUS_COMPLETED,
+                )
+            ).exists():
+                return _problem(
+                    409,
+                    "Inspection already started",
+                    "A notice cannot be withdrawn after its assigned exit inspection has started.",
+                    "move-out-inspection-started",
+                )
             notice.status = MoveOutNotice.STATUS_WITHDRAWN
             notice.reviewed_by = request.user
             notice.reviewed_at = timezone.now()
@@ -4169,6 +4500,47 @@ def decide_move_out_notice(request, notice_id):
                 unit.save(update_fields=["status", "listing_enabled", "updated_at"])
         notice.full_clean()
         notice.save()
+        if action == "accept":
+            inspection = PropertyInspection(
+                property=unit.property,
+                unit=unit,
+                move_out_notice=notice,
+                title=f"Move-out inspection - {unit.code}",
+                inspection_type="move_out",
+                scheduled_for=timezone.make_aware(
+                    datetime.combine(
+                        notice.proposed_move_out_date,
+                        datetime.min.time(),
+                    ).replace(hour=9)
+                ),
+                responsible_staff=caretaker,
+                created_by=request.user,
+                checklist=[
+                    {"title": "Room condition and damage", "status": "pending"},
+                    {"title": "Fixtures, keys, and access devices", "status": "pending"},
+                    {"title": "Final utility meter readings", "status": "pending"},
+                ],
+            )
+            inspection.full_clean()
+            inspection.save()
+            record_audit_event(
+                request,
+                "property_inspection.created",
+                "PropertyInspection",
+                new_values=_inspection_payload(inspection),
+            )
+        elif action == "withdraw":
+            for inspection in notice.inspections.filter(
+                status=PropertyInspection.STATUS_SCHEDULED
+            ):
+                inspection.status = PropertyInspection.STATUS_CANCELLED
+                inspection.save(update_fields=["status", "updated_at"])
+                record_audit_event(
+                    request,
+                    "property_inspection.cancelled",
+                    "PropertyInspection",
+                    new_values=_inspection_payload(inspection),
+                )
         record_audit_event(
             request,
             f"move_out_notice.{notice.status}",
@@ -4189,11 +4561,18 @@ def decide_move_out_notice(request, notice_id):
                 request,
             )
             if action == "accept":
-                _queue_move_out_staff_sms(
-                    tenancy.unit.property,
-                    (CARETAKER_ROLE,),
+                context["move_out_date"] = notice.proposed_move_out_date.isoformat()
+                _queue_move_out_user_sms(
+                    caretaker,
                     "move_out_inspection_assigned",
-                    _move_out_notice_context(notice),
+                    context,
+                    request.user,
+                    request,
+                )
+                _queue_move_out_tenant_sms(
+                    tenancy,
+                    "tenant_move_out_inspection_scheduled",
+                    context,
                     request.user,
                     request,
                 )
@@ -4274,7 +4653,10 @@ def create_move_out_settlement(request):
             ).exists():
                 return _problem(409, "Tenancy unavailable", "The tenancy has already been moved out.", "move-out-tenancy-conflict")
             settlement = MoveOutSettlement.objects.select_for_update().filter(tenancy=tenancy).first()
-            if settlement and settlement.status != MoveOutSettlement.STATUS_REJECTED:
+            if settlement and settlement.status not in {
+                MoveOutSettlement.STATUS_REJECTED,
+                MoveOutSettlement.STATUS_RECALCULATION_REQUIRED,
+            }:
                 return _problem(409, "Settlement already exists", "The tenancy already has a move-out settlement.", "move-out-settlement-exists")
             if inspection is None:
                 return _problem(404, "Exit inspection not found", "The inspection is unavailable.", "exit-inspection-not-found")
@@ -4282,6 +4664,10 @@ def create_move_out_settlement(request):
                 inspection.unit_id != tenancy.unit_id
                 or inspection.status != PropertyInspection.STATUS_COMPLETED
                 or inspection.inspection_type.lower() not in {"move_out", "exit"}
+                or (
+                    notice.inspections.exists()
+                    and inspection.move_out_notice_id != notice.pk
+                )
             ):
                 return _problem(
                     400,
@@ -4310,6 +4696,15 @@ def create_move_out_settlement(request):
                 actual_date,
                 submitted_readings,
                 request,
+            )
+            inspection.actual_move_out_date = actual_date
+            inspection.final_readings = final_readings
+            inspection.save(
+                update_fields=[
+                    "actual_move_out_date",
+                    "final_readings",
+                    "updated_at",
+                ]
             )
             if "damage_items" not in body and inspection.damage_items:
                 damage_items, damages_total = _move_out_damage_items(
@@ -4344,10 +4739,16 @@ def create_move_out_settlement(request):
                 "deduction_from_deposit": deduction,
                 "refund_amount": refund,
                 "shortfall_amount": shortfall,
+                "invoice_balance_snapshot": _move_out_invoice_balance_snapshot(
+                    tenancy,
+                    actual_date,
+                    None,
+                ),
                 "status": MoveOutSettlement.STATUS_AWAITING_APPROVAL,
                 "prepared_by": request.user,
                 "reviewed_by": None,
                 "reviewed_at": None,
+                "approval_hash": "",
                 "rejection_reason": "",
                 "payout_reference": None,
                 "payout_date": None,
@@ -4414,15 +4815,11 @@ def decide_move_out_settlement(request, settlement_id):
     error = _move_out_staff_error(request)
     if error:
         return error
-    if not (
-        request.user.is_superuser
-        or _has_role(request.user, BRANCH_MANAGER_ROLE)
-        or _has_role(request.user, SUPER_ADMIN_ROLE)
-    ):
+    if not _has_role(request.user, BRANCH_MANAGER_ROLE):
         return _problem(
             403,
             "Permission denied",
-            "Only a Branch Manager or Director can approve a move-out settlement.",
+            "Only a Branch Manager can approve a move-out settlement.",
             "move-out-approver-required",
         )
     body = _json_body(request)
@@ -4448,6 +4845,18 @@ def decide_move_out_settlement(request, settlement_id):
             return _problem(409, "Settlement unavailable", "Only a settlement awaiting approval can be reviewed.", "move-out-settlement-conflict")
         if action == "approve" and settlement.prepared_by_id == request.user.pk:
             return _problem(403, "Permission denied", "The settlement preparer cannot approve their own settlement.", "move-out-self-approval-denied")
+        if action == "approve" and _move_out_settlement_balances_changed(settlement):
+            _require_move_out_recalculation(
+                settlement,
+                request,
+                "Tenant invoice payments changed after settlement preparation.",
+            )
+            return _problem(
+                409,
+                "Settlement recalculation required",
+                "Invoice balances changed after this settlement was prepared. Recalculate and resubmit it before approval.",
+                "move-out-recalculation-required",
+            )
         settlement.status = (
             MoveOutSettlement.STATUS_APPROVED
             if action == "approve"
@@ -4455,6 +4864,9 @@ def decide_move_out_settlement(request, settlement_id):
         )
         settlement.reviewed_by = request.user
         settlement.reviewed_at = timezone.now()
+        settlement.approval_hash = (
+            _move_out_approval_hash(settlement) if action == "approve" else ""
+        )
         settlement.rejection_reason = review_note if action == "reject" else ""
         try:
             settlement.full_clean()
@@ -4462,6 +4874,7 @@ def decide_move_out_settlement(request, settlement_id):
                 "status",
                 "reviewed_by",
                 "reviewed_at",
+                "approval_hash",
                 "rejection_reason",
                 "updated_at",
             ])
@@ -4548,6 +4961,33 @@ def record_move_out_payout(request, settlement_id):
             locked = MoveOutSettlement.objects.select_for_update().get(pk=settlement.pk)
             if locked.status != MoveOutSettlement.STATUS_APPROVED:
                 return _problem(409, "Settlement unavailable", "Only an approved settlement can be paid.", "move-out-settlement-conflict")
+            if _move_out_settlement_balances_changed(locked):
+                _require_move_out_recalculation(
+                    locked,
+                    request,
+                    "Tenant invoice payments changed after settlement approval.",
+                )
+                return _problem(
+                    409,
+                    "Settlement recalculation required",
+                    "Invoice balances changed after approval. Recalculate and obtain approval again before recording payout.",
+                    "move-out-recalculation-required",
+                )
+            if not secrets.compare_digest(
+                locked.approval_hash,
+                _move_out_approval_hash(locked),
+            ):
+                _require_move_out_recalculation(
+                    locked,
+                    request,
+                    "The settlement no longer matches its immutable approval hash.",
+                )
+                return _problem(
+                    409,
+                    "Settlement approval changed",
+                    "The approved settlement has changed. Recalculate and obtain approval again.",
+                    "move-out-approval-hash-mismatch",
+                )
             account = (
                 DepositAccount.objects.select_for_update()
                 .filter(tenancy=locked.tenancy)
@@ -4619,6 +5059,10 @@ def record_move_out_payout(request, settlement_id):
                     {
                         **_move_out_settlement_context(locked),
                         "reference": reference or "No refund due",
+                        "statement_url": (
+                            f"{settings.PUBLIC_SITE_URL.rstrip('/')}/api/tenant/"
+                            f"move-out-settlements/{locked.pk}/statement"
+                        ),
                     },
                     request.user,
                     request,
@@ -4755,8 +5199,10 @@ def _move_in_package_payload(package):
     return {
         "id": package.pk,
         "tenancy_id": package.tenancy_id,
+        "move_in_date": package.tenancy.start_date.isoformat(),
         "agreement_reference": package.agreement_reference,
         "generated_at": package.generated_at.isoformat(),
+        "handover_inventory": package.handover_inventory,
         "charges": [
             {
                 "id": charge.pk,
@@ -4784,7 +5230,14 @@ def _move_in_package_payload(package):
 
 
 def _pdf_escape(value):
-    return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
 
 
 def _activation_hash(token):
@@ -4800,24 +5253,7 @@ def _normalize_ke_phone(phone):
     return value
 
 
-def _agreement_pdf(tenancy, package):
-    lines = [
-        "MOVE-IN TENANCY AGREEMENT",
-        f"Reference: {package.agreement_reference}",
-        f"Tenant: {tenancy.tenant.name}",
-        f"Unit: {tenancy.unit.code}",
-        f"Property: {tenancy.unit.property.name}",
-        f"Start date: {tenancy.start_date.isoformat()}",
-        f"End date: {tenancy.end_date.isoformat() if tenancy.end_date else 'Open-ended'}",
-        f"Due day: {tenancy.due_day}",
-        f"Notice period: {tenancy.notice_period_days} days",
-        "",
-        "MOVE-IN CHARGES",
-    ]
-    for charge in package.charges.all():
-        lines.append(f"{charge.description}: KES {charge.amount}")
-    lines.append(f"Total: KES {_move_in_package_payload(package)['total']}")
-    lines.extend(["", "This document records the configured move-in terms and charges."])
+def _simple_pdf(lines):
     stream_lines = ["BT", "/F1 11 Tf", "50 790 Td"]
     for index, line in enumerate(lines):
         if index:
@@ -4848,6 +5284,43 @@ def _agreement_pdf(tenancy, package):
         f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode()
     )
     return bytes(pdf)
+
+
+def _agreement_pdf(tenancy, package):
+    lines = [
+        "MOVE-IN TENANCY AGREEMENT",
+        f"Reference: {package.agreement_reference}",
+        f"Tenant: {tenancy.tenant.name}",
+        f"Unit: {tenancy.unit.code}",
+        f"Property: {tenancy.unit.property.name}",
+        f"Start date: {tenancy.start_date.isoformat()}",
+        f"End date: {tenancy.end_date.isoformat() if tenancy.end_date else 'Open-ended'}",
+        f"Due day: {tenancy.due_day}",
+        f"Notice period: {tenancy.notice_period_days} days",
+        "",
+        "MOVE-IN CHARGES",
+    ]
+    for charge in package.charges.all():
+        lines.append(f"{charge.description}: KES {charge.amount}")
+    lines.append(f"Total: KES {_move_in_package_payload(package)['total']}")
+    lines.extend(["", "This document records the configured move-in terms and charges."])
+    return _simple_pdf(lines)
+
+
+def _payment_receipt_pdf(tenancy, invoice, payment, receipt):
+    return _simple_pdf(
+        [
+            "MOVE-IN PAYMENT RECEIPT",
+            f"Receipt: {receipt.number}",
+            f"Invoice: {invoice.number}",
+            f"Tenant: {tenancy.tenant.name}",
+            f"Unit: {tenancy.unit.code}",
+            f"Payment reference: {payment.reference}",
+            f"Payment date: {payment.received_at.date().isoformat()}",
+            f"Amount received: KES {receipt.amount}",
+            f"Balance after payment: KES {receipt.balance_after}",
+        ]
+    )
 
 
 def _tenant_audit_values(tenant):
@@ -6201,6 +6674,16 @@ def tenant_portal_onboarding(request):
         )
         move_in_settlement = None
         if settlement:
+            utility_deposits = settlement.utility_deposits
+            if not utility_deposits:
+                utility_deposits = [
+                    {"name": name, "amount": str(amount)}
+                    for name, amount in (
+                        ("Water deposit", settlement.water_deposit_amount),
+                        ("Utility deposits", settlement.utility_deposit_amount),
+                    )
+                    if amount > 0
+                ]
             move_in_settlement = {
                 "status": settlement.status,
                 "total_required": float(settlement.total_required),
@@ -6208,6 +6691,13 @@ def tenant_portal_onboarding(request):
                 "outstanding_balance": float(settlement.outstanding_balance),
                 "deposit_amount": float(settlement.deposit_amount),
                 "rent_amount": float(settlement.rent_amount),
+                "first_month_rent_amount": float(
+                    _move_in_first_month_amount(
+                        settlement.rent_amount,
+                        settlement.expected_move_in_date,
+                    )
+                ),
+                "utility_deposits": utility_deposits,
                 "garbage_amount": float(settlement.garbage_amount),
                 "water_deposit_amount": float(settlement.water_deposit_amount),
             }
@@ -7049,6 +7539,57 @@ def _caretaker_dashboard_error(request):
             "caretaker-dashboard-denied",
         )
     return None
+
+
+@require_http_methods(["GET", "PATCH"])
+def caretaker_properties(request):
+    error = _caretaker_dashboard_error(request)
+    if error:
+        return error
+    profile = UserProfile.objects.filter(user=request.user).first()
+    if profile is None:
+        return _problem(403, "Profile required", "A caretaker profile is required.", "profile-required")
+    properties = _caretaker_assigned_properties(request.user).select_related("branch").order_by(
+        "name", "pk"
+    )
+    if request.method == "PATCH":
+        body = _json_body(request)
+        raw_property_id = body.get("activePropertyId") if body is not None else None
+        if isinstance(raw_property_id, bool) or not isinstance(raw_property_id, (int, str)):
+            return _problem(400, "Invalid property", "Select an assigned property.", "invalid-property")
+        try:
+            property_id = int(raw_property_id)
+        except (TypeError, ValueError):
+            return _problem(400, "Invalid property", "Select an assigned property.", "invalid-property")
+        property_obj = properties.filter(pk=property_id).first()
+        if property_obj is None:
+            return _problem(404, "Property not found", "The property is not assigned to your account.", "property-not-found")
+        profile.active_caretaker_property = property_obj
+        profile.save(update_fields=["active_caretaker_property"])
+        record_audit_event(
+            request,
+            "caretaker.active_property.changed",
+            "UserProfile",
+            new_values={"active_caretaker_property_id": property_obj.pk},
+        )
+        return JsonResponse({"activePropertyId": property_obj.pk})
+
+    active_property_id = profile.active_caretaker_property_id
+    if active_property_id is None or not properties.filter(pk=active_property_id).exists():
+        active_property_id = properties.values_list("pk", flat=True).first()
+    return JsonResponse(
+        {
+            "properties": [
+                {
+                    "id": property_obj.pk,
+                    "name": property_obj.name,
+                    "branch_name": property_obj.branch.name,
+                }
+                for property_obj in properties
+            ],
+            "activePropertyId": active_property_id,
+        }
+    )
 
 
 def _caretaker_payload(user):
@@ -8360,8 +8901,15 @@ def landlord_move_in_settlements(request):
             {"name": charge["name"], "amount": str(charge["amount"])}
             for charge in recurring_charges
         ]
-        utility_total = sum((charge["amount"] for charge in recurring_charges), Decimal("0.00"))
-        total_required = sum(amounts.values(), Decimal("0.00")) + utility_total
+        first_month_rent = _move_in_first_month_amount(
+            amounts["rent_amount"],
+            expected_move_in_date,
+        )
+        total_required = (
+            first_month_rent
+            + amounts["deposit_amount"]
+            + amounts["water_deposit_amount"]
+        ).quantize(Decimal("0.01"))
         try:
             with transaction.atomic():
                 locked_unit = Unit.objects.select_for_update().get(
@@ -8673,7 +9221,69 @@ def _materialize_move_in_unit_charges(unit, settlement):
     return audit_events
 
 
-def _send_move_in_activation(request, property_obj, settlement, *, force=False, actor=None):
+def _queue_move_in_handover_notification(package, actor, request):
+    try:
+        with transaction.atomic():
+            locked_package = (
+                MoveInPackage.objects.select_for_update(of=("self",))
+                .filter(pk=package.pk)
+                .select_related(
+                    "assigned_caretaker__profile",
+                    "tenancy__tenant",
+                    "tenancy__unit__property",
+                )
+                .first()
+            )
+            if locked_package is None:
+                raise ValueError("The move-in inspection task is unavailable.")
+            if locked_package.caretaker_notification_queued_at:
+                return True, None
+            caretaker = locked_package.assigned_caretaker
+            if caretaker is None:
+                raise ValueError("A caretaker must be assigned to the move-in inspection.")
+            phone = getattr(getattr(caretaker, "profile", None), "phone", "")
+            if not phone:
+                raise ValueError("The assigned caretaker has no phone number for SMS.")
+            queue_template_sms(
+                phone,
+                "move_in_handover_assigned",
+                {
+                    "tenant_name": locked_package.tenancy.tenant.name,
+                    "property_name": locked_package.tenancy.unit.property.name,
+                    "unit_code": locked_package.tenancy.unit.code,
+                    "move_in_date": locked_package.tenancy.start_date.isoformat(),
+                },
+                actor=actor,
+                request=request,
+            )
+            locked_package.caretaker_notification_queued_at = timezone.now()
+            locked_package.caretaker_notification_error = ""
+            locked_package.save(
+                update_fields=[
+                    "caretaker_notification_queued_at",
+                    "caretaker_notification_error",
+                    "updated_at",
+                ]
+            )
+            return True, None
+    except (ImproperlyConfigured, ValueError, RuntimeError, OSError) as exc:
+        MoveInPackage.objects.filter(pk=package.pk).update(
+            caretaker_notification_error=str(exc)[:500]
+        )
+        logger.exception("Could not queue move-in caretaker assignment SMS.")
+        return False, str(exc)
+
+
+def _send_move_in_activation(
+    request,
+    property_obj,
+    settlement,
+    *,
+    assigned_caretaker=None,
+    force=False,
+    actor=None,
+    identity_document=None,
+):
     if (
         settlement.status != MoveInSettlement.STATUS_PAID
         or settlement.outstanding_balance > 0
@@ -8696,6 +9306,8 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
     created_deposit_account = False
     charge_audit_events = []
     deposit_entry = None
+    move_in_accounting = None
+    move_in_document_keys = []
     try:
         with transaction.atomic():
             locked = MoveInSettlement.objects.select_for_update(of=("self",)).filter(
@@ -8722,14 +9334,34 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
                 ).first()
                 if tenancy is None:
                     return _problem(409, "Activation unavailable", "The activated move-in tenancy could not be found.", "tenancy-not-found")
+                package = MoveInPackage.objects.filter(tenancy=tenancy).first()
+                if package is None or (
+                    assigned_caretaker
+                    and package.assigned_caretaker_id != assigned_caretaker.pk
+                ):
+                    return _problem(
+                        409,
+                        "Inspection assignment changed",
+                        "The assigned caretaker does not match the saved move-in inspection task.",
+                        "move-in-caretaker-assignment-conflict",
+                    )
+                if assigned_caretaker:
+                    caretaker_sms_queued, caretaker_sms_error = (
+                        _queue_move_in_handover_notification(package, actor, request)
+                    )
+                else:
+                    caretaker_sms_queued, caretaker_sms_error = None, None
                 return JsonResponse(
                     {
-                        "success": True,
+                        "success": caretaker_sms_queued is not False,
                         "message": f"Activation email and SMS were already sent to {locked.tenant_email} and {locked.tenant_phone}.",
                         "activation_email_sent": True,
                         "activation_sms_queued": True,
                         "activation_email_error": None,
                         "activation_sms_error": None,
+                        "move_in_caretaker_sms_queued": caretaker_sms_queued,
+                        "move_in_caretaker_sms_error": caretaker_sms_error,
+                        "move_in_caretaker_id": package.assigned_caretaker_id,
                         "settlement": {
                             "id": locked.pk,
                             "activation_email_sent_at": locked.activation_email_sent_at.isoformat(),
@@ -8739,7 +9371,8 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
                         },
                         "tenant": _tenant_payload(locked.tenant),
                         "tenancy": _tenancy_payload(tenancy),
-                    }
+                    },
+                    status=502 if caretaker_sms_queued is False else 200,
                 )
 
             tenant = locked.tenant
@@ -8759,6 +9392,12 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
                     contact_person=locked.contact_person,
                     national_id_or_passport=locked.national_id_or_passport,
                     kra_pin=locked.kra_pin,
+                    occupation=locked.occupation,
+                    employer=locked.employer,
+                    next_of_kin_name=locked.next_of_kin_name,
+                    next_of_kin_phone=locked.next_of_kin_phone,
+                    next_of_kin_relationship=locked.next_of_kin_relationship,
+                    whatsapp_opted_in_at=timezone.now() if locked.whatsapp_opt_in else None,
                     phone=locked.tenant_phone,
                     email=locked.tenant_email,
                     is_provisional=True,
@@ -8821,7 +9460,16 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
                         created_by=actor,
                     )
 
+            locked.save(update_fields=["tenant", "updated_at"])
             charge_audit_events = _materialize_move_in_unit_charges(locked.unit, locked)
+            move_in_accounting = _materialize_move_in_payment(
+                tenancy,
+                locked,
+                actor,
+                move_in_document_keys,
+                identity_document,
+                assigned_caretaker,
+            )
             TenantActivationChallenge.objects.filter(
                 tenant=tenant,
                 unit=locked.unit,
@@ -8832,12 +9480,37 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
                 unit=locked.unit,
                 token_hash=_activation_hash(token),
                 code_hash=_activation_hash(activation_code),
+                phone_verification_required=True,
                 expires_at=now + timedelta(hours=48),
             )
-            locked.save(update_fields=["tenant", "updated_at"])
-    except (IntegrityError, ValidationError) as exc:
-        detail = "; ".join(exc.messages) if isinstance(exc, ValidationError) else "The activation could not be prepared because the tenant or unit conflicts with existing records."
+    except (IntegrityError, ValidationError, ValueError) as exc:
+        _cleanup_tenant_evidence(move_in_document_keys)
+        detail = (
+            "; ".join(exc.messages)
+            if isinstance(exc, ValidationError)
+            else str(exc)
+            if isinstance(exc, ValueError)
+            else "The activation could not be prepared because the tenant or unit conflicts with existing records."
+        )
         return _problem(409, "Activation unavailable", detail, "activation-conflict")
+    except (BotoCoreError, ClientError, ImproperlyConfigured, OSError) as exc:
+        _cleanup_tenant_evidence(move_in_document_keys)
+        logger.exception("Could not store move-in documents (%s).", type(exc).__name__)
+        return _problem(
+            503,
+            "Move-in documents unavailable",
+            "The agreement and payment receipt could not be stored securely.",
+            "move-in-document-storage-unavailable",
+        )
+    except DatabaseError:
+        _cleanup_tenant_evidence(move_in_document_keys)
+        logger.exception("Could not save move-in accounting or document records.")
+        return _problem(
+            503,
+            "Move-in records unavailable",
+            "The move-in accounting records could not be saved.",
+            "move-in-records-unavailable",
+        )
 
     if created_tenant:
         record_audit_event(
@@ -8893,6 +9566,39 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
                 "balance": str(account.balance),
             },
         )
+    if move_in_accounting:
+        if move_in_accounting["package_created"]:
+            record_audit_event(
+                request,
+                "move_in_package.created",
+                "MoveInPackage",
+                new_values=_move_in_package_payload(move_in_accounting["package"]),
+            )
+        if move_in_accounting["invoice_created"]:
+            record_audit_event(
+                request,
+                "invoice.move_in_issued",
+                "Invoice",
+                new_values=_invoice_payload(move_in_accounting["invoice"]),
+            )
+        if move_in_accounting["payment_created"]:
+            record_audit_event(
+                request,
+                "payment.recorded",
+                "Payment",
+                new_values=_payment_payload(move_in_accounting["payment"]),
+            )
+        if move_in_accounting["allocation_created"]:
+            record_audit_event(
+                request,
+                "payment.manually_allocated",
+                "Payment",
+                new_values={
+                    "id": move_in_accounting["payment"].pk,
+                    "invoice_id": move_in_accounting["invoice"].pk,
+                    "amount": str(move_in_accounting["payment"].amount),
+                },
+            )
     record_audit_event(
         request,
         "tenant_activation.issued",
@@ -8915,6 +9621,7 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
             property_obj.name,
             activation_url,
             activation_code,
+            phone_verification_required=True,
         )
     except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as exc:
         email_error = str(exc)
@@ -8945,14 +9652,6 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
             request=request,
             expires_at=challenge.expires_at,
         )
-        queue_template_whatsapp_if_enabled(
-            locked.tenant_phone,
-            "tenant_activation",
-            {"code": activation_code},
-            actor=actor,
-            request=request,
-            expires_at=challenge.expires_at,
-        )
     except (ImproperlyConfigured, RuntimeError, ValueError, OSError) as exc:
         sms_error = str(exc)
         locked.activation_sms_error = sms_error
@@ -8963,20 +9662,36 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
         locked.activation_sms_error = ""
         locked.save(update_fields=["activation_sms_queued_at", "activation_sms_error", "updated_at"])
 
+    if move_in_accounting["package"].assigned_caretaker_id:
+        caretaker_sms_queued, caretaker_sms_error = _queue_move_in_handover_notification(
+            move_in_accounting["package"],
+            actor,
+            request,
+        )
+    else:
+        caretaker_sms_queued, caretaker_sms_error = None, None
     activation_email_sent = email_error is None
     activation_sms_queued = sms_error is None
+    all_messages_queued = (
+        activation_email_sent
+        and activation_sms_queued
+        and caretaker_sms_queued is not False
+    )
     message = (
-        "Tenant activation email and SMS are queued."
-        if activation_email_sent and activation_sms_queued
-        else "Tenant account is ready, but one or more activation messages could not be delivered."
+        "Tenant activation and move-in inspection SMS messages are queued."
+        if all_messages_queued
+        else "Tenant account is ready, but one or more activation or inspection messages could not be queued."
     )
     activation_result = {
-        "success": activation_email_sent and activation_sms_queued,
+        "success": all_messages_queued,
         "message": message,
         "activation_email_sent": activation_email_sent,
         "activation_email_error": email_error,
         "activation_sms_queued": activation_sms_queued,
         "activation_sms_error": sms_error,
+        "move_in_caretaker_sms_queued": caretaker_sms_queued,
+        "move_in_caretaker_sms_error": caretaker_sms_error,
+        "move_in_caretaker_id": move_in_accounting["package"].assigned_caretaker_id,
         "tenant": _tenant_payload(tenant),
         "tenancy": _tenancy_payload(tenancy),
         "settlement": {
@@ -8995,10 +9710,27 @@ def _send_move_in_activation(request, property_obj, settlement, *, force=False, 
             "activation_sms_error": sms_error,
         },
     }
+    if move_in_accounting:
+        activation_result["invoice"] = _invoice_payload(
+            move_in_accounting["invoice"]
+        )
+        activation_result["receipt"] = _receipt_payload(
+            move_in_accounting["receipt"]
+        )
     return JsonResponse(
         activation_result,
-        status=200 if activation_email_sent and activation_sms_queued else 502,
+        status=200 if all_messages_queued else 502,
     )
+
+
+def _move_in_first_month_amount(monthly_amount, move_in_date):
+    month_days = calendar.monthrange(move_in_date.year, move_in_date.month)[1]
+    billable_days = month_days - move_in_date.day + 1
+    return (
+        Decimal(str(monthly_amount))
+        / Decimal(month_days)
+        * Decimal(billable_days)
+    ).quantize(Decimal("0.01"))
 
 
 def _move_in_onboarding_quote(unit, expected_move_in_date):
@@ -9010,6 +9742,11 @@ def _move_in_onboarding_quote(unit, expected_move_in_date):
     else:
         rent_amount = unit.property.default_rent
     rent_amount = Decimal(str(rent_amount)).quantize(Decimal("0.01"))
+    month_days = calendar.monthrange(
+        expected_move_in_date.year,
+        expected_move_in_date.month,
+    )[1]
+    billable_days = month_days - expected_move_in_date.day + 1
 
     security_deposit = (
         unit.unit_type_definition.security_deposit
@@ -9072,11 +9809,15 @@ def _move_in_onboarding_quote(unit, expected_move_in_date):
         (deposit["amount"] for deposit in utility_deposits),
         Decimal("0.00"),
     ).quantize(Decimal("0.01"))
-    total_required = (rent_amount + security_deposit + utility_deposit_amount).quantize(
+    garbage_amount = Decimal(str(unit.property.default_garbage_charge or 0)).quantize(
         Decimal("0.01")
     )
     line_items = [
-        {"name": "Monthly rent", "amount": rent_amount, "category": "rent"},
+        {
+            "name": "First month rent",
+            "amount": _move_in_first_month_amount(rent_amount, expected_move_in_date),
+            "category": "rent",
+        },
         {"name": "Security deposit", "amount": security_deposit, "category": "deposit"},
         *[
             {
@@ -9087,10 +9828,20 @@ def _move_in_onboarding_quote(unit, expected_move_in_date):
             for deposit in utility_deposits
         ],
     ]
+    total_required = sum(
+        (item["amount"] for item in line_items),
+        Decimal("0.00"),
+    ).quantize(Decimal("0.01"))
     quote = {
         "unit_id": unit.pk,
         "property_id": unit.property_id,
         "start_date": expected_move_in_date.isoformat(),
+        "proration": {
+            "method": "actual_calendar_days",
+            "month_days": month_days,
+            "billable_days": billable_days,
+            "move_in_day_included": True,
+        },
         "items": [
             {
                 "name": item["name"],
@@ -9100,10 +9851,6 @@ def _move_in_onboarding_quote(unit, expected_move_in_date):
             for item in line_items
         ],
         "total": str(total_required),
-        "monthly_charges": [
-            {"name": charge["name"], "amount": str(charge["amount"])}
-            for charge in monthly_charges_by_name.values()
-        ],
     }
     quote["fingerprint"] = hashlib.sha256(
         json.dumps(quote, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -9112,6 +9859,8 @@ def _move_in_onboarding_quote(unit, expected_move_in_date):
         "quote": quote,
         "rent_amount": rent_amount,
         "security_deposit": security_deposit,
+        "garbage_amount": garbage_amount,
+        "letting_fee_amount": Decimal("0.00"),
         "utility_deposits": utility_deposits,
         "utility_deposit_amount": utility_deposit_amount,
         "total_required": total_required,
@@ -9127,6 +9876,37 @@ def _property_officer_onboarding_error(request):
         return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
     _, error = _property_officer_membership(request.user)
     return error
+
+
+def _tenant_document_file_details(upload):
+    if upload is None:
+        return None, "A document file is required."
+    if upload.size <= 0 or upload.size > 10 * 1024 * 1024:
+        return None, "Documents must be from 1 byte to 10 MB."
+    try:
+        header = upload.read(12)
+        upload.seek(0)
+    except OSError:
+        logger.exception("Could not read uploaded tenant document.")
+        return None, "The uploaded document could not be read."
+    signatures = (
+        (b"%PDF-", "application/pdf", "pdf"),
+        (b"\xff\xd8\xff", "image/jpeg", "jpg"),
+        (b"\x89PNG\r\n\x1a\n", "image/png", "png"),
+    )
+    match = next(
+        (
+            (content_type, extension)
+            for signature, content_type, extension in signatures
+            if header.startswith(signature)
+        ),
+        None,
+    )
+    if match is None and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        match = ("image/webp", "webp")
+    if match is None:
+        return None, "Documents must be PDF, JPEG, PNG, or WebP files."
+    return match, None
 
 
 @require_GET
@@ -9167,9 +9947,19 @@ def property_officer_tenant_onboarding(request):
     error = _property_officer_onboarding_error(request)
     if error:
         return error
-    body = _json_body(request)
+    if request.content_type == "multipart/form-data":
+        body = request.POST.dict()
+        body["confirm_paid"] = body.get("confirm_paid") == "true"
+        body["whatsapp_opt_in"] = body.get("whatsapp_opt_in", "false") == "true"
+    else:
+        body = _json_body(request)
     if body is None:
-        return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
+        return _problem(
+            400,
+            "Invalid request",
+            "Submit tenant details and the national ID/passport in a multipart form.",
+            "invalid-request",
+        )
     if body.get("confirm_paid") is not True:
         return _problem(400, "Payment confirmation required", "Confirm that the full move-in amount has been paid before onboarding.", "payment-confirmation-required")
     if isinstance(body.get("unit_id"), bool) or isinstance(body.get("due_day"), bool):
@@ -9177,6 +9967,7 @@ def property_officer_tenant_onboarding(request):
 
     try:
         unit_id = int(body.get("unit_id"))
+        caretaker_id = int(body.get("caretaker_id"))
         expected_move_in_date = date.fromisoformat(str(body.get("start_date") or ""))
         due_day = int(body.get("due_day"))
         tenancy_end_date = (
@@ -9185,8 +9976,10 @@ def property_officer_tenant_onboarding(request):
             else None
         )
         submitted_total = Decimal(str(body.get("quote_total")))
+        payment_amount = Decimal(str(body.get("payment_amount")))
+        payment_date = date.fromisoformat(str(body.get("payment_date") or ""))
     except (TypeError, ValueError, InvalidOperation):
-        return _problem(400, "Invalid onboarding request", "A valid unit, move-in date, rent due day, and quoted total are required.", "invalid-onboarding-request")
+        return _problem(400, "Invalid onboarding request",         "A valid unit, caretaker, move-in date, rent due day, quote, payment amount, and payment date are required.", "invalid-onboarding-request")
     if expected_move_in_date < timezone.localdate():
         return _problem(400, "Invalid move-in date", "The move-in date must be today or later.", "invalid-move-in-date")
     if not 1 <= due_day <= 31:
@@ -9216,8 +10009,79 @@ def property_officer_tenant_onboarding(request):
     company_registration_number = str(body.get("company_registration_number") or "").strip()
     contact_person = str(body.get("contact_person") or "").strip()
     kra_pin = str(body.get("kra_pin") or "").strip()
-    if tenant_type == Tenant.INDIVIDUAL and not national_id_or_passport:
-        return _problem(400, "Invalid tenant details", "A national ID or passport is required for an individual tenant.", "invalid-tenant-details")
+    occupation = str(body.get("occupation") or "").strip()
+    employer = str(body.get("employer") or "").strip()
+    next_of_kin_name = str(body.get("next_of_kin_name") or "").strip()
+    next_of_kin_relationship = str(body.get("next_of_kin_relationship") or "").strip()
+    next_of_kin_phone = str(body.get("next_of_kin_phone") or "").strip()
+    identity_upload = request.FILES.get("identity_document")
+    if identity_upload is None:
+        return _problem(
+            400,
+            "Identity document required",
+            "Upload the tenant's national ID/passport or the company contact person's document before completing onboarding.",
+            "identity-document-required",
+        )
+    identity_file_details, identity_file_error = _tenant_document_file_details(
+        identity_upload
+    )
+    if identity_file_error:
+        return _problem(
+            400,
+            "Invalid identity document",
+            identity_file_error,
+            "invalid-identity-document",
+        )
+    if identity_file_details is None:
+        return _problem(
+            400,
+            "Invalid identity document",
+            "The identity document file type could not be determined.",
+            "invalid-identity-document",
+        )
+    if not identity_upload.name or len(identity_upload.name) > 255:
+        return _problem(
+            400,
+            "Invalid identity document",
+            "The identity document filename must be at most 255 characters.",
+            "invalid-identity-document",
+        )
+    identity_document = (
+        identity_upload,
+        identity_file_details[0],
+        identity_file_details[1],
+    )
+    transaction_reference = str(body.get("transaction_reference") or "").strip()
+    payment_channel = body.get("payment_channel")
+    whatsapp_opt_in = body.get("whatsapp_opt_in", False)
+    if whatsapp_opt_in not in (True, False):
+        return _problem(400, "Invalid tenant details", "whatsapp_opt_in must be true or false.", "invalid-tenant-details")
+    if next_of_kin_phone:
+        try:
+            next_of_kin_phone = _normalize_ke_phone(next_of_kin_phone)
+        except (ValidationError, ValueError) as exc:
+            return _problem(400, "Invalid next-of-kin phone", str(exc), "invalid-next-of-kin")
+    if any(len(value) > limit for value, limit in (
+        (occupation, 150),
+        (employer, 255),
+        (next_of_kin_name, 255),
+        (next_of_kin_relationship, 100),
+        (transaction_reference, 100),
+    )):
+        return _problem(400, "Invalid onboarding details", "Occupation, employer, next-of-kin, and payment reference exceed their allowed lengths.", "invalid-onboarding-details")
+    if payment_channel not in dict(MoveInPayment.CHANNEL_CHOICES):
+        return _problem(400, "Invalid payment channel", "Choose M-Pesa, bank transfer, or cash.", "invalid-payment-channel")
+    if not transaction_reference:
+        return _problem(400, "Invalid payment reference", "A unique transaction or office receipt reference is required.", "invalid-payment-reference")
+    if payment_date > timezone.localdate():
+        return _problem(400, "Invalid payment date", "The payment date cannot be in the future.", "invalid-payment-date")
+    if not national_id_or_passport:
+        return _problem(
+            400,
+            "Invalid tenant details",
+            "A national ID or passport number is required for the tenant or company contact person.",
+            "invalid-tenant-details",
+        )
     if tenant_type == Tenant.COMPANY and not company_registration_number:
         return _problem(400, "Invalid tenant details", "A company registration number is required for a company tenant.", "invalid-tenant-details")
     if tenant_type == Tenant.COMPANY and not contact_person:
@@ -9234,6 +10098,38 @@ def property_officer_tenant_onboarding(request):
     )
     if unit is None:
         return _problem(404, "Unit not found", "The unit is unavailable or outside your access scope.", "unit-not-found")
+    assigned_caretaker = (
+        get_user_model()
+        .objects.filter(
+            pk=caretaker_id,
+            is_active=True,
+            groups__name=CARETAKER_ROLE,
+            property_caretaker_assignments__property=unit.property,
+            property_caretaker_assignments__ended_at__isnull=True,
+        )
+        .select_related("profile")
+        .distinct()
+        .first()
+    )
+    if assigned_caretaker is None:
+        return _problem(
+            400,
+            "Invalid caretaker",
+            "Choose an active caretaker assigned to this property.",
+            "invalid-move-in-caretaker",
+        )
+    caretaker_phone = getattr(
+        getattr(assigned_caretaker, "profile", None),
+        "phone",
+        "",
+    )
+    if not caretaker_phone:
+        return _problem(
+            400,
+            "Caretaker phone required",
+            "The assigned caretaker must have a phone number to receive the move-in SMS.",
+            "move-in-caretaker-phone-required",
+        )
     existing = MoveInSettlement.objects.filter(
         unit=unit,
         status__in=MoveInSettlement.OPEN_STATUSES,
@@ -9245,17 +10141,37 @@ def property_officer_tenant_onboarding(request):
 
     quote_values = _move_in_onboarding_quote(unit, expected_move_in_date)
     activation_retry = bool(existing and existing.tenant_id)
+    if activation_retry:
+        existing_package = MoveInPackage.objects.filter(
+            tenancy__tenant=existing.tenant,
+            tenancy__unit=unit,
+        ).only("assigned_caretaker_id").first()
+        if (
+            existing_package
+            and existing_package.assigned_caretaker_id != assigned_caretaker.pk
+        ):
+            return _problem(
+                409,
+                "Inspection assignment changed",
+                "The move-in inspection is already assigned to another caretaker.",
+                "move-in-caretaker-assignment-conflict",
+            )
     if not activation_retry and quote_values["rent_amount"] <= 0:
         return _problem(409, "Rent not configured", "Configure a positive rent amount for this unit before onboarding a tenant.", "rent-not-configured")
     if not submitted_total.is_finite() or submitted_total < 0:
         return _problem(400, "Invalid move-in amount", "quote_total must be a non-negative number.", "invalid-move-in-amount")
+    if not payment_amount.is_finite() or payment_amount <= 0:
+        return _problem(400, "Invalid payment amount", "payment_amount must be a positive amount.", "invalid-payment-amount")
     try:
         submitted_total = submitted_total.quantize(Decimal("0.01"))
+        payment_amount = payment_amount.quantize(Decimal("0.01"))
     except InvalidOperation:
-        return _problem(400, "Invalid move-in amount", "quote_total must be a valid currency amount.", "invalid-move-in-amount")
+        return _problem(400, "Invalid move-in amount", "The quote and payment must be valid currency amounts.", "invalid-move-in-amount")
     if not activation_retry:
         if submitted_total != quote_values["total_required"]:
             return _problem(409, "Move-in quote changed", "The move-in amount changed. Refresh the quote and confirm payment again.", "move-in-quote-changed")
+        if payment_amount != quote_values["total_required"]:
+            return _problem(400, "Payment amount mismatch", "Record the full move-in total before onboarding.", "payment-amount-mismatch")
         if body.get("quote_fingerprint") != quote_values["quote"]["fingerprint"]:
             return _problem(409, "Move-in quote changed", "The move-in charges changed. Refresh the quote and confirm payment again.", "move-in-quote-changed")
 
@@ -9269,6 +10185,12 @@ def property_officer_tenant_onboarding(request):
             and existing.company_registration_number == company_registration_number
             and existing.contact_person == contact_person
             and existing.kra_pin == kra_pin
+            and existing.occupation == occupation
+            and existing.employer == employer
+            and existing.next_of_kin_name == next_of_kin_name
+            and existing.next_of_kin_phone == next_of_kin_phone
+            and existing.next_of_kin_relationship == next_of_kin_relationship
+            and existing.whatsapp_opt_in == whatsapp_opt_in
             and existing.expected_move_in_date == expected_move_in_date
             and existing.tenancy_type == tenancy_type
             and existing.tenancy_end_date == tenancy_end_date
@@ -9309,12 +10231,19 @@ def property_officer_tenant_onboarding(request):
             company_registration_number=company_registration_number,
             contact_person=contact_person,
             kra_pin=kra_pin,
+            occupation=occupation,
+            employer=employer,
+            next_of_kin_name=next_of_kin_name,
+            next_of_kin_phone=next_of_kin_phone,
+            next_of_kin_relationship=next_of_kin_relationship,
+            whatsapp_opt_in=whatsapp_opt_in,
             tenancy_type=tenancy_type,
             tenancy_end_date=tenancy_end_date,
             tenancy_due_day=due_day,
             rent_amount=quote_values["rent_amount"],
             deposit_amount=quote_values["security_deposit"],
-            garbage_amount=unit.property.default_garbage_charge,
+            garbage_amount=quote_values["garbage_amount"],
+            move_in_letting_fee=quote_values["letting_fee_amount"],
             utility_deposit_amount=quote_values["utility_deposit_amount"],
             utility_deposits=[
                 {
@@ -9348,11 +10277,18 @@ def property_officer_tenant_onboarding(request):
                     settlement=settlement,
                     amount=total_required,
                     method=MoveInPayment.METHOD_OFFICER_CONFIRMATION,
+                    payment_channel=payment_channel,
+                    transaction_reference=transaction_reference,
+                    payment_date=payment_date,
+                    mpesa_reference=(
+                        transaction_reference
+                        if payment_channel == MoveInPayment.CHANNEL_MPESA
+                        else ""
+                    ),
                     recorded_by=request.user,
                     status=MoveInPayment.STATUS_SUCCESS,
                     result_description=(
-                        "Property officer confirmed receipt of the full move-in amount "
-                        "during tenant onboarding."
+                        "Property officer recorded the full move-in payment during tenant onboarding."
                     ),
                     processed_at=timezone.now(),
                 )
@@ -9374,7 +10310,9 @@ def property_officer_tenant_onboarding(request):
                 "unit_id": unit.pk,
                 "confirmed_total": str(total_required),
                 "confirmed_by": request.user.pk,
-                "confirmation_method": "manual",
+                "payment_channel": payment_channel,
+                "transaction_reference": transaction_reference,
+                "payment_date": payment_date.isoformat(),
                 "move_in_payment_id": confirmation_payment.pk,
                 "confirmed_at": timezone.now().isoformat(),
             },
@@ -9384,7 +10322,9 @@ def property_officer_tenant_onboarding(request):
         request,
         unit.property,
         settlement,
+        assigned_caretaker=assigned_caretaker,
         actor=request.user,
+        identity_document=identity_document,
     )
     activation_payload = json.loads(activation_response.content)
     if activation_response.status_code >= 400 and not (
@@ -10394,6 +11334,7 @@ def decide_landlord_remittance(request, remittance_id):
                 "status",
                 "reviewed_by",
                 "reviewed_at",
+                "approval_hash",
                 "rejection_reason",
                 "updated_at",
             ])
@@ -10516,13 +11457,29 @@ def record_landlord_remittance_payout(request, remittance_id):
     return JsonResponse({"remittance": _landlord_remittance_payload(remittance)})
 
 
+def _invitation_assigned_properties(invitation):
+    properties = list(invitation.properties.all())
+    return properties or [invitation.property]
+
+
+def _invitation_is_within_property_scope(invitation, property_ids):
+    allowed_ids = set(property_ids)
+    return all(
+        property_obj.pk in allowed_ids
+        for property_obj in _invitation_assigned_properties(invitation)
+    )
+
+
 def _caretaker_invitation_payload(invitation):
+    properties = _invitation_assigned_properties(invitation)
     return {
         "id": invitation.pk,
         "email": invitation.email,
         "full_name": invitation.full_name,
         "property_id": invitation.property_id,
-        "property_name": invitation.property.name,
+        "property_ids": [property_obj.pk for property_obj in properties],
+        "property_name": ", ".join(property_obj.name for property_obj in properties),
+        "property_names": [property_obj.name for property_obj in properties],
         "expires_at": invitation.expires_at.isoformat(),
         "status": (
             "active"
@@ -10551,9 +11508,14 @@ def list_caretaker_invitations(request):
         if not properties.exists():
             return _problem(404, "Property not found", "The property is outside your access scope.", "property-not-found")
     property_ids = list(properties.values_list("id", flat=True))
-    invitations = CaretakerInvitation.objects.filter(
-        property_id__in=property_ids,
-    ).select_related("property")[:100]
+    invitation_records = CaretakerInvitation.objects.filter(
+        Q(property_id__in=property_ids) | Q(properties__in=property_ids),
+    ).select_related("property").prefetch_related("properties").distinct()[:100]
+    invitations = [
+        invitation
+        for invitation in invitation_records
+        if _invitation_is_within_property_scope(invitation, property_ids)
+    ]
     assignments = PropertyCaretakerAssignment.objects.filter(
         property_id__in=property_ids,
         ended_at__isnull=True,
@@ -10617,10 +11579,23 @@ def create_caretaker_invitation(request):
             "A caretaker name and ID or registration number are required.",
             "invalid-caretaker",
         )
-    try:
-        property_id = int(body.get("property_id"))
-    except (TypeError, ValueError):
-        return _problem(400, "Invalid property", "property_id is required.", "invalid-property")
+    raw_property_ids = body.get("property_ids")
+    if raw_property_ids is None:
+        raw_property_ids = [body.get("property_id")]
+    if not isinstance(raw_property_ids, list) or not raw_property_ids:
+        return _problem(400, "Invalid property", "Select one or more properties.", "invalid-property")
+    property_ids = []
+    for raw_property_id in raw_property_ids:
+        if isinstance(raw_property_id, bool) or not isinstance(raw_property_id, (int, str)):
+            return _problem(400, "Invalid property", "Property IDs must be integers.", "invalid-property")
+        try:
+            property_id = int(raw_property_id)
+        except (TypeError, ValueError):
+            return _problem(400, "Invalid property", "Property IDs must be integers.", "invalid-property")
+        if property_id <= 0:
+            return _problem(400, "Invalid property", "Property IDs must be positive.", "invalid-property")
+        if property_id not in property_ids:
+            property_ids.append(property_id)
     user_model = get_user_model()
     if user_model.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).exists():
         return _problem(409, "Account exists", "This email already belongs to an account.", "caretaker-exists")
@@ -10632,26 +11607,26 @@ def create_caretaker_invitation(request):
         seconds=settings.AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS
     )
     with transaction.atomic():
-        accessible_property_ids = _caretaker_invitation_properties(request).values_list(
-            "pk",
-            flat=True,
+        accessible_property_ids = _caretaker_invitation_properties(request).values_list("pk", flat=True)
+        assigned_properties = list(
+            Property.objects.select_for_update()
+            .filter(pk__in=property_ids)
+            .filter(pk__in=accessible_property_ids)
+            .select_related("branch")
+            .order_by("pk")
         )
-        property_obj = Property.objects.select_for_update().filter(
-            pk=property_id,
-            pk__in=accessible_property_ids,
-        ).first()
-        if property_obj is None:
+        if len(assigned_properties) != len(property_ids):
             return _problem(404, "Property not found", "The property is outside your access scope.", "property-not-found")
         if CaretakerInvitation.objects.filter(
-            property=property_obj,
+            Q(property_id__in=property_ids) | Q(properties__in=property_ids),
             email__iexact=email,
             used_at__isnull=True,
             revoked_at__isnull=True,
             expires_at__gt=timezone.now(),
         ).exists():
-            return _problem(409, "Invitation exists", "An active invitation already exists for this email.", "invitation-exists")
+            return _problem(409, "Invitation exists", "An active invitation already exists for this email on a selected property.", "invitation-exists")
         invitation = CaretakerInvitation.objects.create(
-            property=property_obj,
+            property=assigned_properties[0],
             email=email,
             full_name=full_name,
             phone=phone,
@@ -10662,17 +11637,23 @@ def create_caretaker_invitation(request):
             created_by=request.user,
             expires_at=expires_at,
         )
+        invitation.properties.set(assigned_properties)
     record_audit_event(
         request,
         "caretaker_invitation.created",
         "CaretakerInvitation",
-        new_values={"id": invitation.pk, "property_id": property_obj.pk, "email": email},
+        new_values={
+            "id": invitation.pk,
+            "property_ids": [property_obj.pk for property_obj in assigned_properties],
+            "email": email,
+        },
     )
+    property_names = ", ".join(property_obj.name for property_obj in assigned_properties)
     activation_url = f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate-caretaker?token={token}"
     try:
         _send_caretaker_activation_email(
             invitation.email,
-            property_obj.name,
+            property_names,
             activation_url,
             activation_code,
         )
@@ -10700,11 +11681,21 @@ def resend_caretaker_invitation(request, invitation_id):
     token = secrets.token_urlsafe(32)
     activation_code = f"{secrets.randbelow(1_000_000):06d}"
     with transaction.atomic():
-        invitation = CaretakerInvitation.objects.select_for_update().filter(
+        invitation = CaretakerInvitation.objects.select_for_update(of=("self",)).filter(
             pk=invitation_id,
-            property__in=_caretaker_invitation_properties(request),
-        ).select_related("property").first()
-        if invitation is None or invitation.used_at or invitation.revoked_at:
+        ).filter(
+            Q(property__in=_caretaker_invitation_properties(request))
+            | Q(properties__in=_caretaker_invitation_properties(request))
+        ).select_related("property").prefetch_related("properties").first()
+        if (
+            invitation is None
+            or not _invitation_is_within_property_scope(
+                invitation,
+                _caretaker_invitation_properties(request).values_list("pk", flat=True),
+            )
+            or invitation.used_at
+            or invitation.revoked_at
+        ):
             return _problem(404, "Invitation not found", "The invitation is unavailable or no longer active.", "invitation-not-found")
         invitation.token_hash = _activation_hash(token)
         invitation.code_hash = make_password(activation_code)
@@ -10734,10 +11725,13 @@ def resend_caretaker_invitation(request, invitation_id):
         f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate-caretaker"
         f"?token={token}"
     )
+    property_names = ", ".join(
+        property_obj.name for property_obj in _invitation_assigned_properties(invitation)
+    )
     try:
         _send_caretaker_activation_email(
             invitation.email,
-            invitation.property.name,
+            property_names,
             activation_url,
             activation_code,
         )
@@ -10798,11 +11792,21 @@ def revoke_caretaker_invitation(request, invitation_id):
     if error:
         return error
     with transaction.atomic():
-        invitation = CaretakerInvitation.objects.select_for_update().filter(
+        invitation = CaretakerInvitation.objects.select_for_update(of=("self",)).filter(
             pk=invitation_id,
-            property__in=_caretaker_invitation_properties(request),
-        ).first()
-        if invitation is None or invitation.used_at or invitation.revoked_at:
+        ).filter(
+            Q(property__in=_caretaker_invitation_properties(request))
+            | Q(properties__in=_caretaker_invitation_properties(request))
+        ).select_related("property").prefetch_related("properties").first()
+        if (
+            invitation is None
+            or not _invitation_is_within_property_scope(
+                invitation,
+                _caretaker_invitation_properties(request).values_list("pk", flat=True),
+            )
+            or invitation.used_at
+            or invitation.revoked_at
+        ):
             return _problem(
                 404,
                 "Invitation not found",
@@ -10837,7 +11841,12 @@ def caretaker_invitation_context(request):
             "email": invitation.email,
             "full_name": invitation.full_name,
             "phone": invitation.phone,
-            "property_name": invitation.property.name,
+            "property_name": ", ".join(
+                property_obj.name for property_obj in _invitation_assigned_properties(invitation)
+            ),
+            "property_names": [
+                property_obj.name for property_obj in _invitation_assigned_properties(invitation)
+            ],
             "expires_at": invitation.expires_at.isoformat(),
         }
     )
@@ -10882,7 +11891,7 @@ def activate_caretaker(request):
         with transaction.atomic():
             invitation = CaretakerInvitation.objects.select_for_update().select_related(
                 "property"
-            ).get(pk=invitation.pk)
+            ).prefetch_related("properties").get(pk=invitation.pk)
             if not invitation.is_usable:
                 return _problem(400, "Invalid invitation", "The caretaker invitation is invalid, expired, or already used.", "invalid-invitation")
             if not invitation.code_hash or not check_password(code, invitation.code_hash):
@@ -10914,13 +11923,20 @@ def activate_caretaker(request):
             )
             profile.full_clean()
             profile.save()
-            profile.branches.add(invitation.property.branch)
-            PropertyCaretakerAssignment.objects.create(
-                property=invitation.property,
-                caretaker=user,
-                assigned_by=invitation.created_by,
+            assigned_properties = _invitation_assigned_properties(invitation)
+            profile.branches.add(*(property_obj.branch for property_obj in assigned_properties))
+            PropertyCaretakerAssignment.objects.bulk_create(
+                [
+                    PropertyCaretakerAssignment(
+                        property=property_obj,
+                        caretaker=user,
+                        assigned_by=invitation.created_by,
+                    )
+                    for property_obj in assigned_properties
+                ]
             )
-            invitation.property.caretakers.add(user)
+            for property_obj in assigned_properties:
+                property_obj.caretakers.add(user)
             invitation.used_by = user
             invitation.used_at = timezone.now()
             invitation.save(update_fields=["used_by", "used_at"])
@@ -10932,7 +11948,11 @@ def activate_caretaker(request):
         request,
         "caretaker_invitation.accepted",
         "CaretakerInvitation",
-        new_values={"id": invitation.pk, "user_id": user.pk, "property_id": invitation.property_id},
+        new_values={
+            "id": invitation.pk,
+            "user_id": user.pk,
+            "property_ids": [property_obj.pk for property_obj in assigned_properties],
+        },
         actor=user,
     )
     return JsonResponse({"activated": True}, status=201)
@@ -11158,6 +12178,10 @@ def complete_caretaker_move_in_checklist_item(request, item_id):
     item = (
         MoveInChecklistItem.objects.select_related("package__tenancy__unit__property")
         .filter(pk=item_id, package__tenancy__unit__property__in=_accessible_properties(request.user))
+        .filter(
+            models.Q(package__assigned_caretaker=request.user)
+            | models.Q(package__assigned_caretaker__isnull=True)
+        )
         .first()
     )
     if item is None:
@@ -11168,6 +12192,10 @@ def complete_caretaker_move_in_checklist_item(request, item_id):
             .filter(
                 pk=item.pk,
                 package__tenancy__unit__property__in=_accessible_properties(request.user),
+            )
+            .filter(
+                models.Q(package__assigned_caretaker=request.user)
+                | models.Q(package__assigned_caretaker__isnull=True)
             )
             .first()
         )
@@ -11269,6 +12297,67 @@ def _move_in_condition_requirements(unit):
     ]
 
 
+def _validated_move_in_handover_inventory(package, raw_items):
+    expected_items = package.handover_inventory
+    if not isinstance(expected_items, list):
+        raise ValueError("The configured handover inventory is invalid. Contact a Property Officer.")
+    if not isinstance(raw_items, list) or len(raw_items) != len(expected_items):
+        raise ValueError("Record an issued quantity for every configured handover item.")
+
+    normalized_items = []
+    seen_names = set()
+    for expected, submitted in zip(expected_items, raw_items):
+        if not isinstance(expected, dict) or not isinstance(submitted, dict):
+            raise ValueError("Each handover inventory entry must be an object.")
+        name = expected.get("name")
+        property_quantity = expected.get("property_quantity")
+        issued_quantity = submitted.get("issued_quantity")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or isinstance(property_quantity, bool)
+            or not isinstance(property_quantity, int)
+            or not 0 <= property_quantity <= 32767
+            or submitted.get("name") != name
+            or name.casefold() in seen_names
+        ):
+            raise ValueError("The handover inventory changed. Reload the checklist and try again.")
+        if (
+            isinstance(issued_quantity, bool)
+            or not isinstance(issued_quantity, int)
+            or not 0 <= issued_quantity <= 32767
+        ):
+            raise ValueError(
+                f"The issued quantity for {name} must be a whole number from 0 to 32,767."
+            )
+        seen_names.add(name.casefold())
+        normalized_items.append(
+            {
+                "name": name,
+                "property_quantity": property_quantity,
+                "issued_quantity": issued_quantity,
+            }
+        )
+    return normalized_items
+
+
+def _move_in_handover_photo_error(package):
+    photos = package.handover_photos
+    if not isinstance(photos, list) or not photos:
+        return "Upload at least one move-in condition or meter photo before submitting."
+    has_water_meter = any(
+        requirement["utility_type"] == UtilityConfiguration.UTILITY_WATER
+        for requirement in _move_in_meter_requirements(package)
+    )
+    has_water_meter_photo = any(
+        isinstance(photo, dict) and photo.get("evidence_type") == "water_meter"
+        for photo in photos
+    )
+    if has_water_meter and not has_water_meter_photo:
+        return "Upload a clear photo of the water meter and its reading before submitting."
+    return None
+
+
 def _move_in_handover_payload(package, photo_path):
     condition_checklist = package.condition_checklist or [
         {**entry, "status": "", "notes": ""}
@@ -11281,14 +12370,18 @@ def _move_in_handover_payload(package, photo_path):
         "unit_id": package.tenancy.unit_id,
         "unit_code": package.tenancy.unit.code,
         "tenant_name": package.tenancy.tenant.name,
+        "move_in_date": package.tenancy.start_date.isoformat(),
+        "assigned_caretaker_id": package.assigned_caretaker_id,
         "status": package.handover_status,
         "keys_issued": package.keys_issued,
+        "handover_inventory": package.handover_inventory,
         "condition_checklist": condition_checklist,
         "meter_requirements": _move_in_meter_requirements(package),
         "initial_meter_readings": package.initial_meter_readings,
         "photos": [
             {
                 "name": photo.get("name", f"Handover photo {index + 1}"),
+                "evidence_type": photo.get("evidence_type"),
                 "content_type": photo.get("content_type"),
                 "size_bytes": photo.get("size_bytes"),
                 "url": f"{photo_path}/{package.pk}/photos/{index}",
@@ -11320,6 +12413,10 @@ def caretaker_move_in_handovers(request):
             tenancy__status=Tenancy.STATUS_ACTIVE,
             tenancy__unit__property__in=_accessible_properties(request.user),
         )
+        .filter(
+            models.Q(assigned_caretaker=request.user)
+            | models.Q(assigned_caretaker__isnull=True)
+        )
         .select_related("tenancy__tenant", "tenancy__unit__property")
         .order_by("tenancy__start_date", "tenancy__unit__code", "id")
     )
@@ -11348,6 +12445,10 @@ def upload_caretaker_move_in_handover_photos(request, package_id):
             tenancy__status=Tenancy.STATUS_ACTIVE,
             tenancy__unit__property__in=_accessible_properties(request.user),
         )
+        .filter(
+            models.Q(assigned_caretaker=request.user)
+            | models.Q(assigned_caretaker__isnull=True)
+        )
         .select_related("tenancy__tenant", "tenancy__unit__property")
         .first()
     )
@@ -11358,9 +12459,16 @@ def upload_caretaker_move_in_handover_photos(request, package_id):
             "The move-in handover is unavailable or outside your assigned properties.",
             "move-in-handover-not-found",
         )
+    if timezone.localdate() < package.tenancy.start_date:
+        return _problem(
+            409,
+            "Move-in inspection not due",
+            f"The move-in inspection can be submitted on {package.tenancy.start_date.isoformat()}.",
+            "move-in-inspection-not-due",
+        )
     files = request.FILES.getlist("photos")
     try:
-        evidence = _prepare_tenant_evidence(files)
+        evidence = _prepare_tenant_evidence(files, max_files=10)
     except ValueError as exc:
         return _problem(400, "Invalid evidence", str(exc), "invalid-evidence")
     if not evidence:
@@ -11370,6 +12478,19 @@ def upload_caretaker_move_in_handover_photos(request, package_id):
             "Select at least one photo to upload.",
             "handover-photos-required",
         )
+    photo_types = request.POST.getlist("photo_types")
+    if photo_types and (
+        len(photo_types) != len(evidence)
+        or any(photo_type not in {"condition", "water_meter"} for photo_type in photo_types)
+    ):
+        return _problem(
+            400,
+            "Invalid photo evidence type",
+            "Choose a valid evidence type for each uploaded photo.",
+            "invalid-handover-photo-type",
+        )
+    if not photo_types:
+        photo_types = ["condition"] * len(evidence)
     if len(package.handover_photos) + len(evidence) > 10:
         return _problem(
             400,
@@ -11381,13 +12502,14 @@ def upload_caretaker_move_in_handover_photos(request, package_id):
     uploaded_keys = []
     photos = []
     try:
-        for item in evidence:
+        for item, evidence_type in zip(evidence, photo_types):
             key = f"move-in/{package.pk}/{uuid.uuid4().hex}.{item['extension']}"
             uploaded_keys.append(key)
             upload_private_object(key, item["file"], item["content_type"])
             photos.append(
                 {
                     "storage_key": key,
+                    "evidence_type": evidence_type,
                     "content_type": item["content_type"],
                     "size_bytes": item["size_bytes"],
                     "name": f"Handover photo {len(package.handover_photos) + len(photos) + 1}.{item['extension']}",
@@ -11488,6 +12610,10 @@ def submit_caretaker_move_in_handover(request, package_id):
             tenancy__status=Tenancy.STATUS_ACTIVE,
             tenancy__unit__property__in=_accessible_properties(request.user),
         )
+        .filter(
+            models.Q(assigned_caretaker=request.user)
+            | models.Q(assigned_caretaker__isnull=True)
+        )
         .select_related("tenancy__tenant", "tenancy__unit__property")
         .first()
     )
@@ -11497,6 +12623,25 @@ def submit_caretaker_move_in_handover(request, package_id):
             "Handover not found",
             "The move-in handover is unavailable or outside your assigned properties.",
             "move-in-handover-not-found",
+        )
+    if timezone.localdate() < package.tenancy.start_date:
+        return _problem(
+            409,
+            "Move-in inspection not due",
+            f"The move-in inspection can be submitted on {package.tenancy.start_date.isoformat()}.",
+            "move-in-inspection-not-due",
+        )
+    try:
+        normalized_inventory = _validated_move_in_handover_inventory(
+            package,
+            body.get("handover_inventory"),
+        )
+    except ValueError as exc:
+        return _problem(
+            400,
+            "Invalid handover inventory",
+            str(exc),
+            "invalid-handover-inventory",
         )
     conditions = body.get("condition_checklist")
     required_conditions = _move_in_condition_requirements(package.tenancy.unit)
@@ -11630,11 +12775,12 @@ def submit_caretaker_move_in_handover(request, package_id):
         }
         for reading in normalized_readings
     ]
-    if not package.handover_photos:
+    photo_error = _move_in_handover_photo_error(package)
+    if photo_error:
         return _problem(
             400,
             "Handover photos required",
-            "Upload at least one condition or meter photo before submitting.",
+            photo_error,
             "handover-photos-required",
         )
 
@@ -11658,17 +12804,19 @@ def submit_caretaker_move_in_handover(request, package_id):
                     "This handover has already been submitted or is no longer active.",
                     "move-in-handover-conflict",
                 )
-            if not locked_package.handover_photos:
+            photo_error = _move_in_handover_photo_error(locked_package)
+            if photo_error:
                 return _problem(
                     400,
                     "Handover photos required",
-                    "Upload at least one condition or meter photo before submitting.",
+                    photo_error,
                     "handover-photos-required",
                 )
             tenancy = Tenancy.objects.select_for_update().select_related("unit").get(
                 pk=locked_package.tenancy_id
             )
             locked_package.keys_issued = keys_issued
+            locked_package.handover_inventory = normalized_inventory
             locked_package.condition_checklist = normalized_conditions
             locked_package.initial_meter_readings = normalized_readings
             locked_package.handover_status = MoveInPackage.HANDOVER_STATUS_SUBMITTED
@@ -11677,6 +12825,7 @@ def submit_caretaker_move_in_handover(request, package_id):
             locked_package.save(
                 update_fields=[
                     "keys_issued",
+                    "handover_inventory",
                     "condition_checklist",
                     "initial_meter_readings",
                     "handover_status",
@@ -11713,6 +12862,7 @@ def submit_caretaker_move_in_handover(request, package_id):
                     "id": locked_package.pk,
                     "tenancy_id": locked_package.tenancy_id,
                     "keys_issued": keys_issued,
+                    "handover_inventory": normalized_inventory,
                     "condition_checklist": normalized_conditions,
                     "initial_meter_readings": normalized_readings,
                     "photo_count": len(locked_package.handover_photos),
@@ -12616,6 +13766,64 @@ def get_property(request, property_id):
     return JsonResponse({"property": _property_payload(property_obj)})
 
 
+@require_http_methods(["PATCH"])
+def update_property_move_in_settings(request, property_id):
+    error = _property_officer_onboarding_error(request)
+    if error:
+        return error
+    body = _json_body(request)
+    if body is None or not any(
+        field in body for field in ("move_in_letting_fee", "default_handover_items")
+    ):
+        return _problem(
+            400,
+            "Invalid property settings",
+            "Provide a letting fee or default handover inventory.",
+            "invalid-property-settings",
+        )
+    property_obj = _accessible_properties(request.user).filter(pk=property_id).first()
+    if property_obj is None:
+        return _problem(404, "Property not found", "The property is unavailable or outside your access scope.", "property-not-found")
+    old_values = {
+        "move_in_letting_fee": str(property_obj.move_in_letting_fee),
+        "default_handover_items": property_obj.default_handover_items,
+    }
+    update_fields = []
+    if "move_in_letting_fee" in body:
+        try:
+            letting_fee = Decimal(str(body["move_in_letting_fee"]))
+        except (InvalidOperation, TypeError, ValueError):
+            return _problem(400, "Invalid letting fee", "move_in_letting_fee must be a valid amount.", "invalid-letting-fee")
+        if not letting_fee.is_finite() or letting_fee < 0:
+            return _problem(400, "Invalid letting fee", "move_in_letting_fee must be a finite, non-negative amount.", "invalid-letting-fee")
+        property_obj.move_in_letting_fee = letting_fee.quantize(Decimal("0.01"))
+        update_fields.append("move_in_letting_fee")
+    if "default_handover_items" in body:
+        try:
+            property_obj.default_handover_items = _validated_handover_inventory(
+                body["default_handover_items"]
+            )
+        except ValueError as exc:
+            return _problem(400, "Invalid handover inventory", str(exc), "invalid-handover-inventory")
+        update_fields.append("default_handover_items")
+    try:
+        property_obj.full_clean()
+        property_obj.save(update_fields=[*update_fields, "updated_at"])
+    except ValidationError as exc:
+        return _problem(400, "Invalid property settings", "; ".join(exc.messages), "invalid-property-settings")
+    record_audit_event(
+        request,
+        "property.move_in_settings_updated",
+        "Property",
+        old_values=old_values,
+        new_values={
+            "move_in_letting_fee": str(property_obj.move_in_letting_fee),
+            "default_handover_items": property_obj.default_handover_items,
+        },
+    )
+    return JsonResponse({"property": _property_payload(property_obj)})
+
+
 @require_POST
 def create_property(request):
     error = _caretaker_management_error(request)
@@ -12890,6 +14098,19 @@ def create_property(request):
             "invalid-property-unit-counts",
         )
 
+    try:
+        move_in_letting_fee = amount(
+            body.get("move_in_letting_fee", 0),
+            "Move-in letting fee",
+        )
+    except ValueError as exc:
+        return _problem(400, "Invalid letting fee", str(exc), "invalid-letting-fee")
+    raw_handover_items = body.get("default_handover_items", [])
+    try:
+        default_handover_items = _validated_handover_inventory(raw_handover_items)
+    except ValueError as exc:
+        return _problem(400, "Invalid handover inventory", str(exc), "invalid-handover-inventory")
+
     if prepared_unit_types:
         first_unit_type = prepared_unit_types[0]
         default_unit_type = first_unit_type["name"]
@@ -12932,9 +14153,11 @@ def create_property(request):
         default_unit_type=default_unit_type.strip(),
         default_rent=default_rent,
         security_deposit=security_deposit,
+        move_in_letting_fee=move_in_letting_fee,
         water_deposit=water_deposit,
         default_garbage_charge=body.get("default_garbage_charge", 0),
         default_water_rate=default_water_rate,
+        default_handover_items=default_handover_items,
         gps_coordinates=body.get("gps_coordinates") or {},
         amenities=body.get("amenities") or [],
         house_rules=house_rules,
@@ -14879,6 +16102,7 @@ def create_tenancy_invoice(request, tenancy_id):
             tenancy=tenancy,
             period_start=period_start,
             period_end=period_end,
+            invoice_type=Invoice.TYPE_STANDARD,
         )
         .prefetch_related("lines")
         .first()
@@ -15632,43 +16856,43 @@ def record_payment_plan_instalment(request, instalment_id):
     return JsonResponse({"payment_plan": _payment_plan_payload(plan)})
 
 
-@require_POST
-def create_move_in_package(request, tenancy_id):
-    error = _tenancy_access_error(request)
-    if error:
-        return error
-    tenancy = Tenancy.objects.filter(
-        pk=tenancy_id,
-        unit__property__in=_accessible_properties(request.user),
-    ).select_related("unit__property", "tenant").first()
-    if tenancy is None:
-        return _problem(
-            404,
-            "Tenancy not found",
-            "The tenancy is unavailable or outside your access scope.",
-            "tenancy-not-found",
-        )
+def _create_move_in_package_for_tenancy(tenancy):
     existing = MoveInPackage.objects.filter(tenancy=tenancy).prefetch_related(
         "charges", "checklist_items"
     ).first()
     if existing:
-        return JsonResponse({"move_in_package": _move_in_package_payload(existing)})
+        return existing, False
 
-    month_days = calendar.monthrange(tenancy.start_date.year, tenancy.start_date.month)[1]
-    remaining_days = month_days - tenancy.start_date.day + 1
-    charges = []
+    settlement = MoveInSettlement.objects.filter(
+        unit=tenancy.unit,
+        tenant=tenancy.tenant,
+        expected_move_in_date=tenancy.start_date,
+        status__in=(MoveInSettlement.STATUS_PAID, MoveInSettlement.STATUS_ACTIVE),
+    ).first()
+    included_charge_types = [UnitCharge.CHARGE_RENT]
+    if settlement is None:
+        included_charge_types.append(UnitCharge.CHARGE_DEPOSIT)
+    month_days = calendar.monthrange(
+        tenancy.start_date.year,
+        tenancy.start_date.month,
+    )[1]
+    billable_days = month_days - tenancy.start_date.day + 1
     effective_charges = UnitCharge.objects.filter(
         unit=tenancy.unit,
         effective_from__lte=tenancy.start_date,
+        charge_type__in=included_charge_types,
     ).filter(
         models.Q(effective_to__isnull=True)
         | models.Q(effective_to__gte=tenancy.start_date)
     ).order_by("charge_type", "name", "-effective_from")
     seen_charges = set()
+    charges = []
     for charge in effective_charges:
         charge_key = (
             charge.charge_type,
-            charge.name if charge.charge_type == UnitCharge.CHARGE_RECURRING else charge.charge_type,
+            charge.name.casefold()
+            if charge.charge_type == UnitCharge.CHARGE_DEPOSIT
+            else charge.charge_type,
         )
         if charge_key in seen_charges:
             continue
@@ -15679,24 +16903,67 @@ def create_move_in_package(request, tenancy_id):
             "effective_from": charge.effective_from.isoformat(),
         }
         if charge.charge_type == UnitCharge.CHARGE_RENT and tenancy.start_date.day != 1:
-            amount = (charge.amount / Decimal(month_days) * Decimal(remaining_days)).quantize(
-                Decimal("0.01")
-            )
+            amount = (
+                charge.amount / Decimal(month_days) * Decimal(billable_days)
+            ).quantize(Decimal("0.01"))
             calculation.update(
                 {
                     "method": "daily_proration",
                     "monthly_amount": str(charge.amount),
                     "month_days": month_days,
-                    "billable_days": remaining_days,
+                    "billable_days": billable_days,
                 }
             )
         else:
             calculation["method"] = "full_effective_charge"
         charges.append((charge.charge_type, charge.name, amount, calculation))
 
+    if settlement is not None:
+        if settlement.deposit_amount > 0:
+            charges.append((
+                MoveInCharge.CHARGE_DEPOSIT,
+                "Security deposit",
+                settlement.deposit_amount,
+                {"method": "full_deposit", "settlement_id": settlement.pk},
+            ))
+        utility_deposits = settlement.utility_deposits
+        if isinstance(utility_deposits, list) and utility_deposits:
+            for deposit in utility_deposits:
+                amount = Decimal(str(deposit["amount"])).quantize(Decimal("0.01"))
+                if amount > 0:
+                    charges.append((
+                        MoveInCharge.CHARGE_DEPOSIT,
+                        str(deposit["name"]),
+                        amount,
+                        {"method": "full_deposit", "settlement_id": settlement.pk},
+                    ))
+        else:
+            for name, amount in (
+                ("Water deposit", settlement.water_deposit_amount),
+                ("Utility deposits", settlement.utility_deposit_amount),
+            ):
+                if amount > 0:
+                    charges.append((
+                        MoveInCharge.CHARGE_DEPOSIT,
+                        name,
+                        amount,
+                        {"method": "full_deposit", "settlement_id": settlement.pk},
+                    ))
+    handover_inventory = [
+        {
+            "name": item["name"],
+            "property_quantity": item["quantity"],
+            "issued_quantity": None,
+        }
+        for item in (tenancy.unit.property.default_handover_items or [])
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("quantity"), int)
+    ]
     package = MoveInPackage(
         tenancy=tenancy,
         agreement_reference=f"MIA-{timezone.now():%Y%m%d}-{secrets.token_hex(4).upper()}",
+        handover_inventory=handover_inventory,
     )
     with transaction.atomic():
         package.save()
@@ -15727,6 +16994,28 @@ def create_move_in_package(request, tenancy_id):
     package = MoveInPackage.objects.prefetch_related("charges", "checklist_items").get(
         pk=package.pk
     )
+    return package, True
+
+
+@require_POST
+def create_move_in_package(request, tenancy_id):
+    error = _tenancy_access_error(request)
+    if error:
+        return error
+    tenancy = Tenancy.objects.filter(
+        pk=tenancy_id,
+        unit__property__in=_accessible_properties(request.user),
+    ).select_related("unit__property", "tenant").first()
+    if tenancy is None:
+        return _problem(
+            404,
+            "Tenancy not found",
+            "The tenancy is unavailable or outside your access scope.",
+            "tenancy-not-found",
+        )
+    package, created = _create_move_in_package_for_tenancy(tenancy)
+    if not created:
+        return JsonResponse({"move_in_package": _move_in_package_payload(package)})
     record_audit_event(
         request,
         "move_in_package.created",
@@ -15737,6 +17026,315 @@ def create_move_in_package(request, tenancy_id):
         {"move_in_package": _move_in_package_payload(package)},
         status=201,
     )
+
+
+def _create_move_in_invoice_for_tenancy(tenancy, package):
+    period_start = tenancy.start_date
+    period_end = date(
+        period_start.year,
+        period_start.month,
+        calendar.monthrange(period_start.year, period_start.month)[1],
+    )
+    existing = (
+        Invoice.objects.filter(
+            tenancy=tenancy,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        .prefetch_related("lines")
+        .first()
+    )
+    if existing:
+        return existing, False
+    if Invoice.objects.filter(
+        tenancy=tenancy,
+        period_start__lte=period_end,
+        period_end__gte=period_start,
+        invoice_type=Invoice.TYPE_STANDARD,
+    ).exists():
+        raise ValueError("An invoice already covers this tenancy's move-in period.")
+    if package is None:
+        raise ValueError("Generate the move-in package before issuing its invoice.")
+    charges = list(package.charges.all())
+    if not charges:
+        raise ValueError("The move-in package has no billable charges.")
+    total = sum((charge.amount for charge in charges), Decimal("0.00"))
+    sequence, _ = InvoiceNumberSequence.objects.select_for_update().get_or_create(
+        branch=tenancy.unit.property.branch,
+        year=period_start.year,
+    )
+    sequence_number = sequence.next_number
+    sequence.next_number += 1
+    sequence.save(update_fields=["next_number"])
+    invoice = Invoice(
+        branch=tenancy.unit.property.branch,
+        tenancy=tenancy,
+        number=f"INV-{tenancy.unit.property.branch_id}-{period_start.year}-{sequence_number:06d}",
+        period_start=period_start,
+        period_end=period_end,
+        due_date=period_start,
+        total=total,
+    )
+    invoice.full_clean()
+    invoice.save()
+    InvoiceLine.objects.bulk_create(
+        [
+            InvoiceLine(
+                invoice=invoice,
+                charge_type=charge.charge_type,
+                description=charge.description,
+                amount=charge.amount,
+                metadata={
+                    "move_in_charge_id": charge.pk,
+                    "agreement_reference": package.agreement_reference,
+                },
+            )
+            for charge in charges
+        ]
+    )
+    return invoice, True
+
+
+def _persist_move_in_documents(
+    tenancy,
+    settlement,
+    package,
+    invoice,
+    payment,
+    receipt,
+    actor,
+    uploaded_storage_keys,
+    identity_document,
+):
+    documents = []
+    document_specs = (
+        (
+            "move_in_agreement",
+            f"{package.agreement_reference}.pdf",
+            _agreement_pdf(tenancy, package),
+        ),
+        (
+            "payment_receipt",
+            f"{receipt.number}.pdf",
+            _payment_receipt_pdf(tenancy, invoice, payment, receipt),
+        ),
+    )
+    for document_type, name, content in document_specs:
+        existing = TenantDocument.objects.filter(
+            tenant=tenancy.tenant,
+            document_type=document_type,
+            name=name,
+        ).first()
+        if existing:
+            documents.append(existing)
+            continue
+        storage_key = (
+            f"tenant-documents/{tenancy.tenant_id}/move-in/{uuid.uuid4().hex}.pdf"
+        )
+        uploaded_storage_keys.append(storage_key)
+        upload_private_object(
+            storage_key,
+            BytesIO(content),
+            "application/pdf",
+        )
+        documents.append(
+            TenantDocument.objects.create(
+                tenant=tenancy.tenant,
+                document_type=document_type,
+                name=name,
+                storage_key=storage_key,
+                metadata={
+                    "content_type": "application/pdf",
+                    "tenancy_id": tenancy.pk,
+                    "move_in_settlement_id": settlement.pk,
+                    "invoice_id": invoice.pk,
+                    "payment_id": payment.pk,
+                    "receipt_id": receipt.pk,
+                },
+                uploaded_by=actor,
+            )
+        )
+    if identity_document is not None:
+        upload, content_type, extension = identity_document
+        name = upload.name[:255]
+        existing = TenantDocument.objects.filter(
+            tenant=tenancy.tenant,
+            document_type="identity_document",
+            name=name,
+        ).first()
+        if existing:
+            documents.append(existing)
+        else:
+            storage_key = (
+                f"tenant-documents/{tenancy.tenant_id}/move-in/"
+                f"{uuid.uuid4().hex}.{extension}"
+            )
+            uploaded_storage_keys.append(storage_key)
+            upload.seek(0)
+            upload_private_object(storage_key, upload, content_type)
+            documents.append(
+                TenantDocument.objects.create(
+                    tenant=tenancy.tenant,
+                    document_type="identity_document",
+                    name=name,
+                    storage_key=storage_key,
+                    metadata={
+                        "content_type": content_type,
+                        "size_bytes": upload.size,
+                        "tenancy_id": tenancy.pk,
+                        "move_in_settlement_id": settlement.pk,
+                    },
+                    uploaded_by=actor,
+                )
+            )
+    return documents
+
+
+def _materialize_move_in_payment(
+    tenancy,
+    settlement,
+    actor,
+    uploaded_storage_keys,
+    identity_document,
+    assigned_caretaker=None,
+):
+    move_in_payment = (
+        MoveInPayment.objects.select_for_update()
+        .filter(
+            settlement=settlement,
+            method=MoveInPayment.METHOD_OFFICER_CONFIRMATION,
+            status=MoveInPayment.STATUS_SUCCESS,
+        )
+        .exclude(transaction_reference="")
+        .order_by("id")
+        .first()
+    )
+    if move_in_payment is None:
+        return None
+
+    package, package_created = _create_move_in_package_for_tenancy(tenancy)
+    if (
+        assigned_caretaker
+        and package.assigned_caretaker_id
+        not in {None, assigned_caretaker.pk}
+    ):
+        raise ValidationError(
+            "The move-in inspection is already assigned to a different caretaker."
+        )
+    if assigned_caretaker and package.assigned_caretaker_id is None:
+        package.assigned_caretaker = assigned_caretaker
+        package.save(update_fields=["assigned_caretaker", "updated_at"])
+    invoice, invoice_created = _create_move_in_invoice_for_tenancy(
+        tenancy,
+        package,
+    )
+    if invoice.total != settlement.total_required:
+        raise ValidationError(
+            "The move-in invoice does not match the confirmed settlement total."
+        )
+    if move_in_payment.amount != invoice.total:
+        raise ValidationError(
+            "The recorded move-in payment does not match the opening invoice."
+        )
+
+    payment_sources = {
+        MoveInPayment.CHANNEL_MPESA: Payment.SOURCE_MPESA,
+        MoveInPayment.CHANNEL_BANK_TRANSFER: Payment.SOURCE_BANK,
+        MoveInPayment.CHANNEL_CASH: Payment.SOURCE_CASH,
+    }
+    source = payment_sources.get(move_in_payment.payment_channel)
+    if source is None:
+        raise ValidationError("The confirmed move-in payment channel is invalid.")
+
+    payment_date = move_in_payment.payment_date or timezone.localdate()
+    received_at = datetime.combine(payment_date, datetime.min.time())
+    if settings.USE_TZ:
+        received_at = timezone.make_aware(received_at)
+    payment = (
+        Payment.objects.select_for_update()
+        .filter(reference=move_in_payment.transaction_reference)
+        .first()
+    )
+    payment_created = payment is None
+    if payment is None:
+        payment = Payment.objects.create(
+            tenant=tenancy.tenant,
+            amount=move_in_payment.amount,
+            reference=move_in_payment.transaction_reference,
+            source=source,
+            account_reference=move_in_payment.transaction_reference,
+            payer_phone=tenancy.tenant.phone,
+            instrument_status=Payment.INSTRUMENT_NOT_APPLICABLE,
+            collected_by=actor if source == Payment.SOURCE_CASH else None,
+            notes="Move-in payment confirmed during tenant onboarding.",
+            received_at=received_at,
+            status=Payment.STATUS_UNMATCHED,
+        )
+    elif (
+        payment.tenant_id != tenancy.tenant_id
+        or payment.amount != move_in_payment.amount
+        or payment.source != source
+    ):
+        raise ValidationError(
+            "The payment reference is already recorded with different details."
+        )
+
+    allocations = list(
+        PaymentAllocation.objects.select_for_update()
+        .filter(payment=payment)
+        .order_by("id")
+    )
+    allocation_created = False
+    if allocations:
+        if (
+            len(allocations) != 1
+            or allocations[0].invoice_id != invoice.pk
+            or allocations[0].amount != invoice.total
+        ):
+            raise ValidationError(
+                "The payment reference is already allocated to another invoice."
+            )
+    else:
+        PaymentAllocation.objects.create(
+            payment=payment,
+            invoice=invoice,
+            amount=invoice.total,
+        )
+        allocation_created = True
+
+    payment.allocated_amount = invoice.total
+    payment.credit_amount = Decimal("0.00")
+    payment.status = Payment.STATUS_ALLOCATED
+    payment.save(
+        update_fields=["allocated_amount", "credit_amount", "status"]
+    )
+    receipt_created = not Receipt.objects.filter(payment=payment).exists()
+    receipt = _ensure_payment_receipt(payment, notify_whatsapp=False)
+    if receipt is None:
+        raise ValidationError("The move-in payment receipt could not be created.")
+    documents = _persist_move_in_documents(
+        tenancy,
+        settlement,
+        package,
+        invoice,
+        payment,
+        receipt,
+        actor,
+        uploaded_storage_keys,
+        identity_document,
+    )
+    return {
+        "package": package,
+        "package_created": package_created,
+        "invoice": invoice,
+        "invoice_created": invoice_created,
+        "payment": payment,
+        "payment_created": payment_created,
+        "allocation_created": allocation_created,
+        "receipt": receipt,
+        "receipt_created": receipt_created,
+        "documents": documents,
+    }
 
 
 @require_POST
@@ -15762,34 +17360,6 @@ def create_move_in_invoice(request, tenancy_id):
                 "The tenancy is unavailable or outside your access scope.",
                 "tenancy-not-found",
             )
-        period_start = tenancy.start_date
-        period_end = date(
-            period_start.year,
-            period_start.month,
-            calendar.monthrange(period_start.year, period_start.month)[1],
-        )
-        existing = (
-            Invoice.objects.filter(
-                tenancy=tenancy,
-                period_start=period_start,
-                period_end=period_end,
-            )
-            .prefetch_related("lines")
-            .first()
-        )
-        if existing:
-            return JsonResponse({"invoice": _invoice_payload(existing)})
-        if Invoice.objects.filter(
-            tenancy=tenancy,
-            period_start__lte=period_end,
-            period_end__gte=period_start,
-        ).exists():
-            return _problem(
-                409,
-                "Move-in invoice already issued",
-                "An invoice already covers this tenancy's move-in period.",
-                "move-in-invoice-exists",
-            )
         package = (
             MoveInPackage.objects.filter(tenancy=tenancy)
             .prefetch_related("charges")
@@ -15798,52 +17368,21 @@ def create_move_in_invoice(request, tenancy_id):
         if package is None:
             return _problem(
                 409,
-                "Move-in package required",
+                "Move-in invoice unavailable",
                 "Generate the move-in package before issuing its invoice.",
                 "move-in-package-required",
             )
-        charges = list(package.charges.all())
-        if not charges:
+        try:
+            invoice, created = _create_move_in_invoice_for_tenancy(tenancy, package)
+        except ValueError as exc:
             return _problem(
-                400,
-                "Invoice cannot be issued",
-                "The move-in package has no billable charges.",
-                "missing-move-in-charges",
+                409 if "already covers" in str(exc) else 400,
+                "Move-in invoice unavailable",
+                str(exc),
+                "move-in-invoice-exists" if "already covers" in str(exc) else "missing-move-in-charges",
             )
-        total = sum((charge.amount for charge in charges), Decimal("0.00"))
-        sequence, _ = InvoiceNumberSequence.objects.select_for_update().get_or_create(
-            branch=tenancy.unit.property.branch,
-            year=period_start.year,
-        )
-        sequence_number = sequence.next_number
-        sequence.next_number += 1
-        sequence.save(update_fields=["next_number"])
-        invoice = Invoice(
-            branch=tenancy.unit.property.branch,
-            tenancy=tenancy,
-            number=f"INV-{tenancy.unit.property.branch_id}-{period_start.year}-{sequence_number:06d}",
-            period_start=period_start,
-            period_end=period_end,
-            due_date=period_start,
-            total=total,
-        )
-        invoice.full_clean()
-        invoice.save()
-        InvoiceLine.objects.bulk_create(
-            [
-                InvoiceLine(
-                    invoice=invoice,
-                    charge_type=charge.charge_type,
-                    description=charge.description,
-                    amount=charge.amount,
-                    metadata={
-                        "move_in_charge_id": charge.pk,
-                        "agreement_reference": package.agreement_reference,
-                    },
-                )
-                for charge in charges
-            ]
-        )
+        if not created:
+            return JsonResponse({"invoice": _invoice_payload(invoice)})
     record_audit_event(
         request,
         "invoice.move_in_issued",
@@ -16125,6 +17664,7 @@ def _tenant_activation_context_payload(challenge):
         "unit_code": challenge.unit.code,
         "property_name": challenge.unit.property.name,
         "identity_required": tenant.is_provisional,
+        "phone_verification_required": challenge.phone_verification_required,
         "expires_at": challenge.expires_at.isoformat(),
     }
 
@@ -16230,6 +17770,17 @@ def activate_tenant(request):
                 return _problem(400, "Invalid activation", "The activation code does not match this unit.", "invalid-activation")
             tenant = challenge.tenant
             was_provisional = tenant.is_provisional
+            if (
+                challenge.phone_verification_required
+                and normalized_phone
+                and normalized_phone != tenant.phone
+            ):
+                return _problem(
+                    403,
+                    "Phone verification required",
+                    "The registered phone cannot be changed during activation. Contact the property office to update it.",
+                    "activation-phone-mismatch",
+                )
             if was_provisional:
                 if (
                     not isinstance(national_id_or_passport, str)
@@ -16243,6 +17794,9 @@ def activate_tenant(request):
             if email and tenant.email and email.casefold() != tenant.email.casefold():
                 return _problem(403, "Email mismatch", "The activation code is not assigned to this email address.", "email-mismatch")
             tenant_changed = was_provisional
+            if challenge.phone_verification_required and tenant.phone_verified_at is None:
+                tenant.phone_verified_at = timezone.now()
+                tenant_changed = True
             if email and not tenant.email:
                 tenant.email = email
                 tenant_changed = True
@@ -16256,6 +17810,7 @@ def activate_tenant(request):
                         "name",
                         "national_id_or_passport",
                         "is_provisional",
+                        "phone_verified_at",
                         "email",
                         "phone",
                         "updated_at",
@@ -17049,47 +18604,15 @@ def create_tenant_document(request, tenant_id):
                 "The tenancy is unavailable or outside your access scope.",
                 "tenancy-not-found",
             )
-    if upload.size <= 0 or upload.size > 10 * 1024 * 1024:
+    file_details, file_error = _tenant_document_file_details(upload)
+    if file_error or file_details is None:
         return _problem(
             400,
             "Invalid document",
-            "Documents must be from 1 byte to 10 MB.",
+            file_error or "The uploaded file type could not be determined.",
             "invalid-document",
         )
-    try:
-        header = upload.read(12)
-        upload.seek(0)
-    except OSError:
-        logger.exception("Could not read uploaded tenant document.")
-        return _problem(
-            400,
-            "Invalid document",
-            "The uploaded document could not be read.",
-            "invalid-document",
-        )
-    signatures = (
-        (b"%PDF-", "application/pdf", "pdf"),
-        (b"\xff\xd8\xff", "image/jpeg", "jpg"),
-        (b"\x89PNG\r\n\x1a\n", "image/png", "png"),
-    )
-    match = next(
-        (
-            (content_type, extension)
-            for signature, content_type, extension in signatures
-            if header.startswith(signature)
-        ),
-        None,
-    )
-    if match is None and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        match = ("image/webp", "webp")
-    if match is None:
-        return _problem(
-            400,
-            "Invalid document",
-            "Documents must be PDF, JPEG, PNG, or WebP files.",
-            "invalid-document",
-        )
-    content_type, extension = match
+    content_type, extension = file_details
     storage_key = f"tenant-documents/{tenant.pk}/{uuid.uuid4().hex}.{extension}"
     try:
         upload_private_object(storage_key, upload, content_type)
@@ -17201,6 +18724,7 @@ def _inspection_payload(inspection, include_private_token=True):
         "property_name": inspection.property.name,
         "unit_id": inspection.unit_id,
         "unit_code": inspection.unit.code if inspection.unit_id else None,
+        "move_out_notice_id": inspection.move_out_notice_id,
         "title": inspection.title,
         "inspection_type": inspection.inspection_type,
         "scheduled_for": inspection.scheduled_for.isoformat(),
@@ -17415,6 +18939,9 @@ def create_inspection(request):
                             "tenant_name": tenancy.tenant.name,
                             "property_name": inspection.property.name,
                             "unit_code": inspection.unit.code,
+                            "move_out_date": timezone.localtime(
+                                inspection.scheduled_for
+                            ).date().isoformat(),
                         }
                         _queue_move_out_user_sms(
                             responsible_staff,
@@ -17519,6 +19046,17 @@ def complete_inspection(request, inspection_id):
                 "The actual move-out date cannot precede the tenancy start.",
                 "invalid-inspection",
             )
+        if (
+            inspection.move_out_notice_id
+            and actual_move_out_date
+            < inspection.move_out_notice.proposed_move_out_date
+        ):
+            return _problem(
+                400,
+                "Inspection not yet due",
+                "The assigned exit inspection cannot be completed before the proposed move-out date.",
+                "move-out-inspection-not-due",
+            )
         if actual_move_out_date > timezone.localdate():
             return _problem(
                 400,
@@ -17554,15 +19092,27 @@ def complete_inspection(request, inspection_id):
             inspection.maintenance_required = maintenance_required
             inspection.findings = str(body.get("findings", inspection.findings)).strip()
             inspection.recommendations = str(body.get("recommendations", inspection.recommendations)).strip()
+            if move_out_inspection:
+                final_readings, _ = _move_out_final_readings(
+                    inspection.unit,
+                    actual_move_out_date,
+                    final_readings,
+                    request,
+                )
+                inspection.final_readings = final_readings
             inspection.status = PropertyInspection.STATUS_COMPLETED
             inspection.completed_at = timezone.now()
             inspection.full_clean()
             inspection.save()
+            inspection_payload = _inspection_payload(inspection)
+            audit_source = getattr(request, "audit_source", "")
+            if audit_source:
+                inspection_payload["source"] = audit_source
             record_audit_event(
                 request,
                 "property_inspection.completed",
                 "PropertyInspection",
-                new_values=_inspection_payload(inspection),
+                new_values=inspection_payload,
             )
             if move_out_inspection:
                 tenancy = move_out_tenancy
@@ -17599,6 +19149,16 @@ def complete_inspection(request, inspection_id):
                         )
     except ValidationError as exc:
         return _problem(400, "Invalid inspection", str(exc.message_dict), "invalid-inspection")
+    except ValueError as exc:
+        return _problem(400, "Invalid inspection", str(exc), "invalid-inspection")
+    except (ImproperlyConfigured, RuntimeError, OSError) as exc:
+        logger.exception("Could not queue move-out inspection notification.")
+        return _problem(
+            503,
+            "Move-out notification unavailable",
+            str(exc),
+            "move-out-notification-unavailable",
+        )
     except IntegrityError:
         return _problem(409, "Inspection conflict", "This inspection changed before completion.", "inspection-conflict")
     return JsonResponse({"inspection": _inspection_payload(inspection)})
@@ -18051,9 +19611,9 @@ def _tenant_maintenance_comment_payload(comment, tenant_user):
     }
 
 
-def _prepare_tenant_evidence(files):
-    if len(files) > 5:
-        raise ValueError("A request can include at most 5 evidence images.")
+def _prepare_tenant_evidence(files, max_files=5):
+    if len(files) > max_files:
+        raise ValueError(f"A request can include at most {max_files} evidence images.")
     if sum(upload.size for upload in files) > 20 * 1024 * 1024:
         raise ValueError("Evidence images must total no more than 20 MB.")
     prepared = []
@@ -18475,6 +20035,7 @@ def tenant_dashboard(request):
             {
                 "id": invoice.pk,
                 "number": invoice.number,
+                "invoice_type": invoice.invoice_type,
                 "period_start": invoice.period_start.isoformat(),
                 "period_end": invoice.period_end.isoformat(),
                 "due_date": invoice.due_date.isoformat(),
@@ -18732,6 +20293,42 @@ def tenant_move_out_inspection_photo(request, settlement_id, photo_index):
     if content_type not in {"image/jpeg", "image/png", "image/webp"}:
         content_type = "application/octet-stream"
     response = HttpResponse(content, content_type=content_type)
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@require_GET
+def tenant_move_out_settlement_statement(request, settlement_id):
+    tenant, error = _move_out_tenant(request)
+    if error:
+        return error
+    settlement = (
+        MoveOutSettlement.objects.filter(
+            pk=settlement_id,
+            tenancy__tenant=tenant,
+        )
+        .select_related(
+            "tenancy__tenant",
+            "tenancy__unit__property",
+            "exit_inspection__closing_utility_invoice",
+        )
+        .first()
+    )
+    if settlement is None:
+        return _problem(
+            404,
+            "Settlement statement not found",
+            "The move-out settlement statement is unavailable.",
+            "move-out-statement-not-found",
+        )
+    response = HttpResponse(
+        _move_out_settlement_pdf(settlement),
+        content_type="application/pdf",
+    )
+    response["Content-Disposition"] = (
+        f'attachment; filename="move-out-settlement-{settlement.pk}.pdf"'
+    )
     response["Cache-Control"] = "private, no-store"
     response["X-Content-Type-Options"] = "nosniff"
     return response

@@ -12,6 +12,7 @@ type Invitation = {
   full_name: string;
   phone: string;
   property_name: string;
+  property_names?: string[];
 };
 
 export default function ActivateCaretakerPage() {
@@ -25,6 +26,9 @@ export default function ActivateCaretakerPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const propertyDescription = invitation?.property_names?.length
+    ? invitation.property_names.join(', ')
+    : invitation?.property_name;
 
   useEffect(() => {
     const invitationToken = new URLSearchParams(window.location.search).get('token') || '';
@@ -89,7 +93,7 @@ export default function ActivateCaretakerPage() {
         <h1 className="text-2xl font-bold">Activate your caretaker account</h1>
         <p className="mt-2 text-sm text-slate-600">
           {invitation
-            ? `You are invited to manage ${invitation.property_name} as ${invitation.email}.`
+            ? `You are invited to manage ${propertyDescription} as ${invitation.email}.`
             : 'Verify your invitation to create your caretaker portal login.'}
         </p>
         {success ? (

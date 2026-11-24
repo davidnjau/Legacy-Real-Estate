@@ -13,6 +13,7 @@ type Notice = {
   reason: string;
   status: string;
   review_note: string;
+  available_caretakers: { id: number; name: string }[];
 };
 
 type MeteredUtility = {
@@ -117,6 +118,7 @@ export default function MoveOutsPage() {
   const [selectedTenancy, setSelectedTenancy] = useState('');
   const [staffNoticeDate, setStaffNoticeDate] = useState(todayInNairobi());
   const [staffNoticeReason, setStaffNoticeReason] = useState('');
+  const [selectedCaretakers, setSelectedCaretakers] = useState<Record<number, string>>({});
   const [candidate, setCandidate] = useState<Candidate | null>(null);
   const [actualMoveOutDate, setActualMoveOutDate] = useState(todayInNairobi());
   const [inspectionId, setInspectionId] = useState('');
@@ -206,6 +208,11 @@ export default function MoveOutsPage() {
   };
 
   const decideNotice = async (notice: Notice, action: 'accept' | 'reject' | 'withdraw') => {
+    const caretakerId = selectedCaretakers[notice.id];
+    if (action === 'accept' && !caretakerId) {
+      setError('Select a caretaker before accepting the notice.');
+      return;
+    }
     const reviewNote = action === 'reject'
       ? window.prompt('Reason for rejecting this notice?')?.trim()
       : '';
@@ -216,7 +223,11 @@ export default function MoveOutsPage() {
       await requestJson(`/api/move-outs/notices/${notice.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, review_note: reviewNote || '' }),
+        body: JSON.stringify({
+          action,
+          review_note: reviewNote || '',
+          ...(action === 'accept' ? { caretaker_id: Number(caretakerId) } : {}),
+        }),
       });
       await loadData();
     } catch (actionError) {
@@ -331,7 +342,7 @@ export default function MoveOutsPage() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Move-out workflows</h1>
-          <p className="mt-1 text-slate-600">Review notices, prepare exit settlements, approve deductions, and record refunds.</p>
+          <p className="mt-1 text-slate-600">Review notices, assign exit inspections, prepare settlements, and record refunds.</p>
         </div>
         <button type="button" onClick={() => void loadData()} disabled={loading} className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold disabled:opacity-60">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
@@ -388,9 +399,28 @@ export default function MoveOutsPage() {
                 </div>
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold uppercase text-slate-700">{notice.status.replaceAll('_', ' ')}</span>
                 {notice.status === 'submitted' && (
-                  <div className="flex gap-2">
-                    <button type="button" disabled={busy} onClick={() => void decideNotice(notice, 'accept')} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Accept</button>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="text-sm font-medium text-slate-700">
+                      Assign caretaker
+                      <select
+                        value={selectedCaretakers[notice.id] || ''}
+                        onChange={(event) => setSelectedCaretakers((values) => ({
+                          ...values,
+                          [notice.id]: event.target.value,
+                        }))}
+                        className="mt-1 block rounded-lg border px-3 py-2"
+                      >
+                        <option value="">Select a caretaker</option>
+                        {notice.available_caretakers.map((caretaker) => (
+                          <option key={caretaker.id} value={caretaker.id}>{caretaker.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="button" disabled={busy || notice.available_caretakers.length === 0 || !selectedCaretakers[notice.id]} onClick={() => void decideNotice(notice, 'accept')} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Accept</button>
                     <button type="button" disabled={busy} onClick={() => void decideNotice(notice, 'reject')} className="rounded-lg border border-red-300 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Reject</button>
+                    {notice.available_caretakers.length === 0 && (
+                      <p className="basis-full text-xs text-amber-800">Assign an active caretaker to this property before accepting.</p>
+                    )}
                   </div>
                 )}
                 {notice.status === 'accepted' && (
@@ -430,7 +460,7 @@ export default function MoveOutsPage() {
       <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b p-5">
           <h2 className="text-lg font-bold text-slate-900">Settlement review and payout</h2>
-          <p className="mt-1 text-sm text-slate-600">A different manager must approve; finance-authorized staff record the manual payout.</p>
+          <p className="mt-1 text-sm text-slate-600">A different Branch Manager must approve; finance-authorized staff record the manual payout.</p>
         </div>
         {!workflows?.settlements.length ? (
           <p className="p-5 text-sm text-slate-500">No move-out settlements yet.</p>
@@ -448,7 +478,7 @@ export default function MoveOutsPage() {
                 <dl className="grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
                   <div><dt className="text-slate-500">Deposit</dt><dd className="font-semibold">{currency.format(Number(settlement.deposit_balance))}</dd></div>
                   <div><dt className="text-slate-500">Invoice arrears</dt><dd className="font-semibold">{currency.format(Number(settlement.arrears_amount))}</dd></div>
-                  <div><dt className="text-slate-500">Final utilities</dt><dd className="font-semibold">{currency.format(Number(settlement.utility_amount))}</dd></div>
+                  <div><dt className="text-slate-500">Final metered utilities (deposit deduction)</dt><dd className="font-semibold">{currency.format(Number(settlement.utility_amount))}</dd></div>
                   <div><dt className="text-slate-500">Damage</dt><dd className="font-semibold">{currency.format(Number(settlement.damages_amount))}</dd></div>
                   <div><dt className="text-slate-500">Refund</dt><dd className="font-semibold text-emerald-700">{currency.format(Number(settlement.refund_amount))}</dd></div>
                   <div><dt className="text-slate-500">Debt shortfall</dt><dd className="font-semibold text-red-700">{currency.format(Number(settlement.shortfall_amount))}</dd></div>

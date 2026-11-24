@@ -12,7 +12,14 @@ type HandoverCondition = {
 
 type HandoverPhoto = {
   name: string;
+  evidence_type: string | null;
   url: string;
+};
+
+type HandoverInventoryItem = {
+  name: string;
+  property_quantity: number;
+  issued_quantity: number | null;
 };
 
 type MoveInHandover = {
@@ -23,6 +30,7 @@ type MoveInHandover = {
   tenant_name: string;
   status: string;
   keys_issued: number | null;
+  handover_inventory: HandoverInventoryItem[];
   condition_checklist: HandoverCondition[];
   meter_requirements: {
     utility_type: string;
@@ -102,7 +110,7 @@ export default function PropertyOfficerHandoversPage() {
           <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Property operations</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Move-in handover reviews</h1>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
-            Review the caretaker’s room condition, opening readings, keys, and private photo evidence before confirming the handover.
+            Review inventory counts, room condition, opening readings, keys, and private photo evidence before confirming the handover.
           </p>
         </div>
         <button
@@ -176,6 +184,22 @@ export default function PropertyOfficerHandoversPage() {
               </div>
             </div>
 
+            {handover.handover_inventory.length > 0 && (
+              <section className="mt-5">
+                <h3 className="text-sm font-semibold text-slate-800">Handover inventory</h3>
+                <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
+                  {handover.handover_inventory.map((item) => (
+                    <div key={item.name} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
+                      <span className="font-medium text-slate-700">{item.name}</span>
+                      <span className="text-slate-600">
+                        Expected: {item.property_quantity} · Issued: {item.issued_quantity ?? 'Not recorded'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             <section className="mt-5">
               <h3 className="text-sm font-semibold text-slate-800">Room and fixture condition</h3>
               <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
@@ -207,7 +231,7 @@ export default function PropertyOfficerHandoversPage() {
                     >
                       <Image
                         src={photo.url}
-                        alt={photo.name}
+                        alt={`${photo.evidence_type === 'water_meter' ? 'Water meter' : photo.evidence_type === 'condition' ? 'Condition' : 'Handover'} photo: ${photo.name}`}
                         width={144}
                         height={104}
                         unoptimized
@@ -216,6 +240,17 @@ export default function PropertyOfficerHandoversPage() {
                     </a>
                   ))}
                 </div>
+                <ul className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+                  {handover.photos.map((photo) => (
+                    <li key={`${photo.url}-label`} className="rounded-full bg-slate-100 px-2.5 py-1">
+                      {photo.evidence_type === 'water_meter'
+                        ? 'Water meter'
+                        : photo.evidence_type === 'condition'
+                          ? 'Condition'
+                          : 'Handover'}: {photo.name}
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
 

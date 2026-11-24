@@ -17,6 +17,8 @@ type Invitation = {
   full_name: string;
   property_id: number;
   property_name: string;
+  property_ids?: number[];
+  property_names?: string[];
   expires_at: string;
   status: string;
 };
@@ -63,7 +65,7 @@ export default function CaretakerManager() {
   const [properties, setProperties] = useState<PropertyRecord[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [caretakers, setCaretakers] = useState<Caretaker[]>([]);
-  const [propertyId, setPropertyId] = useState<number | ''>('');
+  const [selectedPropertyIds, setSelectedPropertyIds] = useState<number[]>([]);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -82,7 +84,9 @@ export default function CaretakerManager() {
   );
   const visibleInvitations = useMemo(() => {
     const ids = new Set(visibleProperties.map((property) => property.id));
-    return invitations.filter((invitation) => ids.has(invitation.property_id));
+    return invitations.filter((invitation) => (
+      invitation.property_ids?.some((id) => ids.has(id)) ?? ids.has(invitation.property_id)
+    ));
   }, [invitations, visibleProperties]);
   const visibleCaretakers = useMemo(() => {
     const ids = new Set(visibleProperties.map((property) => property.id));
@@ -112,14 +116,18 @@ export default function CaretakerManager() {
   }, [load, reloadKey]);
 
   useEffect(() => {
-    if (propertyId === '' || !visibleProperties.some((property) => property.id === propertyId)) {
-      setPropertyId(visibleProperties[0]?.id ?? '');
-    }
-  }, [propertyId, visibleProperties]);
+    const visibleIds = new Set(visibleProperties.map((property) => property.id));
+    setSelectedPropertyIds((current) => {
+      const retained = current.filter((id) => visibleIds.has(id));
+      return retained.length > 0 || visibleProperties.length === 0
+        ? retained
+        : [visibleProperties[0].id];
+    });
+  }, [visibleProperties]);
 
   async function invite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (propertyId === '') return;
+    if (selectedPropertyIds.length === 0) return;
     setSaving(true);
     setError('');
     setNotice('');
@@ -127,7 +135,7 @@ export default function CaretakerManager() {
       const payload = await requestJson<ApiPayload>('/api/property-officer/caretakers', {
         method: 'POST',
         body: JSON.stringify({
-          property_id: propertyId,
+          property_ids: selectedPropertyIds,
           full_name: fullName,
           email,
           phone,
@@ -231,15 +239,32 @@ export default function CaretakerManager() {
               <p className="text-xs text-slate-500">A secure activation link and one-time code are emailed to the caretaker.</p>
             </div>
           </div>
-          <label className="block text-sm font-semibold">Property
-            <select required value={propertyId} onChange={(event) => setPropertyId(Number(event.target.value) || '')}
-              className={fieldClass}>
-              <option value="" disabled>Select property</option>
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-semibold">Properties</legend>
+            <p className="text-xs text-slate-500">Select every property this caretaker will be responsible for.</p>
+            <div className="max-h-48 space-y-2 overflow-y-auto rounded-xl border border-slate-200 p-3">
               {visibleProperties.map((property) => (
-                <option key={property.id} value={property.id}>{property.name}{property.branch_name ? ` · ${property.branch_name}` : ''}</option>
+                <label key={property.id} className="flex items-start gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    checked={selectedPropertyIds.includes(property.id)}
+                    onChange={(event) => {
+                      setSelectedPropertyIds((current) => (
+                        event.target.checked
+                          ? [...current, property.id]
+                          : current.filter((id) => id !== property.id)
+                      ));
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-800 focus:ring-emerald-700"
+                  />
+                  <span>{property.name}{property.branch_name ? ` · ${property.branch_name}` : ''}</span>
+                </label>
               ))}
-            </select>
-          </label>
+              {!loading && visibleProperties.length === 0 && (
+                <p className="text-sm text-slate-500">No properties are available in your assigned branches.</p>
+              )}
+            </div>
+          </fieldset>
           <label className="block text-sm font-semibold">Caretaker email
             <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)}
               autoComplete="email" className={fieldClass} />
@@ -260,7 +285,7 @@ export default function CaretakerManager() {
             <input maxLength={20} value={kraPin} onChange={(event) => setKraPin(event.target.value)}
               className={fieldClass} />
           </label>
-          <button type="submit" disabled={saving || propertyId === ''}
+          <button type="submit" disabled={saving || selectedPropertyIds.length === 0}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-800 px-4 py-3 font-bold text-white disabled:opacity-50">
             <Mail size={17} /> {saving ? 'Creating invitation…' : 'Create invitation'}
           </button>

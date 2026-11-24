@@ -207,6 +207,7 @@ def generate_monthly_invoice(tenancy, period_start, *, status=Invoice.STATUS_ISS
             tenancy=tenancy,
             period_start=period_start,
             period_end=period_end,
+            invoice_type=Invoice.TYPE_STANDARD,
         )
         .prefetch_related("lines")
         .first()
@@ -281,6 +282,7 @@ def generate_monthly_invoice(tenancy, period_start, *, status=Invoice.STATUS_ISS
             tenancy=tenancy,
             period_start=period_start,
             period_end=period_end,
+            invoice_type=Invoice.TYPE_STANDARD,
         ).first()
         if existing:
             with transaction.atomic():

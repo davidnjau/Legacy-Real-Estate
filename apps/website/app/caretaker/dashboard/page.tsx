@@ -77,6 +77,7 @@ type ExitInspection = {
   id: number;
   title: string;
   inspection_type: string;
+  scheduled_for: string;
   property_name: string;
   unit_id: number | null;
   unit_code: string | null;
@@ -592,17 +593,21 @@ export default function CaretakerDashboard() {
           <div className="mt-4 space-y-4">
             {exitInspections.map((inspection) => {
               const form = getExitForm(inspection);
+              const scheduledDate = inspection.scheduled_for.slice(0, 10);
+              const inspectionDue = todayInNairobi >= scheduledDate;
               return (
                 <form key={inspection.id} onSubmit={(event) => void completeExitInspection(event, inspection)} className="space-y-4 rounded-xl border border-slate-200 p-4">
                   <div>
                     <h3 className="font-semibold text-slate-900">{inspection.title} · {inspection.property_name} / {inspection.unit_code ?? 'Unit'}</h3>
-                    <p className="mt-1 text-xs text-slate-500">Complete the exit checklist and provide final readings and damage estimates.</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Pending · scheduled for {scheduledDate}. Complete the checklist and provide final readings and damage estimates.
+                    </p>
                     <ul className="mt-2 list-inside list-disc text-xs text-slate-600">
                       {inspection.checklist.map((item, index) => <li key={`${item.title}-${index}`}>{item.title}</li>)}
                     </ul>
                   </div>
                   <label className="block text-sm font-medium text-slate-700">Actual move-out date
-                    <input required type="date" max={todayInNairobi} value={form.actual_move_out_date} onChange={(event) => updateExitForm(inspection, { actual_move_out_date: event.target.value })} className="mt-1 block w-full rounded-lg border px-3 py-2" />
+                    <input required type="date" min={scheduledDate} max={todayInNairobi} value={form.actual_move_out_date} onChange={(event) => updateExitForm(inspection, { actual_move_out_date: event.target.value })} className="mt-1 block w-full rounded-lg border px-3 py-2" />
                   </label>
                   <fieldset>
                     <legend className="text-sm font-semibold text-slate-700">Final meter readings</legend>
@@ -656,7 +661,7 @@ export default function CaretakerDashboard() {
                     <input required type="checkbox" checked={form.checklist_confirmed} onChange={(event) => updateExitForm(inspection, { checklist_confirmed: event.target.checked })} className="mt-1" />
                     I confirm that the inspection checklist and available photo evidence have been reviewed.
                   </label>
-                  <button type="submit" disabled={submittingInspection === inspection.id || inspection.metered_utilities.some((utility) => !form.readings[utility.utility_type])} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                  <button type="submit" disabled={!inspectionDue || submittingInspection === inspection.id || inspection.metered_utilities.some((utility) => !form.readings[utility.utility_type])} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
                     {submittingInspection === inspection.id ? 'Submitting…' : 'Submit exit inspection'}
                   </button>
                 </form>

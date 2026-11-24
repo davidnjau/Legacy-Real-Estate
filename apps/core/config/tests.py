@@ -1568,6 +1568,8 @@ class UserAccessTests(TestCase):
         self.assertEqual(property_obj.expected_unit_count, 12)
         self.assertEqual(property_obj.default_unit_type, "Studio")
         self.assertEqual(property_obj.default_rent, Decimal("12500.00"))
+        self.assertEqual(property_obj.default_handover_items, [])
+        self.assertEqual(response.json()["property"]["default_handover_items"], [])
         self.assertEqual(
             property_obj.unit_types.values_list("name", "unit_count").get(),
             ("Studio", 12),
@@ -1612,6 +1614,10 @@ class UserAccessTests(TestCase):
                     "location": "Nairobi",
                     "expected_unit_count": 24,
                     "rent_due_day": 5,
+                    "default_handover_items": [
+                        {"name": "Keys", "quantity": 24},
+                        {"name": "Access cards", "quantity": 12},
+                    ],
                     "house_rules": {
                         "statements": [
                             "Keep shared areas clear.",
@@ -1661,6 +1667,15 @@ class UserAccessTests(TestCase):
         self.assertEqual(property_obj.default_rent, Decimal("8000.00"))
         self.assertEqual(property_obj.default_water_rate, Decimal("125.5000"))
         self.assertEqual(property_obj.water_deposit, Decimal("500.00"))
+        expected_handover_items = [
+            {"name": "Keys", "quantity": 24},
+            {"name": "Access cards", "quantity": 12},
+        ]
+        self.assertEqual(property_obj.default_handover_items, expected_handover_items)
+        self.assertEqual(
+            response.json()["property"]["default_handover_items"],
+            expected_handover_items,
+        )
         self.assertEqual(
             property_obj.house_rules["statements"],
             [
@@ -1813,7 +1828,12 @@ class UserAccessTests(TestCase):
         self.assertEqual(Property.objects.filter(branch=self.nairobi).count(), property_count + 1)
 
     @patch("users.views._send_tenant_activation_email")
-    def test_property_scoped_import_applies_unit_type_and_migration_balances(self, send_email):
+    @patch("users.legacy_imports.queue_template_sms")
+    def test_property_scoped_import_applies_unit_type_and_migration_balances(
+        self,
+        queue_sms,
+        send_email,
+    ):
         officer = self.create_user(email="property-ledger-import@example.com")
         membership, _ = AgencyMembership.objects.get_or_create(
             profile=officer.profile,
@@ -2121,7 +2141,12 @@ class UserAccessTests(TestCase):
         self.assertFalse(Tenancy.objects.filter(unit=unit).exists())
 
     @patch("users.views._send_tenant_activation_email")
-    def test_property_scoped_import_provisions_and_emails_unique_tenant_activations(self, send_email):
+    @patch("users.legacy_imports.queue_template_sms")
+    def test_property_scoped_import_provisions_and_emails_unique_tenant_activations(
+        self,
+        queue_sms,
+        send_email,
+    ):
         manager = self.create_user(email="tenant-import-manager@example.com")
         membership, _ = AgencyMembership.objects.get_or_create(
             profile=manager.profile,
@@ -2135,6 +2160,10 @@ class UserAccessTests(TestCase):
             name="Tenant Activation Import",
             property_type="Apartment",
             location="Nairobi",
+            default_handover_items=[
+                {"name": "Keys", "quantity": 2},
+                {"name": "Access cards", "quantity": 1},
+            ],
         )
         PropertyUnitType.objects.create(
             property=property_obj,
@@ -2180,11 +2209,15 @@ class UserAccessTests(TestCase):
         self.assertEqual(preview.status_code, 200, preview.content)
         self.assertEqual(preview.json()["activation"]["prepared"], 2)
         self.assertEqual(preview.json()["activation"]["sent"], 0)
+        self.assertEqual(preview.json()["activation"]["sms_queued"], 0)
+        self.assertEqual(preview.json()["created"]["move_in_packages"], 2)
         self.assertFalse(Tenant.objects.filter(email__in=[
             "tenant.one@example.com",
             "tenant.two@example.com",
         ]).exists())
+        self.assertFalse(MoveInPackage.objects.exists())
         send_email.assert_not_called()
+        queue_sms.assert_not_called()
 
         Group.objects.filter(name=TENANT_PORTAL_ROLE).delete()
         committed = self.client.post(
@@ -2199,9 +2232,30 @@ class UserAccessTests(TestCase):
         self.assertEqual(committed.json()["activation"], {
             "prepared": 2,
             "sent": 2,
+            "sms_queued": 2,
             "failed": [],
         })
+        self.assertEqual(committed.json()["created"]["move_in_packages"], 2)
         self.assertEqual(send_email.call_count, 2)
+        self.assertEqual(queue_sms.call_count, 2)
+
+        for package in MoveInPackage.objects.select_related("tenancy").all():
+            self.assertEqual(package.handover_status, MoveInPackage.HANDOVER_STATUS_LEGACY)
+            self.assertEqual(
+                package.handover_inventory,
+                [
+                    {
+                        "name": "Keys",
+                        "property_quantity": 2,
+                        "issued_quantity": 2,
+                    },
+                    {
+                        "name": "Access cards",
+                        "property_quantity": 1,
+                        "issued_quantity": 1,
+                    },
+                ],
+            )
 
         tenants = list(
             Tenant.objects.filter(email__in=[
@@ -2234,11 +2288,22 @@ class UserAccessTests(TestCase):
                 unit__code=call.args[2],
             )
             self.assertIsNotNone(challenge.email_sent_at)
+            self.assertTrue(challenge.phone_verification_required)
             self.assertNotEqual(challenge.token_hash, token)
             self.assertNotEqual(challenge.code_hash, activation_code)
+            self.assertTrue(call.kwargs["phone_verification_required"])
             issued[email] = (token, activation_code, context.json()["unit_code"])
         self.assertEqual(len({item[0] for item in issued.values()}), 2)
         self.assertEqual(len({item[1] for item in issued.values()}), 2)
+        queued_contexts = [call.args[2] for call in queue_sms.call_args_list]
+        self.assertEqual(
+            {context["code"] for context in queued_contexts},
+            {item[1] for item in issued.values()},
+        )
+        self.assertEqual(
+            {context["activation_url"].split("token=", 1)[1] for context in queued_contexts},
+            {item[0] for item in issued.values()},
+        )
 
         token, code, unit_code = issued["tenant.one@example.com"]
         mismatched = self.client.post(
@@ -2330,7 +2395,12 @@ class UserAccessTests(TestCase):
         self.assertFalse(Tenant.objects.filter(branch=self.nairobi, name="No Email Tenant").exists())
 
     @patch("users.views._send_tenant_activation_email")
-    def test_property_scoped_import_reports_and_retries_activation_email_failure(self, send_email):
+    @patch("users.legacy_imports.queue_template_sms")
+    def test_property_scoped_import_reports_and_retries_activation_email_failure(
+        self,
+        queue_sms,
+        send_email,
+    ):
         manager = self.create_user(email="tenant-import-retry@example.com")
         membership, _ = AgencyMembership.objects.get_or_create(
             profile=manager.profile,
@@ -2382,6 +2452,7 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(first.status_code, 200, first.content)
         self.assertEqual(first.json()["activation"]["sent"], 0)
+        self.assertEqual(first.json()["activation"]["sms_queued"], 1)
         self.assertEqual(len(first.json()["activation"]["failed"]), 1)
         tenant = Tenant.objects.get(email="retry.tenant@example.com")
         self.assertFalse(tenant.portal_user.is_active)
@@ -2398,6 +2469,7 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(second.status_code, 200, second.content)
         self.assertEqual(second.json()["activation"]["sent"], 1)
+        self.assertEqual(second.json()["activation"]["sms_queued"], 1)
         first_challenge.refresh_from_db()
         self.assertIsNotNone(first_challenge.used_at)
         self.assertEqual(
@@ -4178,6 +4250,9 @@ class UserAccessTests(TestCase):
         package = MoveInPackage.objects.create(
             tenancy=tenancy,
             agreement_reference="MOVE-IN-HANDOVER-001",
+            handover_inventory=[
+                {"name": "Key fobs", "property_quantity": 3, "issued_quantity": None}
+            ],
         )
         PropertyCaretakerAssignment.objects.create(
             property=property_obj,
@@ -4191,6 +4266,10 @@ class UserAccessTests(TestCase):
         handover = pending.json()["handovers"][0]
         self.assertEqual(handover["id"], package.pk)
         self.assertEqual(handover["meter_requirements"][0]["meter"], "W-001")
+        self.assertEqual(
+            handover["handover_inventory"],
+            [{"name": "Key fobs", "property_quantity": 3, "issued_quantity": None}],
+        )
 
         photo = SimpleUploadedFile(
             "condition.png",
@@ -4200,7 +4279,7 @@ class UserAccessTests(TestCase):
         with patch("users.views.upload_private_object") as store_photo:
             uploaded = self.client.post(
                 f"/api/v1/caretaker/checklists/{package.pk}/photos",
-                {"photos": photo},
+                {"photos": photo, "photo_types": "condition"},
             )
         self.assertEqual(uploaded.status_code, 200, uploaded.content)
         store_photo.assert_called_once()
@@ -4226,17 +4305,50 @@ class UserAccessTests(TestCase):
                 "Electrical sockets",
             )
         ]
-        submitted = self.client.post(
+        handover_submission = {
+            "keys_issued": 2,
+            "handover_inventory": [{"name": "Key fobs", "issued_quantity": 2}],
+            "condition_checklist": conditions,
+            "initial_meter_readings": [
+                {"utility_type": "water", "current_value": "18.25"}
+            ],
+        }
+        invalid_inventory = self.client.post(
             f"/api/v1/caretaker/checklists/{package.pk}/submit",
             data=json.dumps(
                 {
-                    "keys_issued": 2,
-                    "condition_checklist": conditions,
-                    "initial_meter_readings": [
-                        {"utility_type": "water", "current_value": "18.25"}
-                    ],
+                    **handover_submission,
+                    "handover_inventory": [{"name": "Key fobs", "issued_quantity": -1}],
                 }
             ),
+            content_type="application/json",
+        )
+        self.assertEqual(invalid_inventory.status_code, 400, invalid_inventory.content)
+
+        missing_meter_photo = self.client.post(
+            f"/api/v1/caretaker/checklists/{package.pk}/submit",
+            data=json.dumps(handover_submission),
+            content_type="application/json",
+        )
+        self.assertEqual(missing_meter_photo.status_code, 400, missing_meter_photo.content)
+        self.assertIn("water meter", missing_meter_photo.json()["detail"].lower())
+
+        meter_photo = SimpleUploadedFile(
+            "water-meter.png",
+            b"\x89PNG\r\n\x1a\nwater meter",
+            content_type="image/png",
+        )
+        with patch("users.views.upload_private_object") as store_meter_photo:
+            uploaded_meter = self.client.post(
+                f"/api/v1/caretaker/checklists/{package.pk}/photos",
+                {"photos": meter_photo, "photo_types": "water_meter"},
+            )
+        self.assertEqual(uploaded_meter.status_code, 200, uploaded_meter.content)
+        store_meter_photo.assert_called_once()
+
+        submitted = self.client.post(
+            f"/api/v1/caretaker/checklists/{package.pk}/submit",
+            data=json.dumps(handover_submission),
             content_type="application/json",
         )
         self.assertEqual(submitted.status_code, 200, submitted.content)
@@ -4245,6 +4357,14 @@ class UserAccessTests(TestCase):
         unit.refresh_from_db()
         self.assertEqual(package.handover_status, MoveInPackage.HANDOVER_STATUS_SUBMITTED)
         self.assertEqual(package.keys_issued, 2)
+        self.assertEqual(
+            package.handover_inventory,
+            [{"name": "Key fobs", "property_quantity": 3, "issued_quantity": 2}],
+        )
+        self.assertEqual(
+            [photo["evidence_type"] for photo in package.handover_photos],
+            ["condition", "water_meter"],
+        )
         self.assertIsNone(tenancy.base_water_meter_reading)
         self.assertNotIn("water_reading", unit.meters)
         self.assertEqual(
@@ -4266,6 +4386,15 @@ class UserAccessTests(TestCase):
         review_queue = self.client.get("/api/v1/property-officer/move-in-handovers")
         self.assertEqual(review_queue.status_code, 200, review_queue.content)
         self.assertEqual(len(review_queue.json()["handovers"]), 1)
+        reviewed_handover = review_queue.json()["handovers"][0]
+        self.assertEqual(
+            reviewed_handover["handover_inventory"],
+            [{"name": "Key fobs", "property_quantity": 3, "issued_quantity": 2}],
+        )
+        self.assertEqual(
+            [photo["evidence_type"] for photo in reviewed_handover["photos"]],
+            ["condition", "water_meter"],
+        )
         with patch("users.views.read_private_object", return_value=b"private-photo") as read_photo:
             photo_response = self.client.get(
                 f"/api/v1/property-officer/move-in-handovers/{package.pk}/photos/0"
@@ -4350,6 +4479,7 @@ class UserAccessTests(TestCase):
             data=json.dumps(
                 {
                     "keys_issued": 1,
+                    "handover_inventory": [],
                     "condition_checklist": [
                         {"room": room, "area": area, "status": "good", "notes": ""}
                         for room in ("Studio", "Kitchen", "Bathroom")
@@ -4897,9 +5027,19 @@ class UserAccessTests(TestCase):
         manager = self.create_user(email="moveout-manager@example.com", phone="254712345610")
         manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
         manager.profile.branches.add(self.nairobi)
+        caretaker = self.create_user(email="moveout-caretaker@example.com", phone="254712345624")
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
         approver = self.create_user(email="moveout-approver@example.com", phone="254712345611")
         approver.groups.add(Group.objects.get(name="Branch Manager"))
         approver.profile.branches.add(self.nairobi)
+        director_group, _ = Group.objects.get_or_create(name="Director")
+        director = self.create_user(email="moveout-director@example.com", phone="254712345625")
+        director.groups.add(director_group)
+        director.profile.branches.add(self.nairobi)
+        superuser = self.create_user(email="moveout-superuser@example.com", phone="254712345627")
+        superuser.is_superuser = True
+        superuser.save(update_fields=["is_superuser"])
         finance = self.create_user(email="moveout-finance@example.com", phone="254712345612")
         finance.groups.add(Group.objects.get(name="Accountant"))
         finance.profile.branches.add(self.nairobi)
@@ -4910,6 +5050,11 @@ class UserAccessTests(TestCase):
         unit.status = Unit.STATUS_OCCUPIED
         unit.meters = {"water": "WM-MOVEOUT"}
         unit.save(update_fields=["status", "meters", "updated_at"])
+        PropertyCaretakerAssignment.objects.create(
+            property=unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
         DepositAccount.objects.create(
             tenancy=tenancy,
             target_amount=Decimal("1000.00"),
@@ -4943,25 +5088,6 @@ class UserAccessTests(TestCase):
             current_value=Decimal("110.0000"),
             submitted_by=manager,
         )
-        inspection = PropertyInspection.objects.create(
-            property=unit.property,
-            unit=unit,
-            title="Move-out inspection",
-            inspection_type="move_out",
-            scheduled_for=timezone.now(),
-            responsible_staff=manager,
-            created_by=manager,
-            status=PropertyInspection.STATUS_COMPLETED,
-            checklist=[{"title": "Keys returned", "status": "complete"}],
-            photos=[{
-                "storage_key": "inspections/move-out/91/exit.jpg",
-                "content_type": "image/jpeg",
-                "name": "Exit inspection evidence 1.jpg",
-            }],
-            findings="Window damage documented.",
-            completed_at=timezone.now(),
-        )
-
         self.client.force_login(tenant_user)
         notice = self.client.post(
             "/api/v1/tenant/move-out-notice/create",
@@ -4984,16 +5110,59 @@ class UserAccessTests(TestCase):
             404,
         )
         self.client.force_login(manager)
-        accepted = self.client.post(
+        workflow_response = self.client.get("/api/v1/move-out-workflows")
+        self.assertEqual(workflow_response.status_code, 200)
+        notice_row = next(
+            item for item in workflow_response.json()["notices"]
+            if item["id"] == notice_id
+        )
+        self.assertEqual(
+            notice_row["available_caretakers"],
+            [{
+                "id": caretaker.pk,
+                "name": caretaker.get_full_name().strip() or caretaker.get_username(),
+            }],
+        )
+        missing_caretaker = self.client.post(
             f"/api/v1/move-out-notices/{notice_id}/decision",
             data={"action": "accept"},
+            content_type="application/json",
+        )
+        self.assertEqual(missing_caretaker.status_code, 400)
+        accepted = self.client.post(
+            f"/api/v1/move-out-notices/{notice_id}/decision",
+            data={"action": "accept", "caretaker_id": caretaker.pk},
             content_type="application/json",
         )
         self.assertEqual(accepted.status_code, 200)
         tenancy.refresh_from_db()
         self.assertEqual(tenancy.end_date, move_out_date)
         self.assertEqual(unit.__class__.objects.get(pk=unit.pk).status, Unit.STATUS_NOTICE_GIVEN)
+        inspection = PropertyInspection.objects.get(move_out_notice_id=notice_id)
+        self.assertEqual(inspection.status, PropertyInspection.STATUS_SCHEDULED)
+        self.assertEqual(inspection.responsible_staff_id, caretaker.pk)
+        self.assertEqual(timezone.localtime(inspection.scheduled_for).date(), move_out_date)
+        self.client.force_login(caretaker)
+        with patch("users.views.timezone.localdate", return_value=move_out_date):
+            completed = self.client.post(
+                f"/api/v1/inspections/{inspection.pk}/complete",
+                data={
+                    "actual_move_out_date": move_out_date.isoformat(),
+                    "checklist": [
+                        {"title": item["title"], "status": "complete"}
+                        for item in inspection.checklist
+                    ],
+                    "findings": "Window damage documented.",
+                    "damage_items": [{"description": "Broken window", "amount": "600.00"}],
+                    "final_readings": [
+                        {"utility_type": "water", "current_value": "120.0000"}
+                    ],
+                },
+                content_type="application/json",
+            )
+        self.assertEqual(completed.status_code, 200, completed.content)
 
+        self.client.force_login(manager)
         workflows = self.client.get("/api/v1/move-out-workflows")
         self.assertEqual(workflows.status_code, 200)
         self.assertEqual(workflows.json()["eligible_tenancies"][0]["deposit_balance"], "1000.00")
@@ -5029,15 +5198,39 @@ class UserAccessTests(TestCase):
         self.assertEqual(tenant_tracker.status_code, 200)
         tracker_entry = tenant_tracker.json()["move_out_settlements"][0]
         self.assertEqual(tracker_entry["shortfall_amount"], "300.00")
-        self.assertEqual(tracker_entry["inspection_photos"][0]["caption"], "Exit inspection evidence 1.jpg")
-        self.assertNotIn("storage_key", tracker_entry["inspection_photos"][0])
-        with patch("users.views.read_private_object", return_value=b"test-image"):
-            photo = self.client.get(
-                f"/api/v1/tenant/move-out-settlements/{settlement_id}/photos/0"
-            )
-        self.assertEqual(photo.status_code, 200)
-        self.assertEqual(photo["Content-Type"], "image/jpeg")
+        inspection.refresh_from_db()
+        self.assertIsNone(inspection.closing_utility_invoice_id)
+        self.assertFalse(
+            Invoice.objects.filter(
+                tenancy=tenancy,
+                invoice_type=Invoice.TYPE_MOVE_OUT_UTILITY,
+            ).exists()
+        )
+        statement = self.client.get(
+            f"/api/v1/tenant/move-out-settlements/{settlement_id}/statement"
+        )
+        self.assertEqual(statement.status_code, 200)
+        self.assertEqual(statement["Content-Type"], "application/pdf")
+        self.assertTrue(statement.content.startswith(b"%PDF-1.4"))
 
+        self.client.force_login(director)
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/move-out-settlements/{settlement_id}/decision",
+                data={"action": "approve"},
+                content_type="application/json",
+            ).status_code,
+            403,
+        )
+        self.client.force_login(superuser)
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/move-out-settlements/{settlement_id}/decision",
+                data={"action": "approve"},
+                content_type="application/json",
+            ).status_code,
+            403,
+        )
         self.client.force_login(approver)
         decision_url = f"/api/v1/move-out-settlements/{settlement_id}/decision"
         self.assertEqual(
@@ -5081,6 +5274,49 @@ class UserAccessTests(TestCase):
             ).status_code,
             403,
         )
+        payment = Payment.objects.create(
+            tenant=tenant,
+            amount=Decimal("200.00"),
+            reference="MOVEOUT-ARREARS-PAID",
+            source=Payment.SOURCE_MPESA,
+            received_at=timezone.now(),
+            status=Payment.STATUS_ALLOCATED,
+            allocated_amount=Decimal("200.00"),
+        )
+        PaymentAllocation.objects.create(
+            payment=payment,
+            invoice=Invoice.objects.get(number="INV-MOVEOUT-001"),
+            amount=Decimal("200.00"),
+        )
+        self.client.force_login(approver)
+        changed_balance = self.client.post(
+            decision_url,
+            data={"action": "approve"},
+            content_type="application/json",
+        )
+        self.assertEqual(changed_balance.status_code, 409)
+        self.assertEqual(
+            changed_balance.json()["type"],
+            "https://legacy.example/problems/move-out-recalculation-required",
+        )
+        self.client.force_login(manager)
+        with patch("users.views.timezone.localdate", return_value=move_out_date):
+            recalculated = self.client.post(
+                "/api/v1/move-out-settlements/create",
+                data={
+                    "tenancy_id": tenancy.pk,
+                    "notice_id": notice_id,
+                    "exit_inspection_id": inspection.pk,
+                    "actual_move_out_date": move_out_date.isoformat(),
+                    "final_readings": [
+                        {"utility_type": "water", "current_value": "120.0000"}
+                    ],
+                    "damage_items": [{"description": "Broken window", "amount": "600.00"}],
+                },
+                content_type="application/json",
+            )
+        self.assertEqual(recalculated.status_code, 201, recalculated.content)
+        self.assertEqual(recalculated.json()["settlement"]["utility_amount"], "200.00")
         self.client.force_login(approver)
         approved = self.client.post(
             f"/api/v1/move-out-settlements/{settlement_id}/decision",
@@ -5119,6 +5355,8 @@ class UserAccessTests(TestCase):
         for template in (
             "move_out_notice_submitted",
             "move_out_notice_updated",
+            "move_out_inspection_assigned",
+            "tenant_move_out_inspection_scheduled",
             "move_out_settlement_submitted",
             "move_out_settlement_approved",
             "move_out_settlement_paid",
@@ -5190,10 +5428,16 @@ class UserAccessTests(TestCase):
         self.client.force_login(manager)
         accepted = self.client.post(
             f"/api/v1/move-out-notices/{notice_response.json()['notice']['id']}/decision",
-            data={"action": "accept"},
+            data={
+                "action": "accept",
+                "caretaker_id": caretaker.pk,
+            },
             content_type="application/json",
         )
         self.assertEqual(accepted.status_code, 200)
+        inspection = PropertyInspection.objects.get(
+            move_out_notice_id=notice_response.json()["notice"]["id"]
+        )
         self.client.force_login(caretaker)
         caretaker_scheduled = self.client.post(
             "/api/v1/inspections/create",
@@ -5208,26 +5452,11 @@ class UserAccessTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(caretaker_scheduled.status_code, 403)
-        self.client.force_login(manager)
-        created_inspection = self.client.post(
-            "/api/v1/inspections/create",
-            data={
-                "property_id": tenancy.unit.property_id,
-                "unit_id": tenancy.unit_id,
-                "title": "Exit inspection",
-                "inspection_type": "move_out",
-                "scheduled_for": timezone.now().isoformat(),
-                "responsible_staff_id": caretaker.pk,
-            },
-            content_type="application/json",
-        )
-        self.assertEqual(created_inspection.status_code, 201, created_inspection.content)
-        inspection = created_inspection.json()["inspection"]
         self.client.force_login(caretaker)
         listed = self.client.get("/api/v1/inspections")
         self.assertEqual(
             [item["id"] for item in listed.json()["inspections"]],
-            [inspection["id"]],
+            [inspection.pk],
         )
         image = SimpleUploadedFile(
             "exit.jpg",
@@ -5236,38 +5465,52 @@ class UserAccessTests(TestCase):
         )
         with patch("users.views.upload_private_object"):
             uploaded = self.client.post(
-                f"/api/v1/inspections/{inspection['id']}/photos",
+                f"/api/v1/inspections/{inspection.pk}/photos",
                 data={"photos": image},
             )
         self.assertEqual(uploaded.status_code, 201, uploaded.content)
-        completed = self.client.post(
-            f"/api/v1/inspections/{inspection['id']}/complete",
+        inspection_body = {
+            "checklist": [
+                {"title": item["title"], "status": "complete"}
+                for item in inspection.checklist
+            ],
+            "findings": "A damaged door was documented.",
+            "damage_items": [{"description": "Replace door", "amount": "500"}],
+            "maintenance_required": True,
+        }
+        early_completion = self.client.post(
+            f"/api/v1/inspections/{inspection.pk}/complete",
             data={
+                **inspection_body,
                 "actual_move_out_date": today.isoformat(),
-                "checklist": [
-                    {"title": item["title"], "status": "complete"}
-                    for item in inspection["checklist"]
-                ],
-                "findings": "A damaged door was documented.",
-                "damage_items": [{"description": "Replace door", "amount": "500"}],
-                "maintenance_required": True,
             },
             content_type="application/json",
         )
+        self.assertEqual(early_completion.status_code, 400)
+        with patch("users.views.timezone.localdate", return_value=proposed_date):
+            completed = self.client.post(
+                f"/api/v1/inspections/{inspection.pk}/complete",
+                data={
+                    **inspection_body,
+                    "actual_move_out_date": proposed_date.isoformat(),
+                },
+                content_type="application/json",
+            )
         self.assertEqual(completed.status_code, 200, completed.content)
         self.assertEqual(len(completed.json()["inspection"]["photos"]), 1)
 
         self.client.force_login(manager)
-        settlement_response = self.client.post(
-            "/api/v1/move-out-settlements/create",
-            data={
-                "tenancy_id": tenancy.pk,
-                "notice_id": notice_response.json()["notice"]["id"],
-                "exit_inspection_id": inspection["id"],
-                "actual_move_out_date": today.isoformat(),
-            },
-            content_type="application/json",
-        )
+        with patch("users.views.timezone.localdate", return_value=proposed_date):
+            settlement_response = self.client.post(
+                "/api/v1/move-out-settlements/create",
+                data={
+                    "tenancy_id": tenancy.pk,
+                    "notice_id": notice_response.json()["notice"]["id"],
+                    "exit_inspection_id": inspection.pk,
+                    "actual_move_out_date": proposed_date.isoformat(),
+                },
+                content_type="application/json",
+            )
         self.assertEqual(settlement_response.status_code, 201, settlement_response.content)
         settlement_id = settlement_response.json()["settlement"]["id"]
         self.assertEqual(settlement_response.json()["settlement"]["damages_amount"], "500.00")
@@ -5282,11 +5525,12 @@ class UserAccessTests(TestCase):
             200,
         )
         self.client.force_login(finance)
-        payout = self.client.post(
-            f"/api/v1/move-out-settlements/{settlement_id}/payout",
-            data={"payout_date": today.isoformat()},
-            content_type="application/json",
-        )
+        with patch("users.views.timezone.localdate", return_value=proposed_date):
+            payout = self.client.post(
+                f"/api/v1/move-out-settlements/{settlement_id}/payout",
+                data={"payout_date": proposed_date.isoformat()},
+                content_type="application/json",
+            )
         self.assertEqual(payout.status_code, 200, payout.content)
         self.assertEqual(Unit.objects.get(pk=tenancy.unit_id).status, Unit.STATUS_MAINTENANCE)
         self.assertEqual(
@@ -5299,6 +5543,17 @@ class UserAccessTests(TestCase):
         manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
         manager.profile.branches.add(self.nairobi)
         tenant_user, _, tenancy = self.create_tenant_portal("93")
+        caretaker = self.create_user(
+            email="moveout-withdraw-caretaker@example.com",
+            phone="254712345626",
+        )
+        caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker.profile.branches.add(self.nairobi)
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
         proposed_date = timezone.localdate() + timedelta(days=tenancy.notice_period_days)
 
         self.client.force_login(tenant_user)
@@ -5330,7 +5585,10 @@ class UserAccessTests(TestCase):
         self.client.force_login(manager)
         accepted = self.client.post(
             f"/api/v1/move-out-notices/{second_notice.json()['notice']['id']}/decision",
-            data={"action": "accept"},
+            data={
+                "action": "accept",
+                "caretaker_id": caretaker.pk,
+            },
             content_type="application/json",
         )
         self.assertEqual(accepted.status_code, 200)
@@ -5341,6 +5599,12 @@ class UserAccessTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(withdrawn.status_code, 200)
+        self.assertEqual(
+            PropertyInspection.objects.get(
+                move_out_notice_id=second_notice.json()["notice"]["id"]
+            ).status,
+            PropertyInspection.STATUS_CANCELLED,
+        )
         tenancy.refresh_from_db()
         self.assertIsNone(tenancy.end_date)
         self.assertEqual(Unit.objects.get(pk=tenancy.unit_id).status, Unit.STATUS_OCCUPIED)
@@ -6877,6 +7141,13 @@ class UserAccessTests(TestCase):
             amount=Decimal("30000.00"),
             effective_from=date(2026, 1, 1),
         )
+        UnitCharge.objects.create(
+            unit=unit,
+            charge_type=UnitCharge.CHARGE_RECURRING,
+            name="Fixed electricity",
+            amount=Decimal("1500.00"),
+            effective_from=date(2026, 1, 1),
+        )
         UtilityConfiguration.objects.create(
             unit=unit,
             utility_type=UtilityConfiguration.UTILITY_WATER,
@@ -6951,6 +7222,13 @@ class UserAccessTests(TestCase):
             tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
             start_date=date(2026, 1, 1),
             due_day=5,
+        )
+        UnitCharge.objects.create(
+            unit=no_water_unit,
+            charge_type=UnitCharge.CHARGE_RECURRING,
+            name="Fixed electricity",
+            amount=Decimal("1500.00"),
+            effective_from=date(2026, 1, 1),
         )
         MoveOutNotice.objects.create(
             tenancy=no_water_tenancy,
@@ -8400,7 +8678,7 @@ class UserAccessTests(TestCase):
         }
         self.assertEqual(charges[UnitCharge.CHARGE_RENT], Decimal("16000.00"))
         self.assertEqual(charges[UnitCharge.CHARGE_DEPOSIT], Decimal("31000.00"))
-        self.assertEqual(charges[UnitCharge.CHARGE_RECURRING], Decimal("1500.00"))
+        self.assertNotIn(UnitCharge.CHARGE_RECURRING, charges)
         self.assertEqual(MoveInChecklistItem.objects.filter(package=package).count(), 5)
 
         duplicate = self.client.post(
@@ -8474,13 +8752,25 @@ class UserAccessTests(TestCase):
             end_date=date(2026, 12, 31),
             due_day=5,
         )
+        invoice_url = f"/api/v1/tenancies/{tenancy.pk}/move-in-invoice"
+        read_attempt = self.client.get(invoice_url)
+        self.assertEqual(read_attempt.status_code, 405)
+        missing_package = self.client.post(
+            invoice_url,
+            content_type="application/json",
+        )
+        self.assertEqual(missing_package.status_code, 409)
+        self.assertEqual(
+            missing_package.json()["type"],
+            "https://legacy.example/problems/move-in-package-required",
+        )
         self.client.post(
             f"/api/v1/tenancies/{tenancy.pk}/move-in-package",
             content_type="application/json",
         )
 
         issued = self.client.post(
-            f"/api/v1/tenancies/{tenancy.pk}/move-in-invoice",
+            invoice_url,
             content_type="application/json",
         )
         self.assertEqual(issued.status_code, 201, issued.content)
@@ -10997,12 +11287,26 @@ class UserAccessTests(TestCase):
     @patch("users.views._send_caretaker_activation_email")
     def test_caretaker_invitation_creates_single_use_account_and_assignment(self, send_email):
         landlord_user, property_obj = self.create_portal_landlord()
+        second_property = Property.objects.create(
+            branch=property_obj.branch,
+            landlord=property_obj.landlord,
+            name="Second Caretaker Property",
+            property_type="residential",
+            location="Nairobi",
+        )
+        unassigned_property = Property.objects.create(
+            branch=property_obj.branch,
+            landlord=property_obj.landlord,
+            name="Unassigned Caretaker Property",
+            property_type="residential",
+            location="Nairobi",
+        )
         self.client.force_login(landlord_user)
 
         issued = self.client.post(
             "/api/v1/caretaker-invitations/create",
             data={
-                "property_id": property_obj.pk,
+                "property_ids": [property_obj.pk, second_property.pk],
                 "full_name": "New Caretaker",
                 "email": "new-caretaker@example.com",
                 "phone": "254712340002",
@@ -11015,6 +11319,10 @@ class UserAccessTests(TestCase):
         self.assertEqual(issued.status_code, 201)
         self.assertNotIn("activation_token", issued.json())
         self.assertEqual(issued.json()["invitation"]["status"], "pending_activation")
+        self.assertEqual(
+            set(issued.json()["invitation"]["property_ids"]),
+            {property_obj.pk, second_property.pk},
+        )
         activation_url = send_email.call_args.args[2]
         token = activation_url.split("token=", 1)[1]
         code = send_email.call_args.args[3]
@@ -11026,6 +11334,10 @@ class UserAccessTests(TestCase):
         self.assertEqual(context.status_code, 200)
         self.assertEqual(context.json()["full_name"], "New Caretaker")
         self.assertEqual(context.json()["phone"], "254712340002")
+        self.assertEqual(
+            set(context.json()["property_names"]),
+            {property_obj.name, second_property.name},
+        )
         self.assertNotEqual(invitation.token_hash, token)
         self.assertTrue(invitation.email_sent_at)
         self.assertEqual(
@@ -11056,12 +11368,39 @@ class UserAccessTests(TestCase):
         self.assertTrue(caretaker_user.is_active)
         self.assertTrue(caretaker_user.groups.filter(name=CARETAKER_ROLE).exists())
         caretaker_id = caretaker_user.pk
-        self.assertTrue(
-            PropertyCaretakerAssignment.objects.filter(
-                property=property_obj,
-                caretaker_id=caretaker_id,
-                ended_at__isnull=True,
-            ).exists()
+        self.assertEqual(
+            set(
+                PropertyCaretakerAssignment.objects.filter(
+                    caretaker_id=caretaker_id,
+                    ended_at__isnull=True,
+                ).values_list("property_id", flat=True)
+            ),
+            {property_obj.pk, second_property.pk},
+        )
+        self.client.force_login(caretaker_user)
+        assigned_properties = self.client.get("/api/v1/caretaker/properties")
+        self.assertEqual(assigned_properties.status_code, 200, assigned_properties.content)
+        self.assertEqual(
+            {item["id"] for item in assigned_properties.json()["properties"]},
+            {property_obj.pk, second_property.pk},
+        )
+        selected = self.client.patch(
+            "/api/v1/caretaker/properties",
+            data={"activePropertyId": second_property.pk},
+            content_type="application/json",
+        )
+        self.assertEqual(selected.status_code, 200, selected.content)
+        rejected_selection = self.client.patch(
+            "/api/v1/caretaker/properties",
+            data={"activePropertyId": unassigned_property.pk},
+            content_type="application/json",
+        )
+        self.assertEqual(rejected_selection.status_code, 404)
+        dashboard = self.client.get("/api/v1/caretaker/dashboard")
+        self.assertEqual(dashboard.status_code, 200, dashboard.content)
+        self.assertEqual(
+            [item["id"] for item in dashboard.json()["properties"]],
+            [second_property.pk],
         )
         invitation.refresh_from_db()
         self.assertIsNotNone(invitation.used_at)
@@ -11154,6 +11493,12 @@ class UserAccessTests(TestCase):
             property_type="residential",
             location="Nairobi",
         )
+        second_property = Property.objects.create(
+            branch=self.nairobi,
+            name="Second Officer Managed Property",
+            property_type="residential",
+            location="Nairobi",
+        )
         other_property = Property.objects.create(
             branch=self.nakuru,
             name="Out of Scope Property",
@@ -11166,13 +11511,13 @@ class UserAccessTests(TestCase):
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(
             [item["id"] for item in listed.json()["properties"]],
-            [property_obj.pk],
+            [property_obj.pk, second_property.pk],
         )
 
         issued = self.client.post(
             "/api/v1/caretaker-invitations/create",
             data={
-                "property_id": property_obj.pk,
+                "property_ids": [property_obj.pk, second_property.pk],
                 "full_name": "Officer Caretaker",
                 "email": "officer-caretaker@example.com",
                 "phone": "254712340005",
@@ -11181,6 +11526,10 @@ class UserAccessTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(issued.status_code, 201, issued.content)
+        self.assertEqual(
+            set(issued.json()["invitation"]["property_ids"]),
+            {property_obj.pk, second_property.pk},
+        )
         invitation_id = issued.json()["invitation"]["id"]
         original_token = send_email.call_args.args[2].split("token=", 1)[1]
 
@@ -11196,6 +11545,19 @@ class UserAccessTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(out_of_scope.status_code, 404)
+
+        mixed_scope = self.client.post(
+            "/api/v1/caretaker-invitations/create",
+            data={
+                "property_ids": [property_obj.pk, other_property.pk],
+                "full_name": "Mixed Scope Caretaker",
+                "email": "mixed-scope@example.com",
+                "phone": "254712340007",
+                "id_or_registration_number": "CARETAKER-ID-007",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(mixed_scope.status_code, 404)
 
         resent = self.client.post(
             f"/api/v1/caretaker-invitations/{invitation_id}/resend",
@@ -11995,6 +12357,20 @@ class UserAccessTests(TestCase):
         with self.assertRaises(ValueError):
             render_sms_template("login_verification_code", {})
 
+    def test_tenant_activation_sms_contains_welcome_otp_and_activation_link(self):
+        message = render_sms_template(
+            "tenant_activation",
+            {
+                "tenant_name": "Amina",
+                "activation_url": "https://legacy.example/activate?token=secure-token",
+                "code": "482913",
+            },
+        )
+        self.assertIn("welcome to Legacy Real Estate", message)
+        self.assertIn("successfully onboarded", message)
+        self.assertIn("482913", message)
+        self.assertIn("https://legacy.example/activate?token=secure-token", message)
+
     def test_sms_authentication_fails_closed_without_a_production_provider(self):
         with override_settings(DEBUG=False, AUTH_SMS_BACKEND=""):
             with self.assertRaises(ImproperlyConfigured):
@@ -12117,6 +12493,8 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
             default_rent=Decimal("10000.00"),
             security_deposit=Decimal("9000.00"),
             water_deposit=Decimal("0.00"),
+            default_garbage_charge=Decimal("400.00"),
+            move_in_letting_fee=Decimal("750.00"),
         )
         self.unit_type = PropertyUnitType.objects.create(
             property=self.property,
@@ -12146,13 +12524,32 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
             unit_type="Bedsitter",
             status=Unit.STATUS_VACANT,
         )
+        self.caretaker = get_user_model().objects.create_user(
+            username="move-in-caretaker@example.com",
+            email="move-in-caretaker@example.com",
+            password="secure-password",
+        )
+        self.caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        caretaker_profile = UserProfile.objects.create(
+            user=self.caretaker,
+            name="Move-in Caretaker",
+            phone="254712340099",
+        )
+        caretaker_profile.branches.add(self.branch)
+        PropertyCaretakerAssignment.objects.create(
+            property=self.property,
+            caretaker=self.caretaker,
+            assigned_by=self.officer,
+        )
+        self.move_in_date = timezone.localdate()
         self.client.force_login(self.officer)
 
     def _onboarding_payload(self, quote, **overrides):
         payload = {
             "unit_id": self.unit.pk,
-            "start_date": timezone.localdate().isoformat(),
-            "end_date": None,
+            "caretaker_id": self.caretaker.pk,
+            "start_date": self.move_in_date.isoformat(),
+            "end_date": "",
             "tenancy_type": Tenancy.TYPE_MONTH_TO_MONTH,
             "due_day": 10,
             "tenant_type": Tenant.INDIVIDUAL,
@@ -12160,45 +12557,145 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
             "email": "onboarded-tenant@example.com",
             "phone": "0712345678",
             "national_id_or_passport": "ID-ONBOARD-1",
+            "identity_document": SimpleUploadedFile(
+                "onboarded-tenant-id.pdf",
+                b"%PDF-1.4\nKYC test file\n%%EOF",
+                content_type="application/pdf",
+            ),
             "company_registration_number": "",
             "contact_person": "",
             "kra_pin": "",
-            "confirm_paid": True,
+            "confirm_paid": "true",
+            "payment_channel": MoveInPayment.CHANNEL_MPESA,
+            "transaction_reference": "ONB-PAYMENT-001",
+            "payment_date": timezone.localdate().isoformat(),
+            "payment_amount": quote["total"],
             "quote_total": quote["total"],
             "quote_fingerprint": quote["fingerprint"],
         }
         payload.update(overrides)
         return payload
 
+    @override_settings(PUBLIC_SITE_URL="https://legacy.example/")
+    @patch("users.views.send_email")
+    def test_tenant_activation_email_contains_welcome_otp_and_activation_link(
+        self,
+        send_email,
+    ):
+        from users.views import _send_tenant_activation_email
+
+        _send_tenant_activation_email(
+            "Onboarded Tenant",
+            "onboarded-tenant@example.com",
+            "ONB-01",
+            "Legacy Apartments",
+            "https://legacy.example/activate?token=secure-token",
+            "482913",
+            phone_verification_required=True,
+        )
+        text_content = send_email.call_args.args[2]
+        html_content = send_email.call_args.kwargs["html_content"]
+        self.assertIn("welcome to Legacy Real Estate", text_content)
+        self.assertIn("successfully onboarded", text_content)
+        self.assertIn("same code was also sent by SMS", text_content)
+        self.assertIn("482913", text_content)
+        self.assertIn("https://legacy.example/activate?token=secure-token", text_content)
+        self.assertIn("482913", html_content)
+        self.assertIn('href="https://legacy.example/activate?token=secure-token"', html_content)
+
+    @patch("users.views.upload_private_object")
     @patch("users.views.queue_template_sms")
     @patch("users.views._send_tenant_activation_email")
+    @patch("users.views.queue_template_whatsapp_if_enabled")
     def test_onboarding_quotes_all_deposits_and_requires_audited_payment_confirmation(
         self,
+        queue_whatsapp,
         send_activation_email,
         queue_sms,
+        upload_private_object,
     ):
+        PropertyRecurringCharge.objects.create(
+            property=self.property,
+            name="Service charge",
+            amount=Decimal("150.00"),
+        )
+        self.move_in_date = timezone.localdate() + timedelta(days=1)
         quoted = self.client.get(
             "/api/v1/property-officer/move-in-quote",
-            {"unit_id": self.unit.pk, "start_date": timezone.localdate().isoformat()},
+            {"unit_id": self.unit.pk, "start_date": self.move_in_date.isoformat()},
         )
         self.assertEqual(quoted.status_code, 200, quoted.content)
         quote = quoted.json()["quote"]
-        self.assertEqual(quote["total"], "20000.00")
+        quote_items = {item["name"]: item["amount"] for item in quote["items"]}
         self.assertEqual(
-            {item["name"]: item["amount"] for item in quote["items"]},
+            set(quote_items),
             {
-                "Monthly rent": "12000.00",
-                "Security deposit": "5000.00",
-                "Water deposit": "1000.00",
-                "Electricity deposit": "2000.00",
+                "First month rent",
+                "Security deposit",
+                "Water deposit",
+                "Electricity deposit",
             },
         )
+        self.assertNotIn("monthly_charges", quote)
+        self.assertEqual(
+            quote_items["First month rent"],
+            str(
+                (
+                    Decimal("12000.00")
+                    / Decimal(quote["proration"]["month_days"])
+                    * Decimal(quote["proration"]["billable_days"])
+                ).quantize(Decimal("0.01"))
+            ),
+        )
+        self.assertEqual(quote_items["Security deposit"], "5000.00")
+        self.assertEqual(quote_items["Water deposit"], "1000.00")
+        self.assertEqual(quote_items["Electricity deposit"], "2000.00")
+        self.assertEqual(
+            quote["total"],
+            str(
+                sum(
+                    (Decimal(amount) for amount in quote_items.values()),
+                    Decimal("0.00"),
+                )
+            ),
+        )
+
+        missing_identity = self._onboarding_payload(quote)
+        missing_identity["confirm_paid"] = True
+        missing_identity.pop("identity_document")
+        missing_document = self.client.post(
+            "/api/v1/property-officer/tenant-onboarding",
+            data=json.dumps(missing_identity),
+            content_type="application/json",
+        )
+        self.assertEqual(missing_document.status_code, 400)
+        self.assertEqual(
+            missing_document.json()["type"],
+            "https://legacy.example/problems/identity-document-required",
+        )
+        self.assertFalse(Tenant.objects.exists())
+
+        invalid_identity = self._onboarding_payload(quote)
+        invalid_identity["identity_document"] = SimpleUploadedFile(
+            "onboarded-tenant-id.txt",
+            b"not a supported document",
+            content_type="text/plain",
+        )
+        invalid_document = self.client.post(
+            "/api/v1/property-officer/tenant-onboarding",
+            data=invalid_identity,
+        )
+        self.assertEqual(invalid_document.status_code, 400)
+        self.assertEqual(
+            invalid_document.json()["type"],
+            "https://legacy.example/problems/invalid-identity-document",
+        )
+        self.assertFalse(Tenant.objects.exists())
 
         payload = self._onboarding_payload(quote, confirm_paid=False)
         unconfirmed = self.client.post(
             "/api/v1/property-officer/tenant-onboarding",
             data=payload,
-            content_type="application/json",
         )
         self.assertEqual(unconfirmed.status_code, 400, unconfirmed.content)
         self.assertFalse(Tenant.objects.exists())
@@ -12207,16 +12704,29 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         stale_quote = self.client.post(
             "/api/v1/property-officer/tenant-onboarding",
             data=self._onboarding_payload(quote, quote_total="1.00"),
-            content_type="application/json",
         )
         self.assertEqual(stale_quote.status_code, 409, stale_quote.content)
+        self.assertFalse(Tenant.objects.exists())
+        self.assertFalse(MoveInSettlement.objects.exists())
+
+        underpaid = self.client.post(
+            "/api/v1/property-officer/tenant-onboarding",
+            data=self._onboarding_payload(
+                quote,
+                payment_amount=str(Decimal(quote["total"]) - Decimal("0.01")),
+            ),
+        )
+        self.assertEqual(underpaid.status_code, 400, underpaid.content)
+        self.assertEqual(
+            underpaid.json()["type"],
+            "https://legacy.example/problems/payment-amount-mismatch",
+        )
         self.assertFalse(Tenant.objects.exists())
         self.assertFalse(MoveInSettlement.objects.exists())
 
         onboarded = self.client.post(
             "/api/v1/property-officer/tenant-onboarding",
             data=self._onboarding_payload(quote),
-            content_type="application/json",
         )
         self.assertEqual(onboarded.status_code, 201, onboarded.content)
         self.assertTrue(onboarded.json()["activation_email_sent"])
@@ -12231,12 +12741,68 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         self.assertTrue(tenant.is_provisional)
         self.assertEqual(tenancy.status, Tenancy.STATUS_ACTIVE)
         self.assertEqual(settlement.status, MoveInSettlement.STATUS_PAID)
-        self.assertEqual(payment.amount, Decimal("20000.00"))
+        self.assertEqual(settlement.garbage_amount, Decimal("400.00"))
+        self.assertEqual(settlement.move_in_letting_fee, Decimal("0.00"))
+        self.assertEqual(
+            {
+                (charge["name"], charge["amount"])
+                for charge in settlement.utility_charges
+            },
+            {("Water", "300.00"), ("Service charge", "150.00")},
+        )
+        self.assertEqual(payment.amount, Decimal(quote["total"]))
         self.assertEqual(payment.method, MoveInPayment.METHOD_OFFICER_CONFIRMATION)
         self.assertEqual(payment.recorded_by, self.officer)
         self.assertEqual(settlement.deposit_total, Decimal("8000.00"))
+        invoice = Invoice.objects.get(tenancy=tenancy)
+        package = MoveInPackage.objects.get(tenancy=tenancy)
+        package_charges = {
+            charge.description: charge.amount
+            for charge in MoveInCharge.objects.filter(package=package)
+        }
+        self.assertEqual(
+            set(package_charges),
+            {
+                "Rent",
+                "Security deposit",
+                "Water deposit",
+                "Electricity deposit",
+            },
+        )
+        self.assertEqual(
+            package_charges["Rent"],
+            Decimal(quote_items["First month rent"]),
+        )
+        ledger_payment = Payment.objects.get(reference="ONB-PAYMENT-001")
+        self.assertEqual(invoice.total, Decimal(quote["total"]))
+        self.assertEqual(ledger_payment.amount, invoice.total)
+        self.assertEqual(ledger_payment.source, Payment.SOURCE_MPESA)
+        self.assertEqual(ledger_payment.status, Payment.STATUS_ALLOCATED)
+        self.assertEqual(
+            PaymentAllocation.objects.get(payment=ledger_payment).amount,
+            invoice.total,
+        )
+        self.assertTrue(Receipt.objects.filter(payment=ledger_payment).exists())
+        self.assertTrue(MoveInPackage.objects.filter(tenancy=tenancy).exists())
+        self.assertEqual(
+            set(
+                TenantDocument.objects.filter(tenant=tenant).values_list(
+                    "document_type",
+                    flat=True,
+                )
+            ),
+            {"identity_document", "move_in_agreement", "payment_receipt"},
+        )
+        identity_document = TenantDocument.objects.get(
+            tenant=tenant,
+            document_type="identity_document",
+        )
+        self.assertEqual(identity_document.uploaded_by, self.officer)
+        self.assertEqual(identity_document.metadata["content_type"], "application/pdf")
+        self.assertEqual(identity_document.metadata["size_bytes"], 28)
+        self.assertEqual(upload_private_object.call_count, 3)
         self.unit.refresh_from_db()
-        self.assertEqual(self.unit.status, Unit.STATUS_OCCUPIED)
+        self.assertEqual(self.unit.status, Unit.STATUS_BOOKED)
         self.assertTrue(
             AuditLog.objects.filter(
                 action="move_in.payment_confirmed",
@@ -12244,9 +12810,61 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
             ).exists()
         )
         send_activation_email.assert_called_once()
-        queue_sms.assert_called_once()
-        self.assertEqual(queue_sms.call_args.args[1], "tenant_activation")
-        self.assertEqual(queue_sms.call_args.args[2]["code"], send_activation_email.call_args.args[5])
+        self.assertEqual(queue_sms.call_count, 2)
+        self.assertEqual(
+            [
+                call.args[1] for call in queue_sms.call_args_list
+            ].count("move_in_handover_assigned"),
+            1,
+        )
+        queued_templates = {
+            call.args[1] for call in queue_sms.call_args_list
+        }
+        self.assertEqual(
+            queued_templates,
+            {"tenant_activation", "move_in_handover_assigned"},
+        )
+        activation_sms = next(
+            call for call in queue_sms.call_args_list
+            if call.args[1] == "tenant_activation"
+        )
+        caretaker_sms = next(
+            call for call in queue_sms.call_args_list
+            if call.args[1] == "move_in_handover_assigned"
+        )
+        self.assertEqual(activation_sms.args[2]["code"], send_activation_email.call_args.args[5])
+        self.assertEqual(activation_sms.args[2]["activation_url"], send_activation_email.call_args.args[4])
+        self.assertEqual(
+            caretaker_sms.args[2]["move_in_date"],
+            self.move_in_date.isoformat(),
+        )
+        package = MoveInPackage.objects.get(tenancy=tenancy)
+        self.assertEqual(package.assigned_caretaker, self.caretaker)
+        self.assertIsNotNone(package.caretaker_notification_queued_at)
+        self.client.force_login(self.caretaker)
+        handovers = self.client.get("/api/v1/caretaker/checklists")
+        self.assertEqual(handovers.status_code, 200)
+        self.assertEqual(len(handovers.json()["handovers"]), 1)
+        self.assertEqual(
+            handovers.json()["handovers"][0]["move_in_date"],
+            self.move_in_date.isoformat(),
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/caretaker/checklists/{package.pk}/photos",
+                data={},
+            ).status_code,
+            409,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/caretaker/checklists/{package.pk}/submit",
+                data=json.dumps({"keys_issued": 0}),
+                content_type="application/json",
+            ).status_code,
+            409,
+        )
+        queue_whatsapp.assert_not_called()
 
     def test_move_in_quote_and_onboarding_are_limited_to_officer_branches(self):
         other_branch = Branch.objects.get(name="Nakuru")
@@ -12268,6 +12886,7 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         )
         self.assertEqual(quote.status_code, 404)
 
+    @patch("users.views.upload_private_object")
     @patch("users.views.queue_template_sms")
     @patch(
         "users.views._send_tenant_activation_email",
@@ -12277,6 +12896,7 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         self,
         send_activation_email,
         queue_sms,
+        upload_private_object,
     ):
         quote_response = self.client.get(
             "/api/v1/property-officer/move-in-quote",
@@ -12287,7 +12907,6 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         first_attempt = self.client.post(
             "/api/v1/property-officer/tenant-onboarding",
             data=payload,
-            content_type="application/json",
         )
         self.assertEqual(first_attempt.status_code, 201, first_attempt.content)
         self.assertFalse(first_attempt.json()["activation_email_sent"])
@@ -12297,8 +12916,7 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         self.unit_type.save(update_fields=["monthly_rent"])
         retried = self.client.post(
             "/api/v1/property-officer/tenant-onboarding",
-            data=payload,
-            content_type="application/json",
+            data=self._onboarding_payload(quote),
         )
         self.assertEqual(retried.status_code, 201, retried.content)
         self.assertTrue(retried.json()["activation_email_sent"])
@@ -12307,7 +12925,13 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         self.assertEqual(Tenant.objects.count(), 1)
         self.assertEqual(Tenancy.objects.count(), 1)
         self.assertEqual(send_activation_email.call_count, 2)
-        self.assertEqual(queue_sms.call_count, 2)
+        self.assertEqual(queue_sms.call_count, 3)
+        self.assertEqual(
+            [
+                call.args[1] for call in queue_sms.call_args_list
+            ].count("move_in_handover_assigned"),
+            1,
+        )
 
 
 class MoveInSettlementTests(TestCase):
@@ -12378,9 +13002,18 @@ class MoveInSettlementTests(TestCase):
         created = self._create_reservation()
         self.assertEqual(created.status_code, 201, created.content)
         settlement = MoveInSettlement.objects.get()
+        today = timezone.localdate()
+        month_days = calendar.monthrange(today.year, today.month)[1]
+        first_month_rent = (
+            Decimal("10000.00")
+            / Decimal(month_days)
+            * Decimal(month_days - today.day + 1)
+        ).quantize(Decimal("0.01"))
+        expected_total = first_month_rent + Decimal("2500.00")
         self.assertEqual(settlement.tenant_phone, "254712345678")
-        self.assertEqual(settlement.total_required, Decimal("12950.00"))
-        self.assertEqual(settlement.outstanding_balance, Decimal("12950.00"))
+        self.assertEqual(settlement.total_required, expected_total)
+        self.assertEqual(settlement.outstanding_balance, expected_total)
+        self.assertEqual(settlement.garbage_amount, Decimal("300.00"))
         self.assertEqual(settlement.utility_charges, [{"name": "Service charge", "amount": "150.00"}])
         self.assertEqual(created.json()["settlement"]["units"]["unit_code"], self.unit.code)
         self.assertEqual(self.unit.status, Unit.STATUS_VACANT)
@@ -12424,7 +13057,10 @@ class MoveInSettlementTests(TestCase):
 
         balance_payment = self.client.patch(
             "/api/v1/landlord/move-in-settlements",
-            data={"settlementId": settlement_id, "amount": "10300"},
+            data={
+                "settlementId": settlement_id,
+                "amount": str(settlement.outstanding_balance),
+            },
             content_type="application/json",
         )
         self.assertEqual(balance_payment.status_code, 200, balance_payment.content)
@@ -12439,9 +13075,13 @@ class MoveInSettlementTests(TestCase):
     def test_activation_requires_identity_and_creates_tenancy_deposit_and_portal(self, send_email):
         created = self._create_reservation()
         settlement_id = created.json()["settlement"]["id"]
+        settlement = MoveInSettlement.objects.get(pk=settlement_id)
         self.client.patch(
             "/api/v1/landlord/move-in-settlements",
-            data={"settlementId": settlement_id, "amount": "12800"},
+            data={
+                "settlementId": settlement_id,
+                "amount": str(settlement.total_required),
+            },
             content_type="application/json",
         )
         activation = self.client.patch(
@@ -12525,7 +13165,12 @@ class MoveInSettlementTests(TestCase):
         settlement_id = created.json()["settlement"]["id"]
         paid = self.client.patch(
             "/api/v1/landlord/move-in-settlements",
-            data={"settlementId": settlement_id, "amount": "12950"},
+            data={
+                "settlementId": settlement_id,
+                "amount": str(
+                    MoveInSettlement.objects.get(pk=settlement_id).total_required
+                ),
+            },
             content_type="application/json",
         )
         self.assertEqual(paid.status_code, 200, paid.content)
@@ -12936,6 +13581,24 @@ class WhatsAppBotTests(TestCase):
         )
         return tenant, tenancy
 
+    def _grant_branch_role(self, user, role_name, phone=""):
+        from users.models import AgencyMembership, UserProfile
+
+        group = Group.objects.get_or_create(name=role_name)[0]
+        user.groups.add(group)
+        profile = UserProfile.objects.create(
+            user=user,
+            name=user.username,
+            phone=phone,
+        )
+        membership = AgencyMembership.objects.create(
+            profile=profile,
+            agency=self.agency,
+        )
+        membership.roles.add(group)
+        membership.branches.add(self.branch)
+        return profile
+
     def _message(self, wa_id, text=None, choice=None, image=None, message_id=None):
         import uuid
 
@@ -13168,17 +13831,37 @@ class WhatsAppBotTests(TestCase):
         self.assertEqual(post.call_args.args[0]["type"], "interactive")
 
     def test_caretaker_completes_ticket_and_tenant_is_notified(self):
-        from users.models import WhatsAppContact, ConversationState, WhatsAppDelivery
+        from users.models import (
+            ConversationState,
+            PropertyCaretakerAssignment,
+            SMSDelivery,
+            WhatsAppContact,
+            WhatsAppDelivery,
+        )
         from users import whatsapp_bot
 
         tenant, tenancy = self._tenant_with_tenancy("66")
+        manager = self.user_model.objects.create_user(
+            username="wa-ticket-manager@example.com",
+            email="wa-ticket-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(
+            manager,
+            "Property Officer / Agent",
+            phone="254700001165",
+        )
         caretaker = self.user_model.objects.create_user(
             username="wa-caretaker@example.com",
             email="wa-caretaker@example.com",
             password="Long-test-passphrase-29!",
         )
-        caretaker.groups.add(Group.objects.get_or_create(name="Caretaker")[0])
-        tenancy.unit.property.caretakers.add(caretaker)
+        self._grant_branch_role(caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
         ticket = MaintenanceTicket.objects.create(
             property=tenancy.unit.property,
             unit=tenancy.unit,
@@ -13193,7 +13876,7 @@ class WhatsAppBotTests(TestCase):
             user=caretaker,
             verified_at=timezone.now(),
         )
-        ConversationState.objects.create(contact=contact, active_role="caretaker")
+        state = ConversationState.objects.create(contact=contact, active_role="caretaker")
 
         with patch.object(whatsapp_bot, "_post_message") as post:
             whatsapp_bot.handle_inbound_message(
@@ -13203,11 +13886,63 @@ class WhatsAppBotTests(TestCase):
                 self._message(contact.wa_id, choice=f"tkt_{ticket.pk}")
             )
             whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"ca_{ticket.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"cs_{ticket.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
                 self._message(contact.wa_id, choice=f"tc_{ticket.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Kilimani Repairs")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="1250.50")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+            state.refresh_from_db()
+            self.assertEqual(state.state.get("step"), "photos")
+            self.assertEqual(
+                MaintenanceTicket.objects.get(pk=ticket.pk).status,
+                MaintenanceTicket.STATUS_IN_PROGRESS,
+            )
+            with (
+                patch.object(
+                    whatsapp_bot,
+                    "_fetch_media",
+                    return_value=(b"\xff\xd8\xffcompletion evidence", "image/jpeg"),
+                ),
+                patch.object(whatsapp_bot, "upload_private_object") as store_photo,
+            ):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={"id": "completion-photo", "mime_type": "image/jpeg"},
+                    )
+                )
+                store_photo.assert_called_once()
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cc_complete")
             )
 
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, MaintenanceTicket.STATUS_COMPLETED)
+        self.assertEqual(ticket.assigned_to_id, caretaker.pk)
+        self.assertEqual(ticket.resolution_fundi_name, "Kilimani Repairs")
+        self.assertEqual(ticket.repair_cost, Decimal("1250.50"))
+        self.assertEqual(ticket.photos[-1]["evidence_type"], "completion")
+        self.assertEqual(
+            SMSDelivery.objects.filter(
+                template_name="maintenance_ticket_completed_staff"
+            ).count(),
+            1,
+        )
         self.assertTrue(
             WhatsAppDelivery.objects.filter(
                 template_name="maintenance_ticket_completed_tenant"
@@ -13215,11 +13950,723 @@ class WhatsAppBotTests(TestCase):
         )
         self.assertTrue(
             AuditLog.objects.filter(
-                action="maintenance_ticket.caretaker_completed"
+                action="maintenance_ticket.status_changed",
+                new_values__source="whatsapp",
             ).exists()
         )
-        bodies = [c.args[0] for c in post.call_args_list]
-        self.assertIn("marked complete", bodies[-1]["text"]["body"])
+        bodies = [call.args[0] for call in post.call_args_list]
+        self.assertTrue(
+            any("completed with 1 photo" in body.get("text", {}).get("body", "") for body in bodies)
+        )
+
+    def test_caretaker_submits_move_in_handover_through_whatsapp(self):
+        from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact
+        from users import whatsapp_bot
+        from users.views import _move_in_condition_requirements
+
+        _, tenancy = self._tenant_with_tenancy("70")
+        manager = self.user_model.objects.create_user(
+            username="wa-handover-manager@example.com",
+            email="wa-handover-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(
+            manager,
+            "Property Officer / Agent",
+            phone="254700001170",
+        )
+        caretaker = self.user_model.objects.create_user(
+            username="wa-handover-caretaker@example.com",
+            email="wa-handover-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        UtilityConfiguration.objects.create(
+            unit=tenancy.unit,
+            utility_type=UtilityConfiguration.UTILITY_WATER,
+            name="Water",
+            billing_method=UtilityConfiguration.METHOD_METERED,
+            rate_per_unit=Decimal("10.0000"),
+            effective_from=tenancy.start_date,
+            metadata={"meter": "W-070"},
+        )
+        package = MoveInPackage.objects.create(
+            tenancy=tenancy,
+            agreement_reference="WA-MOVE-IN-070",
+            handover_inventory=[
+                {"name": "Key fobs", "property_quantity": 3, "issued_quantity": None}
+            ],
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001170",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(contact=contact, active_role="caretaker")
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_checklists")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_handovers")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"c_handover_{package.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="2")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="1")
+            )
+            for index, _ in enumerate(_move_in_condition_requirements(tenancy.unit)):
+                if index == 0:
+                    whatsapp_bot.handle_inbound_message(
+                        self._message(contact.wa_id, choice="ch_condition_attention")
+                    )
+                    whatsapp_bot.handle_inbound_message(
+                        self._message(contact.wa_id, text="Repair the chipped paint.")
+                    )
+                else:
+                    whatsapp_bot.handle_inbound_message(
+                        self._message(contact.wa_id, choice="ch_condition_good")
+                    )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="18.25")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+            state.refresh_from_db()
+            self.assertEqual(state.state.get("step"), "photos")
+            with (
+                patch.object(
+                    whatsapp_bot,
+                    "_fetch_media",
+                    return_value=(b"\x89PNG\r\n\x1a\nwater meter photo", "image/png"),
+                ),
+                patch.object(whatsapp_bot, "upload_private_object") as store_photo,
+            ):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={"id": "handover-photo", "mime_type": "image/png"},
+                    )
+                )
+                store_photo.assert_called_once()
+            with (
+                patch.object(
+                    whatsapp_bot,
+                    "_fetch_media",
+                    return_value=(b"\x89PNG\r\n\x1a\ncondition photo", "image/png"),
+                ),
+                patch.object(whatsapp_bot, "upload_private_object"),
+            ):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={"id": "handover-condition-photo", "mime_type": "image/png"},
+                    )
+                )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="ch_handover_submit")
+            )
+
+        package.refresh_from_db()
+        self.assertEqual(package.handover_status, MoveInPackage.HANDOVER_STATUS_SUBMITTED)
+        self.assertEqual(package.keys_issued, 2)
+        self.assertEqual(
+            package.handover_inventory,
+            [{"name": "Key fobs", "property_quantity": 3, "issued_quantity": 1}],
+        )
+        self.assertEqual(len(package.condition_checklist), len(_move_in_condition_requirements(tenancy.unit)))
+        self.assertEqual(package.condition_checklist[0]["status"], "needs_attention")
+        self.assertEqual(package.condition_checklist[0]["notes"], "Repair the chipped paint.")
+        self.assertEqual(
+            package.initial_meter_readings,
+            [
+                {
+                    "utility_type": UtilityConfiguration.UTILITY_WATER,
+                    "current_value": "18.25",
+                    "name": "Water",
+                    "meter": "W-070",
+                }
+            ],
+        )
+        self.assertEqual(len(package.handover_photos), 2)
+        self.assertEqual(package.handover_photos[0]["content_type"], "image/png")
+        self.assertEqual(package.handover_photos[0]["evidence_type"], "water_meter")
+        self.assertEqual(package.handover_photos[1]["evidence_type"], "condition")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="move_in_handover.submitted",
+                new_values__source="whatsapp",
+                new_values__photo_count=2,
+            ).exists()
+        )
+        self.assertTrue(
+            SMSDelivery.objects.filter(template_name="move_in_handover_submitted").exists()
+        )
+
+    def test_caretaker_completes_assigned_move_out_inspection_through_whatsapp(self):
+        from users import whatsapp_bot
+        from users.models import (
+            ConversationState,
+            MeterReading,
+            MoveOutNotice,
+            PropertyCaretakerAssignment,
+            PropertyInspection,
+            UtilityConfiguration,
+            WhatsAppContact,
+        )
+
+        tenant, tenancy = self._tenant_with_tenancy("73")
+        manager = self.user_model.objects.create_user(
+            username="wa-move-out-manager@example.com",
+            email="wa-move-out-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        caretaker = self.user_model.objects.create_user(
+            username="wa-move-out-caretaker@example.com",
+            email="wa-move-out-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(
+            manager,
+            "Property Officer / Agent",
+            phone="254700001173",
+        )
+        self._grant_branch_role(caretaker, "Caretaker", phone="254700001174")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        today = timezone.localdate()
+        notice = MoveOutNotice.objects.create(
+            tenancy=tenancy,
+            requested_by=tenant.portal_user,
+            proposed_move_out_date=today,
+            status=MoveOutNotice.STATUS_ACCEPTED,
+            reviewed_by=manager,
+            reviewed_at=timezone.now(),
+        )
+        inspection = PropertyInspection.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            move_out_notice=notice,
+            title="Move-out inspection",
+            inspection_type="move_out",
+            scheduled_for=timezone.now(),
+            responsible_staff=caretaker,
+            created_by=manager,
+            checklist=[
+                {"title": "Room condition and damage", "status": "pending"},
+                {"title": "Fixtures, keys, and access devices", "status": "pending"},
+                {"title": "Final utility meter readings", "status": "pending"},
+            ],
+        )
+        UtilityConfiguration.objects.create(
+            unit=tenancy.unit,
+            utility_type=UtilityConfiguration.UTILITY_WATER,
+            name="Water",
+            billing_method=UtilityConfiguration.METHOD_METERED,
+            rate_per_unit=Decimal("10.0000"),
+            effective_from=tenancy.start_date,
+            metadata={"meter": "W-073"},
+        )
+        MeterReading.objects.create(
+            unit=tenancy.unit,
+            meter="W-073",
+            period=today - timedelta(days=1),
+            previous_value=Decimal("0.0000"),
+            current_value=Decimal("10.0000"),
+            submitted_by=manager,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001174",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(
+            contact=contact,
+            active_role="caretaker",
+        )
+        other_caretaker = self.user_model.objects.create_user(
+            username="wa-other-move-out-caretaker@example.com",
+            email="wa-other-move-out-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(other_caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=other_caretaker,
+            assigned_by=manager,
+        )
+        other_contact = WhatsAppContact.objects.create(
+            wa_id="254700001175",
+            user=other_caretaker,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(
+            contact=other_contact,
+            active_role="caretaker",
+        )
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(other_contact.wa_id, choice=f"c_exit_{inspection.pk}")
+            )
+            self.assertIn(
+                "no longer available",
+                post.call_args.args[0]["text"]["body"],
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_checklists")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_move_out_inspections")
+            )
+            with patch.object(
+                whatsapp_bot.timezone,
+                "localdate",
+                return_value=today - timedelta(days=1),
+            ):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(contact.wa_id, choice=f"c_exit_{inspection.pk}")
+                )
+            self.assertIn("scheduled for", post.call_args.args[0]["text"]["body"])
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"c_exit_{inspection.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text=today.isoformat())
+            )
+            for index in range(len(inspection.checklist)):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(contact.wa_id, choice=f"coi_complete_{index}")
+                )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="10.5")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="coi_damage_yes")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Broken window | 600")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="coi_damage_done")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="coi_maintenance_yes")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Bedroom window is damaged.")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Replace the damaged window.")
+            )
+            with (
+                patch.object(
+                    whatsapp_bot,
+                    "_fetch_media",
+                    return_value=(b"\xff\xd8\xffmove-out-evidence", "image/jpeg"),
+                ),
+                patch.object(whatsapp_bot, "upload_private_object"),
+            ):
+                whatsapp_bot.handle_inbound_message(
+                    self._message(
+                        contact.wa_id,
+                        image={
+                            "id": "move-out-evidence",
+                            "mime_type": "image/jpeg",
+                            "sha256": "move-out-evidence-hash",
+                        },
+                    )
+                )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="done")
+            )
+            state.refresh_from_db()
+            self.assertEqual(state.state.get("step"), "confirm")
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="coi_submit")
+            )
+
+        inspection.refresh_from_db()
+        self.assertEqual(inspection.status, PropertyInspection.STATUS_COMPLETED)
+        self.assertEqual(inspection.actual_move_out_date, today)
+        self.assertEqual(inspection.final_readings[0]["current_value"], "10.5")
+        self.assertEqual(inspection.final_readings[0]["amount"], "5.00")
+        self.assertEqual(
+            inspection.damage_items,
+            [{"description": "Broken window", "amount": "600.00"}],
+        )
+        self.assertTrue(inspection.maintenance_required)
+        self.assertEqual(inspection.findings, "Bedroom window is damaged.")
+        self.assertEqual(inspection.recommendations, "Replace the damaged window.")
+        self.assertEqual(len(inspection.photos), 1)
+        self.assertTrue(
+            inspection.photos[0]["storage_key"].startswith(
+                f"inspections/move-out/{inspection.pk}/"
+            )
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="property_inspection.completed",
+                new_values__source="whatsapp",
+            ).exists()
+        )
+
+    def test_caretaker_completes_assigned_routine_inspection_through_whatsapp(self):
+        from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact
+        from users import whatsapp_bot
+
+        _, tenancy = self._tenant_with_tenancy("71")
+        caretaker = self.user_model.objects.create_user(
+            username="wa-routine-caretaker@example.com",
+            email="wa-routine-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        other_caretaker = self.user_model.objects.create_user(
+            username="wa-other-routine-caretaker@example.com",
+            email="wa-other-routine-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        manager = self.user_model.objects.create_user(
+            username="wa-routine-manager@example.com",
+            email="wa-routine-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(caretaker, "Caretaker")
+        self._grant_branch_role(other_caretaker, "Caretaker")
+        self._grant_branch_role(manager, "Property Officer / Agent")
+        for assigned_caretaker in (caretaker, other_caretaker):
+            PropertyCaretakerAssignment.objects.create(
+                property=tenancy.unit.property,
+                caretaker=assigned_caretaker,
+                assigned_by=manager,
+            )
+        inspection = PropertyInspection.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            title="Monthly safety check",
+            inspection_type="routine",
+            scheduled_for=timezone.now(),
+            responsible_staff=caretaker,
+            created_by=manager,
+            checklist=[
+                {"title": "Test smoke alarm", "status": "pending"},
+                {"title": "Check entry locks", "status": "pending"},
+            ],
+        )
+        other_inspection = PropertyInspection.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            title="Other caretaker inspection",
+            inspection_type="routine",
+            scheduled_for=timezone.now(),
+            responsible_staff=other_caretaker,
+            created_by=manager,
+            checklist=[{"title": "Check lights", "status": "pending"}],
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001171",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="caretaker")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_checklists")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_routine_inspections")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"c_routine_{inspection.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cri_complete_0")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cri_complete_1")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="All checked and working.")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Replace the alarm battery next visit.")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cri_submit")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"c_routine_{other_inspection.pk}")
+            )
+
+        inspection.refresh_from_db()
+        other_inspection.refresh_from_db()
+        self.assertEqual(inspection.status, PropertyInspection.STATUS_COMPLETED)
+        self.assertEqual(inspection.checklist[0]["status"], "complete")
+        self.assertEqual(inspection.findings, "All checked and working.")
+        self.assertEqual(inspection.recommendations, "Replace the alarm battery next visit.")
+        self.assertEqual(other_inspection.status, PropertyInspection.STATUS_SCHEDULED)
+        self.assertIn(
+            "no longer available",
+            post.call_args.args[0]["text"]["body"],
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="property_inspection.completed",
+                new_values__source="whatsapp",
+                new_values__inspection_id=inspection.pk,
+            ).exists()
+        )
+
+    def test_routine_inspection_without_checklist_requires_findings(self):
+        from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact
+        from users import whatsapp_bot
+
+        _, tenancy = self._tenant_with_tenancy("72")
+        manager = self.user_model.objects.create_user(
+            username="wa-empty-routine-manager@example.com",
+            email="wa-empty-routine-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        caretaker = self.user_model.objects.create_user(
+            username="wa-empty-routine-caretaker@example.com",
+            email="wa-empty-routine-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(manager, "Property Officer / Agent")
+        self._grant_branch_role(caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        inspection = PropertyInspection.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            title="Empty checklist inspection",
+            inspection_type="routine",
+            scheduled_for=timezone.now(),
+            responsible_staff=caretaker,
+            created_by=manager,
+            checklist=[],
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001172",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(contact=contact, active_role="caretaker")
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_checklists")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_routine_inspections")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"c_routine_{inspection.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="skip")
+            )
+            state.refresh_from_db()
+            self.assertEqual(state.state.get("step"), "findings")
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="No defects found.")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="skip")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cri_submit")
+            )
+
+        inspection.refresh_from_db()
+        self.assertEqual(inspection.status, PropertyInspection.STATUS_COMPLETED)
+        self.assertEqual(inspection.findings, "No defects found.")
+        self.assertEqual(inspection.recommendations, "")
+
+    def test_caretaker_cannot_update_another_caretakers_ticket(self):
+        from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("67")
+        manager = self.user_model.objects.create_user(
+            username="wa-scope-manager@example.com",
+            email="wa-scope-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        caretaker = self.user_model.objects.create_user(
+            username="wa-scope-caretaker@example.com",
+            email="wa-scope-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        other_caretaker = self.user_model.objects.create_user(
+            username="wa-other-caretaker@example.com",
+            email="wa-other-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(caretaker, "Caretaker")
+        self._grant_branch_role(other_caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=other_caretaker,
+            assigned_by=manager,
+        )
+        ticket = MaintenanceTicket.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            reported_by=tenant.portal_user,
+            assigned_to=other_caretaker,
+            title="Gate repair",
+            description="Repair the gate lock.",
+            category=MaintenanceTicket.CATEGORY_SECURITY,
+            priority=MaintenanceTicket.PRIORITY_NORMAL,
+            status=MaintenanceTicket.STATUS_ASSIGNED,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001167",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="caretaker")
+
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"cs_{ticket.pk}")
+            )
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, MaintenanceTicket.STATUS_ASSIGNED)
+        self.assertEqual(ticket.assigned_to_id, other_caretaker.pk)
+        self.assertIn(
+            "Only the assigned caretaker",
+            post.call_args.args[0]["text"]["body"],
+        )
+        outside_property = Property.objects.create(
+            branch=self.branch,
+            name="Unassigned Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        outside_ticket = MaintenanceTicket.objects.create(
+            property=outside_property,
+            reported_by=tenant.portal_user,
+            assigned_to=caretaker,
+            title="Outside ticket",
+            description="Not assigned to this property.",
+            category=MaintenanceTicket.CATEGORY_OTHER,
+            status=MaintenanceTicket.STATUS_ASSIGNED,
+        )
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"cs_{outside_ticket.pk}")
+            )
+        outside_ticket.refresh_from_db()
+        self.assertEqual(outside_ticket.status, MaintenanceTicket.STATUS_ASSIGNED)
+        self.assertIn(
+            "not available in your assigned properties",
+            post.call_args.args[0]["text"]["body"],
+        )
+
+    def test_caretaker_can_report_on_site_issue_through_whatsapp(self):
+        from users.models import (
+            ConversationState,
+            PropertyCaretakerAssignment,
+            WhatsAppContact,
+        )
+        from users import whatsapp_bot
+
+        _, tenancy = self._tenant_with_tenancy("68")
+        caretaker = self.user_model.objects.create_user(
+            username="wa-report-caretaker@example.com",
+            email="wa-report-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=caretaker,
+            assigned_by=caretaker,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700001168",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        ConversationState.objects.create(contact=contact, active_role="caretaker")
+
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_report")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cat_electrical")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_priority_high")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="Hallway light out")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="The shared hallway light is not working.")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cc_submit")
+            )
+
+        ticket = MaintenanceTicket.objects.get(
+            property=tenancy.unit.property,
+            title="Hallway light out",
+        )
+        self.assertEqual(ticket.reported_by_id, caretaker.pk)
+        self.assertEqual(ticket.category, MaintenanceTicket.CATEGORY_ELECTRICAL)
+        self.assertEqual(ticket.priority, MaintenanceTicket.PRIORITY_HIGH)
+        self.assertEqual(ticket.status, MaintenanceTicket.STATUS_OPEN)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="maintenance_ticket.created",
+                new_values__source="whatsapp",
+            ).exists()
+        )
+        with patch.object(whatsapp_bot, "_post_message"):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice=f"cm_{ticket.pk}")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="The electrician has been called.")
+            )
+        self.assertTrue(
+            MaintenanceTicketComment.objects.filter(
+                ticket=ticket,
+                author=caretaker,
+                body="The electrician has been called.",
+            ).exists()
+        )
 
     def test_switch_role_and_session_expiry_reset_to_entry(self):
         from users.models import WhatsAppContact, ConversationState
@@ -13516,6 +14963,7 @@ class WhatsAppRentStkTests(TestCase):
             national_id_or_passport="30415599",
             phone="254700002211",
             email="stk-tenant@example.com",
+            whatsapp_opted_in_at=timezone.now(),
             portal_user=self.portal_user,
         )
         self.tenancy = Tenancy.objects.create(
