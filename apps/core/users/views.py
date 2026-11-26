@@ -39,7 +39,6 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
-from kombu.exceptions import OperationalError as BrokerOperationalError
 from openpyxl import load_workbook
 
 from users.access import accessible_branches
@@ -124,17 +123,28 @@ from users.payment_allocations import (
     available_tenant_credit,
     lock_tenant_invoice,
 )
+from users.water_readings import (
+    MAX_METER_PHOTO_BYTES,
+    WaterReadingError,
+    attach_caretaker_water_reading_photo,
+    caretaker_water_period as _caretaker_water_period,
+    caretaker_water_readings_due as _caretaker_water_readings_due,
+    caretaker_water_readings_open_date as _caretaker_water_readings_open_date,
+    caretaker_water_units as _caretaker_water_units,
+    publish_caretaker_water_readings as _publish_caretaker_water_readings,
+)
 from users.object_storage import (
     delete_private_object,
     read_private_object,
     upload_private_object,
 )
 from users.roles import (
-    AGENCY_STAFF_ROLE_NAMES,
+    AGENCY_CARETAKER_ROLE_NAMES,
     BRANCH_MANAGER_ROLE,
     CARETAKER_ROLE,
     LANDLORD_MANAGEMENT_ROLE_NAMES,
     LANDLORD_PORTAL_ROLE,
+    ROLE_NAMES,
     SUPER_ADMIN_ROLE,
     TENANT_PORTAL_ROLE,
     requires_finance_mfa,
@@ -230,22 +240,34 @@ def _send_staff_activation_email(
     portal_name="agency staff",
     activation_path="activate-staff",
     contact="your agency Director",
+    link_existing_account=False,
 ):
     lifetime_minutes = max(1, (settings.AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS + 59) // 60)
     activation_url = (
         f"{settings.PUBLIC_SITE_URL.rstrip('/')}/{activation_path}"
         f"?challenge_id={challenge_id}"
     )
+    action_text = (
+        f"Confirm the {portal_name} role for your existing account. "
+        "Use the one-time code and confirm the identity details on the link below. "
+        if link_existing_account
+        else f"Your {portal_name} account is ready to activate. "
+    )
+    action_html = (
+        f"<p>Confirm the {html.escape(portal_name)} role for your existing account.</p>"
+        if link_existing_account
+        else f"<p>Your {html.escape(portal_name)} account is ready to activate.</p>"
+    )
     text_content = (
         f"Hello {user.profile.name},\n\n"
-        f"Your {portal_name} account is ready to activate. "
+        f"{action_text}"
         f"Your one-time activation code is {code}. It expires in {lifetime_minutes} minutes.\n\n"
         f"Activate your account: {activation_url}\n\n"
         f"If you did not expect this invitation, contact {contact}."
     )
     html_content = (
         f"<p>Hello {html.escape(user.profile.name)},</p>"
-        f"<p>Your {html.escape(portal_name)} account is ready to activate.</p>"
+        f"{action_html}"
         f'<p>Your one-time activation code is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{code}</span>. '
         f"It expires in {lifetime_minutes} minutes.</p>"
         f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{html.escape(activation_url, quote=True)}">Activate your account</a></p>'
@@ -260,7 +282,7 @@ def _send_staff_activation_email(
     )
 
 
-def _send_landlord_activation_email(user, challenge_id, code):
+def _send_landlord_activation_email(user, challenge_id, code, *, link_existing_account=False):
     _send_staff_activation_email(
         user,
         challenge_id,
@@ -268,6 +290,7 @@ def _send_landlord_activation_email(user, challenge_id, code):
         portal_name="landlord portal",
         activation_path="activate-landlord",
         contact="your Property Officer",
+        link_existing_account=link_existing_account,
     )
 
 
@@ -304,6 +327,7 @@ def _send_tenant_activation_email(
     activation_code,
     *,
     phone_verification_required=False,
+    existing_account=False,
 ):
     if not settings.PUBLIC_SITE_URL:
         raise ImproperlyConfigured("PUBLIC_SITE_URL must be configured for tenant activation.")
@@ -315,11 +339,16 @@ def _send_tenant_activation_email(
             else ""
         )
     )
+    activation_message = (
+        f"Use this secure link and code to confirm your identity and link the tenancy to your existing account: {activation_url}\n\n"
+        if existing_account
+        else f"Use this secure link and code to create your password: {activation_url}\n\n"
+    )
     text_content = (
         f"Hi {full_name}, welcome to Legacy Real Estate!\n\n"
         f"Your tenant account for {property_name}, unit {unit_code}, has been successfully onboarded.\n"
         f"{code_message}"
-        f"Use this secure link and code to create your password: {activation_url}\n\n"
+        f"{activation_message}"
         "The link expires in 48 hours."
     )
     safe_full_name = html.escape(full_name)
@@ -336,11 +365,17 @@ def _send_tenant_activation_email(
         f'<p>Your six-digit activation OTP is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{html.escape(activation_code)}</span>.</p>'
         f"{phone_code_note}"
     )
+    activation_instructions = (
+        "Confirm your identity and link this tenancy to your existing account."
+        if existing_account
+        else "Create a password for your tenant account."
+    )
     html_content = (
         f"<p>Hi {safe_full_name}, welcome to Legacy Real Estate!</p>"
         f"<p>Your tenant account for {safe_property_name}, unit {safe_unit_code}, has been successfully onboarded.</p>"
         f"{code_html}"
-        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{safe_url}">Activate your account</a></p>'
+        f"<p>{activation_instructions}</p>"
+        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{safe_url}">Continue</a></p>'
         f"<p>This link is for {safe_email} and expires in 48 hours.</p>"
     )
     send_email(
@@ -747,7 +782,7 @@ def property_officer_viewings(request):
                 profile__agency_memberships__agency__is_active=True,
                 profile__agency_memberships__is_active=True,
                 profile__agency_memberships__branches=lead.branch,
-                profile__agency_memberships__roles__name__in=AGENCY_STAFF_ROLE_NAMES,
+                profile__agency_memberships__roles__name__in=AGENCY_CARETAKER_ROLE_NAMES,
             ).distinct().first()
         except (ValueError, TypeError):
             assigned_to = None
@@ -868,7 +903,7 @@ def update_property_officer_viewing(request, viewing_id):
                     profile__agency_memberships__agency__is_active=True,
                     profile__agency_memberships__is_active=True,
                     profile__agency_memberships__branches=viewing.lead.branch,
-                    profile__agency_memberships__roles__name__in=AGENCY_STAFF_ROLE_NAMES,
+                    profile__agency_memberships__roles__name__in=AGENCY_CARETAKER_ROLE_NAMES,
                 ).distinct().first()
             except (ValueError, TypeError):
                 viewing.assigned_to = None
@@ -896,13 +931,30 @@ def update_property_officer_viewing(request, viewing_id):
 
 def _has_role(user, role_name):
     profile = getattr(user, "profile", None)
-    if profile is not None and profile.agency_memberships.exists():
+    if profile is not None and profile.agency_memberships.filter(
+        roles__isnull=False
+    ).exists():
         return profile.agency_memberships.filter(
             agency__is_active=True,
             is_active=True,
             roles__name=role_name,
         ).exists()
     return user.groups.filter(name=role_name).exists()
+
+
+def _agency_account_membership(profile, user, agency):
+    has_role_memberships = profile.agency_memberships.filter(
+        roles__isnull=False
+    ).exists()
+    membership, _ = AgencyMembership.objects.get_or_create(
+        profile=profile,
+        agency=agency,
+    )
+    if not has_role_memberships:
+        legacy_roles = list(user.groups.filter(name__in=ROLE_NAMES))
+        if legacy_roles:
+            membership.roles.add(*legacy_roles)
+    return membership
 
 
 def _is_caretaker(user):
@@ -5373,7 +5425,7 @@ def _user_payload(user):
         ).select_related("agency").prefetch_related("roles")
         role_names = (
             set()
-            if profile.agency_memberships.exists()
+            if profile.agency_memberships.filter(roles__isnull=False).exists()
             else set(user.groups.values_list("name", flat=True))
         )
         for membership in memberships:
@@ -5506,9 +5558,16 @@ def _director_staff_scope(request, agency_id):
 def _staff_membership_payload(membership):
     user = membership.profile.user
     roles = sorted(
-        membership.roles.filter(name__in=AGENCY_STAFF_ROLE_NAMES).values_list(
+        membership.roles.filter(name__in=AGENCY_CARETAKER_ROLE_NAMES).values_list(
             "name", flat=True
         )
+    )
+    pending_challenge = membership.activation_challenges.filter(
+        existing_user__isnull=False,
+        expires_at__gt=timezone.now(),
+    ).order_by("-created_at").first()
+    pending_branch_ids = (
+        pending_challenge.pending_branch_ids if pending_challenge else []
     )
     return {
         "membership_id": membership.pk,
@@ -5517,13 +5576,17 @@ def _staff_membership_payload(membership):
         "email": user.email,
         "phone": membership.profile.phone or None,
         "roles": roles,
+        "pending_roles": pending_challenge.pending_roles if pending_challenge else [],
+        "pending_branch_ids": pending_branch_ids,
         "branches": list(
             membership.branches.order_by("name").values("id", "name", "town")
         ),
         "active": membership.is_active,
         "account_active": user.is_active,
         "status": (
-            "suspended"
+            "pending_activation"
+            if pending_challenge
+            else "suspended"
             if not membership.is_active
             else "pending_activation"
             if not user.is_active
@@ -5532,11 +5595,20 @@ def _staff_membership_payload(membership):
     }
 
 
-def _issue_staff_activation(membership):
+def _issue_staff_activation(
+    membership,
+    *,
+    existing_user=None,
+    pending_roles=None,
+    pending_branch_ids=None,
+):
     code = f"{secrets.randbelow(1_000_000):06d}"
     StaffActivationChallenge.objects.filter(membership=membership).delete()
     challenge = StaffActivationChallenge.objects.create(
         membership=membership,
+        existing_user=existing_user,
+        pending_roles=pending_roles or [],
+        pending_branch_ids=pending_branch_ids or [],
         code_hash=make_password(code),
         expires_at=timezone.now()
         + timedelta(seconds=settings.AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS),
@@ -5544,11 +5616,12 @@ def _issue_staff_activation(membership):
     return challenge, code
 
 
-def _issue_landlord_activation(landlord):
+def _issue_landlord_activation(landlord, existing_user=None):
     code = f"{secrets.randbelow(1_000_000):06d}"
     LandlordActivationChallenge.objects.filter(landlord=landlord).delete()
     challenge = LandlordActivationChallenge.objects.create(
         landlord=landlord,
+        existing_user=existing_user,
         code_hash=make_password(code),
         expires_at=timezone.now()
         + timedelta(seconds=settings.AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS),
@@ -5574,7 +5647,9 @@ def director_staff(request):
         memberships = (
             AgencyMembership.objects.filter(
                 agency=director_membership.agency,
-                roles__name__in=AGENCY_STAFF_ROLE_NAMES,
+            ).filter(
+                Q(roles__name__in=AGENCY_CARETAKER_ROLE_NAMES)
+                | Q(activation_challenges__existing_user__isnull=False)
             )
             .select_related("profile__user")
             .prefetch_related("roles", "branches")
@@ -5588,7 +5663,7 @@ def director_staff(request):
                     "name": director_membership.agency.name,
                 },
                 "branches": branches,
-                "roles": list(AGENCY_STAFF_ROLE_NAMES),
+                "roles": list(AGENCY_CARETAKER_ROLE_NAMES),
                 "staff": [_staff_membership_payload(item) for item in memberships],
             }
         )
@@ -5607,7 +5682,10 @@ def director_staff(request):
     name = body.get("name")
     email = body.get("email")
     phone = body.get("phone")
-    role_name = body.get("role")
+    identity = body.get("id_or_registration_number", "")
+    role_names = body.get("roles")
+    if role_names is None:
+        role_names = [body.get("role")]
     branch_ids = body.get("branch_ids")
     if (
         not isinstance(name, str)
@@ -5615,7 +5693,12 @@ def director_staff(request):
         or len(name.strip()) > 255
         or not isinstance(email, str)
         or not isinstance(phone, str)
-        or role_name not in AGENCY_STAFF_ROLE_NAMES
+        or not isinstance(identity, str)
+        or len(identity.strip()) > 100
+        or not isinstance(role_names, list)
+        or not role_names
+        or any(role_name not in AGENCY_CARETAKER_ROLE_NAMES for role_name in role_names)
+        or len(set(role_names)) != len(role_names)
         or not isinstance(branch_ids, list)
         or not branch_ids
         or any(not isinstance(item, int) or isinstance(item, bool) for item in branch_ids)
@@ -5623,10 +5706,11 @@ def director_staff(request):
         return _problem(
             400,
             "Invalid staff details",
-            "Name, email, phone, an eligible staff role, and at least one branch are required.",
+            "Name, email, phone, one or more eligible staff roles, and at least one branch are required.",
             "invalid-staff",
         )
     email = email.strip().lower()
+    identity = identity.strip()
     try:
         validate_email(email)
         normalized_phone = _normalize_ke_phone(phone)
@@ -5648,9 +5732,10 @@ def director_staff(request):
         )
 
     user_model = get_user_model()
-    role, _ = Group.objects.get_or_create(name=role_name)
+    roles = [Group.objects.get_or_create(name=role_name)[0] for role_name in role_names]
     challenge = None
     activation_code = None
+    existing_account_user = None
     try:
         with transaction.atomic():
             user = user_model.objects.select_for_update().filter(
@@ -5667,7 +5752,12 @@ def director_staff(request):
                     is_staff=False,
                     is_superuser=False,
                 )
-                profile = UserProfile(user=user, name=name.strip(), phone=normalized_phone)
+                profile = UserProfile(
+                    user=user,
+                    name=name.strip(),
+                    phone=normalized_phone,
+                    id_or_registration_number=identity,
+                )
                 profile.full_clean()
                 profile.save()
             else:
@@ -5681,13 +5771,32 @@ def director_staff(request):
                 profile = getattr(user, "profile", None)
                 if profile is None:
                     return _problem(409, "Account conflict", "This account needs administrator review.", "account-conflict")
-                if profile.name != name.strip() or profile.phone != normalized_phone:
+                if (
+                    profile.name.strip().casefold() != name.strip().casefold()
+                    or profile.phone != normalized_phone
+                    or (
+                        user.is_active
+                        and (
+                            not identity
+                            or profile.id_or_registration_number.strip().casefold()
+                            != identity.casefold()
+                        )
+                    )
+                    or (
+                        identity
+                        and profile.id_or_registration_number.strip()
+                        and profile.id_or_registration_number.strip().casefold()
+                        != identity.casefold()
+                    )
+                ):
                     return _problem(
                         409,
                         "Account details differ",
                         "The verified name and phone must match the existing account.",
                         "account-details-mismatch",
                     )
+                if user.is_active:
+                    existing_account_user = user
                 if not user.is_active and user.has_usable_password():
                     return _problem(
                         409,
@@ -5696,21 +5805,37 @@ def director_staff(request):
                         "account-review-required",
                     )
 
-            staff_membership, _ = AgencyMembership.objects.get_or_create(
-                profile=profile,
-                agency=director_membership.agency,
+            existing_staff_roles = set(
+                AgencyMembership.objects.filter(
+                    profile=profile,
+                    agency=director_membership.agency,
+                )
+                .values_list("roles__name", flat=True)
             )
-            if staff_membership.roles.filter(name=role_name).exists():
+            staff_membership = _agency_account_membership(
+                profile,
+                user,
+                director_membership.agency,
+            )
+            if existing_staff_roles.intersection(role_names):
                 return _problem(
                     409,
                     "Staff role exists",
-                    "This person already has that role in the agency. Edit their existing staff record.",
+                    "This person already has one or more selected roles in the agency. Edit their existing staff record.",
                     "staff-role-exists",
                 )
-            staff_membership.is_active = True
-            staff_membership.save(update_fields=["is_active"])
-            staff_membership.roles.add(role)
-            staff_membership.branches.set(branches)
+            if existing_account_user:
+                challenge, activation_code = _issue_staff_activation(
+                    staff_membership,
+                    existing_user=existing_account_user,
+                    pending_roles=role_names,
+                    pending_branch_ids=sorted(branch_ids),
+                )
+            else:
+                staff_membership.is_active = True
+                staff_membership.save(update_fields=["is_active"])
+                staff_membership.roles.add(*roles)
+                staff_membership.branches.set(branches)
             if not user.is_active:
                 challenge, activation_code = _issue_staff_activation(staff_membership)
             record_audit_event(
@@ -5720,9 +5845,10 @@ def director_staff(request):
                 new_values={
                     "user_id": user.pk,
                     "agency_id": director_membership.agency_id,
-                    "role": role_name,
+                    "roles": sorted(role_names),
                     "branch_ids": sorted(branch_ids),
                     "activation_required": not user.is_active,
+                    "existing_account_link": existing_account_user is not None,
                 },
             )
     except (IntegrityError, ValidationError) as validation_error:
@@ -5730,9 +5856,15 @@ def director_staff(request):
 
     if challenge and activation_code:
         try:
-            _send_staff_activation_email(user, challenge.pk, activation_code)
+            _send_staff_activation_email(
+                user,
+                challenge.pk,
+                activation_code,
+                link_existing_account=existing_account_user is not None,
+            )
         except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as mail_error:
-            challenge.delete()
+            if existing_account_user is None:
+                challenge.delete()
             record_audit_event(
                 request,
                 "agency_staff.activation_email_failed",
@@ -5754,6 +5886,7 @@ def director_staff(request):
         {
             "staff": _staff_membership_payload(staff_membership),
             "activation_email_sent": bool(challenge),
+            "existing_account_link": existing_account_user is not None,
         },
         status=201,
     )
@@ -5764,7 +5897,11 @@ def director_staff_detail(request, membership_id):
     try:
         staff_membership = (
             AgencyMembership.objects.select_related("agency", "profile__user")
-            .filter(pk=membership_id, roles__name__in=AGENCY_STAFF_ROLE_NAMES)
+            .filter(pk=membership_id)
+            .filter(
+                Q(roles__name__in=AGENCY_CARETAKER_ROLE_NAMES)
+                | Q(activation_challenges__existing_user__isnull=False)
+            )
             .distinct()
             .get()
         )
@@ -5791,14 +5928,29 @@ def director_staff_detail(request, membership_id):
         )
         return JsonResponse({"staff": _staff_membership_payload(staff_membership)})
 
+    if staff_membership.activation_challenges.filter(
+        existing_user__isnull=False
+    ).exists():
+        return _problem(
+            409,
+            "Role confirmation pending",
+            "Wait for the existing account holder to confirm the new staff role before editing this membership.",
+            "staff-role-confirmation-pending",
+        )
+
     body = _json_body(request)
     if body is None:
         return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
-    role_name = body.get("role")
+    role_names = body.get("roles")
+    if role_names is None:
+        role_names = [body.get("role")]
     branch_ids = body.get("branch_ids")
     active = body.get("active", staff_membership.is_active)
     if (
-        role_name not in AGENCY_STAFF_ROLE_NAMES
+        not isinstance(role_names, list)
+        or not role_names
+        or any(role_name not in AGENCY_CARETAKER_ROLE_NAMES for role_name in role_names)
+        or len(set(role_names)) != len(role_names)
         or not isinstance(branch_ids, list)
         or not branch_ids
         or any(not isinstance(item, int) or isinstance(item, bool) for item in branch_ids)
@@ -5807,7 +5959,7 @@ def director_staff_detail(request, membership_id):
         return _problem(
             400,
             "Invalid staff details",
-            "Choose an eligible role, at least one branch, and a valid active state.",
+            "Choose one or more eligible roles, at least one branch, and a valid active state.",
             "invalid-staff",
         )
     branches = list(
@@ -5823,13 +5975,15 @@ def director_staff_detail(request, membership_id):
             "Every selected branch must belong to this agency.",
             "invalid-branch-scope",
         )
-    role, _ = Group.objects.get_or_create(name=role_name)
+    roles = [Group.objects.get_or_create(name=role_name)[0] for role_name in role_names]
     with transaction.atomic():
         staff_membership = AgencyMembership.objects.select_for_update().get(
             pk=staff_membership.pk
         )
-        staff_membership.roles.remove(*staff_membership.roles.filter(name__in=AGENCY_STAFF_ROLE_NAMES))
-        staff_membership.roles.add(role)
+        staff_membership.roles.remove(
+            *staff_membership.roles.filter(name__in=AGENCY_CARETAKER_ROLE_NAMES)
+        )
+        staff_membership.roles.add(*roles)
         staff_membership.branches.set(branches)
         staff_membership.is_active = active
         staff_membership.save(update_fields=["is_active"])
@@ -5841,7 +5995,7 @@ def director_staff_detail(request, membership_id):
             "AgencyMembership",
             old_values=old_values,
             new_values={
-                "role": role_name,
+                "roles": sorted(role_names),
                 "branch_ids": sorted(branch_ids),
                 "active": active,
             },
@@ -5857,7 +6011,11 @@ def resend_staff_activation(request, membership_id):
     try:
         staff_membership = (
             AgencyMembership.objects.select_related("agency", "profile__user")
-            .filter(pk=membership_id, roles__name__in=AGENCY_STAFF_ROLE_NAMES)
+            .filter(pk=membership_id)
+            .filter(
+                Q(roles__name__in=AGENCY_CARETAKER_ROLE_NAMES)
+                | Q(activation_challenges__existing_user__isnull=False)
+            )
             .distinct()
             .get()
         )
@@ -5869,15 +6027,32 @@ def resend_staff_activation(request, membership_id):
     if staff_membership.agency_id != director_membership.agency_id:
         return _problem(404, "Staff not found", "This staff record is unavailable.", "staff-not-found")
     user = staff_membership.profile.user
-    if user.is_active:
+    pending_link = staff_membership.activation_challenges.filter(
+        existing_user=user
+    ).order_by("-created_at").first()
+    if user.is_active and pending_link is None:
         return _problem(409, "Already activated", "This staff account is already active.", "already-activated")
-    if not staff_membership.is_active:
+    if not staff_membership.is_active and pending_link is None:
         return _problem(409, "Staff suspended", "Reactivate this staff membership before sending an invitation.", "staff-suspended")
-    challenge, code = _issue_staff_activation(staff_membership)
+    if user.is_active:
+        challenge, code = _issue_staff_activation(
+            staff_membership,
+            existing_user=user,
+            pending_roles=pending_link.pending_roles,
+            pending_branch_ids=pending_link.pending_branch_ids,
+        )
+    else:
+        challenge, code = _issue_staff_activation(staff_membership)
     try:
-        _send_staff_activation_email(user, challenge.pk, code)
+        _send_staff_activation_email(
+            user,
+            challenge.pk,
+            code,
+            link_existing_account=challenge.existing_user_id is not None,
+        )
     except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as error:
-        challenge.delete()
+        if challenge.existing_user_id is None:
+            challenge.delete()
         record_audit_event(
             request,
             "agency_staff.activation_email_failed",
@@ -5964,6 +6139,44 @@ def activate_director(request):
     return JsonResponse({"status": "activated"})
 
 
+@require_GET
+def staff_activation_context(request):
+    challenge_id = request.GET.get("challenge_id", "")
+    try:
+        challenge = StaffActivationChallenge.objects.select_related(
+            "membership__profile__user",
+            "existing_user",
+        ).get(pk=challenge_id)
+    except (StaffActivationChallenge.DoesNotExist, ValueError):
+        return _problem(404, "Activation unavailable", "This staff activation is invalid or expired.", "invalid-activation")
+    if (
+        challenge.is_expired()
+        or (
+            not challenge.membership.is_active
+            and challenge.existing_user_id is None
+        )
+        or not challenge.membership.agency.is_active
+        or (
+            challenge.existing_user_id is not None
+            and (
+                challenge.existing_user_id != challenge.membership.profile.user_id
+                or not challenge.existing_user.is_active
+            )
+        )
+        or (
+            challenge.existing_user_id is None
+            and challenge.membership.profile.user.is_active
+        )
+    ):
+        return _problem(404, "Activation unavailable", "This staff activation is invalid or expired.", "invalid-activation")
+    return JsonResponse(
+        {
+            "existing_account": challenge.existing_user_id is not None,
+            "identity_confirmation_required": challenge.existing_user_id is not None,
+        }
+    )
+
+
 @require_POST
 def activate_staff(request):
     body = _json_body(request)
@@ -5977,25 +6190,27 @@ def activate_staff(request):
         or not isinstance(code, str)
         or not code.isascii()
         or not re.fullmatch(r"\d{6}", code)
-        or not isinstance(password, str)
+        or (password is not None and not isinstance(password, str))
     ):
         return _problem(
             400,
             "Invalid request",
-            "A challenge ID, six-digit code, and password are required.",
+            "A challenge ID and six-digit code are required.",
             "invalid-request",
         )
 
     with transaction.atomic():
         try:
             challenge = (
-                StaffActivationChallenge.objects.select_for_update()
-                .select_related("membership__profile__user")
+                StaffActivationChallenge.objects.select_for_update(of=("self",))
+                .select_related(
+                    "membership__profile__user",
+                    "membership__agency",
+                    "existing_user",
+                )
                 .get(
                     pk=challenge_id,
-                    membership__is_active=True,
                     membership__agency__is_active=True,
-                    membership__profile__user__is_active=False,
                 )
             )
         except (StaffActivationChallenge.DoesNotExist, ValueError):
@@ -6005,9 +6220,26 @@ def activate_staff(request):
                 "The activation code is invalid.",
                 "invalid-activation",
             )
-        if not challenge.membership.roles.filter(
-            name__in=AGENCY_STAFF_ROLE_NAMES
-        ).exists():
+        if challenge.existing_user_id:
+            if (
+                challenge.existing_user_id != challenge.membership.profile.user_id
+                or not challenge.existing_user.is_active
+                or not isinstance(challenge.pending_roles, list)
+                or not challenge.pending_roles
+                or any(
+                    role_name not in AGENCY_CARETAKER_ROLE_NAMES
+                    for role_name in challenge.pending_roles
+                )
+                or not isinstance(challenge.pending_branch_ids, list)
+            ):
+                return _problem(400, "Invalid activation", "The activation code is invalid.", "invalid-activation")
+        elif (
+            not challenge.membership.is_active
+            or challenge.membership.profile.user.is_active
+            or not challenge.membership.roles.filter(
+                name__in=AGENCY_CARETAKER_ROLE_NAMES
+            ).exists()
+        ):
             return _problem(
                 400,
                 "Invalid activation",
@@ -6033,21 +6265,56 @@ def activate_staff(request):
             else:
                 challenge.save(update_fields=["attempts"])
             return _problem(400, "Invalid code", "The activation code is invalid.", "invalid-activation")
-        try:
-            password_validation.validate_password(password, user=user)
-        except ValidationError as validation_error:
-            return _problem(
-                400,
-                "Invalid password",
-                " ".join(validation_error.messages),
-                "invalid-password",
+        if challenge.existing_user_id:
+            profile = user.profile
+            identity = body.get("id_or_registration_number")
+            if (
+                not isinstance(identity, str)
+                or not profile.id_or_registration_number
+                or identity.strip().casefold()
+                != profile.id_or_registration_number.strip().casefold()
+            ):
+                challenge.attempts += 1
+                if challenge.attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                    challenge.delete()
+                else:
+                    challenge.save(update_fields=["attempts"])
+                return _problem(403, "Identity mismatch", "The ID or passport number must match the identity recorded for this account.", "identity-mismatch")
+            roles = [
+                Group.objects.get_or_create(name=role_name)[0]
+                for role_name in challenge.pending_roles
+            ]
+            branches = list(
+                Branch.objects.filter(
+                    agency=challenge.membership.agency,
+                    pk__in=challenge.pending_branch_ids,
+                )
             )
-        user.set_password(password)
-        user.is_active = True
-        user.save(update_fields=["password", "is_active"])
-        StaffActivationChallenge.objects.filter(
-            membership__profile__user=user
-        ).delete()
+            if len(branches) != len(set(challenge.pending_branch_ids)):
+                return _problem(400, "Invalid activation", "The requested staff branch scope is invalid.", "invalid-activation")
+            challenge.membership.roles.add(*roles)
+            challenge.membership.branches.add(*branches)
+            challenge.membership.is_active = True
+            challenge.membership.save(update_fields=["is_active"])
+        else:
+            if (
+                not challenge.membership.is_active
+                or not isinstance(password, str)
+            ):
+                return _problem(400, "Invalid password", "A password is required to activate this account.", "invalid-password")
+            try:
+                password_validation.validate_password(password, user=user)
+            except ValidationError as validation_error:
+                return _problem(
+                    400,
+                    "Invalid password",
+                    " ".join(validation_error.messages),
+                    "invalid-password",
+                )
+            user.set_password(password)
+            user.is_active = True
+            user.save(update_fields=["password", "is_active"])
+        challenge.delete()
 
     _record_auth_event(request, "agency_staff.activation_succeeded", user)
     return JsonResponse({"status": "activated"})
@@ -6946,8 +7213,16 @@ def create_landlord(request):
     return JsonResponse({"landlord": _landlord_payload(landlord)}, status=201)
 
 
-def _landlord_portal_account_payload(landlord):
+def _landlord_portal_account_payload(landlord, *, pending_activation=False):
     user = landlord.portal_user
+    pending_activation = pending_activation or (
+        user is None
+        and LandlordActivationChallenge.objects.filter(
+            landlord=landlord,
+            existing_user__isnull=False,
+            expires_at__gt=timezone.now(),
+        ).exists()
+    )
     return {
         "id": landlord.pk,
         "name": landlord.name,
@@ -6960,6 +7235,8 @@ def _landlord_portal_account_payload(landlord):
         },
         "account_status": (
             "not_invited"
+            if user is None and not pending_activation
+            else "pending_activation"
             if user is None
             else "active"
             if user.is_active
@@ -7047,6 +7324,7 @@ def property_officer_landlords(request):
         email = landlord.email.strip().lower()
         name = landlord.name
         phone = landlord.phone
+        identity = landlord.id_or_registration_number.strip()
         if not email:
             return _problem(400, "Email required", "Add an email address to the landlord record before sending an invitation.", "landlord-email-required")
     else:
@@ -7073,6 +7351,7 @@ def property_officer_landlords(request):
             return error
         name = body["name"].strip()
         email = body["email"].strip().lower()
+        identity = body["id_or_registration_number"].strip()
         phone = body["phone"].strip()
         try:
             validate_email(email)
@@ -7092,9 +7371,28 @@ def property_officer_landlords(request):
             return _problem(400, "Invalid property", "property_id must be an integer.", "invalid-property")
 
     user_model = get_user_model()
-    if user_model.objects.filter(Q(username__iexact=email) | Q(email__iexact=email)).exists():
-        return _problem(409, "Account exists", "This email already belongs to an account.", "account-exists")
-    if UserProfile.objects.filter(phone__iexact=phone).exists():
+    existing_account_user = user_model.objects.filter(
+        Q(username__iexact=email) | Q(email__iexact=email)
+    ).select_related("profile").first()
+    if existing_account_user:
+        profile = getattr(existing_account_user, "profile", None)
+        if (
+            not existing_account_user.is_active
+            or profile is None
+            or (existing_account_user.email or "").strip().casefold() != email.casefold()
+            or profile.name.strip().casefold() != name.strip().casefold()
+            or profile.phone != phone
+            or profile.id_or_registration_number.strip().casefold() != identity.casefold()
+        ):
+            return _problem(
+                409,
+                "Account identity mismatch",
+                "An existing account can be linked only when its active email, name, phone, and recorded identity match the landlord KYC details.",
+                "account-identity-mismatch",
+            )
+    if UserProfile.objects.filter(phone__iexact=phone).exclude(
+        user=existing_account_user
+    ).exists():
         return _problem(409, "Phone already in use", "An account already uses this phone number.", "phone-in-use")
 
     challenge = None
@@ -7181,23 +7479,34 @@ def property_officer_landlords(request):
                 )
 
             role, _ = Group.objects.get_or_create(name=LANDLORD_PORTAL_ROLE)
-            user = user_model.objects.create_user(
-                username=email,
-                email=email,
-                is_active=False,
-                is_staff=False,
-                is_superuser=False,
-            )
-            user.set_unusable_password()
-            user.save(update_fields=["password"])
-            profile = UserProfile(user=user, name=name, phone=phone)
-            profile.full_clean()
-            profile.save()
-            user.groups.add(role)
-            landlord.portal_user = user
-            landlord.save(update_fields=["portal_user", "updated_at"])
+            if existing_account_user is None:
+                user = user_model.objects.create_user(
+                    username=email,
+                    email=email,
+                    is_active=False,
+                    is_staff=False,
+                    is_superuser=False,
+                )
+                user.set_unusable_password()
+                user.save(update_fields=["password"])
+                profile = UserProfile(
+                    user=user,
+                    name=name,
+                    phone=phone,
+                    id_or_registration_number=identity,
+                )
+                profile.full_clean()
+                profile.save()
+                user.groups.add(role)
+                landlord.portal_user = user
+                landlord.save(update_fields=["portal_user", "updated_at"])
+            else:
+                user = existing_account_user
             landlord = Landlord.objects.select_related("branch", "portal_user").get(pk=landlord.pk)
-            challenge, activation_code = _issue_landlord_activation(landlord)
+            challenge, activation_code = _issue_landlord_activation(
+                landlord,
+                existing_user=existing_account_user,
+            )
             record_audit_event(
                 request,
                 "landlord.portal_account_invited",
@@ -7213,7 +7522,12 @@ def property_officer_landlords(request):
         return _problem(400, "Invalid landlord", str(validation_error), "invalid-landlord")
 
     try:
-        _send_landlord_activation_email(user, challenge.pk, activation_code)
+        _send_landlord_activation_email(
+            user,
+            challenge.pk,
+            activation_code,
+            link_existing_account=existing_account_user is not None,
+        )
     except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as mail_error:
         challenge.delete()
         record_audit_event(
@@ -7229,7 +7543,10 @@ def property_officer_landlords(request):
         return JsonResponse(
             {
                 "detail": "The landlord account was created, but the activation email failed. Retry the invitation from this page.",
-                "landlord": _landlord_portal_account_payload(landlord),
+                "landlord": _landlord_portal_account_payload(
+                    landlord,
+                    pending_activation=existing_account_user is not None,
+                ),
             },
             status=503,
         )
@@ -7242,7 +7559,10 @@ def property_officer_landlords(request):
     )
     return JsonResponse(
         {
-            "landlord": _landlord_portal_account_payload(landlord),
+            "landlord": _landlord_portal_account_payload(
+                landlord,
+                pending_activation=existing_account_user is not None,
+            ),
             "activation_email_sent": True,
         },
         status=201,
@@ -7281,16 +7601,46 @@ def resend_landlord_activation(request, landlord_id):
     _, error = _property_officer_membership(request.user, branch_id=landlord.branch_id)
     if error:
         return error
-    if landlord.portal_user_id is None:
-        return _problem(409, "Account not invited", "Create the landlord portal account before resending activation.", "landlord-account-missing")
-    if landlord.portal_user.is_active:
+    if landlord.portal_user_id is not None and landlord.portal_user.is_active:
         return _problem(409, "Already activated", "This landlord account is already active.", "already-activated")
     if not landlord.email:
         return _problem(400, "Email required", "Add an email address to the landlord record before sending an invitation.", "landlord-email-required")
 
-    challenge, code = _issue_landlord_activation(landlord)
+    existing_user = None
+    if landlord.portal_user_id is None:
+        user_model = get_user_model()
+        existing_user = user_model.objects.filter(
+            Q(username__iexact=landlord.email) | Q(email__iexact=landlord.email)
+        ).select_related("profile").first()
+        profile = getattr(existing_user, "profile", None) if existing_user else None
+        if (
+            existing_user is None
+            or not existing_user.is_active
+            or profile is None
+            or (existing_user.email or "").strip().casefold() != landlord.email.strip().casefold()
+            or profile.name.strip().casefold() != landlord.name.strip().casefold()
+            or profile.phone != landlord.phone
+            or profile.id_or_registration_number.strip().casefold()
+            != landlord.id_or_registration_number.strip().casefold()
+        ):
+            return _problem(
+                409,
+                "Account not invited",
+                "No active account matches this landlord's recorded name, contact details, and identity.",
+                "landlord-account-missing",
+            )
+
+    challenge, code = _issue_landlord_activation(
+        landlord,
+        existing_user=existing_user,
+    )
     try:
-        _send_landlord_activation_email(landlord.portal_user, challenge.pk, code)
+        _send_landlord_activation_email(
+            existing_user or landlord.portal_user,
+            challenge.pk,
+            code,
+            link_existing_account=existing_user is not None,
+        )
     except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as mail_error:
         challenge.delete()
         record_audit_event(
@@ -7299,7 +7649,7 @@ def resend_landlord_activation(request, landlord_id):
             "Landlord",
             new_values={
                 "landlord_id": landlord.pk,
-                "user_id": landlord.portal_user_id,
+                "user_id": existing_user.pk if existing_user else landlord.portal_user_id,
                 "error_type": type(mail_error).__name__,
             },
         )
@@ -7308,9 +7658,35 @@ def resend_landlord_activation(request, landlord_id):
         request,
         "landlord.portal_activation_resent",
         "Landlord",
-        new_values={"landlord_id": landlord.pk, "user_id": landlord.portal_user_id},
+        new_values={
+            "landlord_id": landlord.pk,
+            "user_id": existing_user.pk if existing_user else landlord.portal_user_id,
+        },
     )
     return JsonResponse({"activation_email_sent": True})
+
+
+@require_GET
+def landlord_activation_context(request):
+    challenge_id = request.GET.get("challenge_id", "")
+    try:
+        challenge = LandlordActivationChallenge.objects.select_related(
+            "landlord",
+            "existing_user",
+        ).get(pk=challenge_id)
+    except (LandlordActivationChallenge.DoesNotExist, ValueError):
+        return _problem(404, "Activation unavailable", "This landlord activation is invalid or expired.", "invalid-activation")
+    if challenge.is_expired() or (
+        challenge.landlord.portal_user_id is not None
+        and challenge.existing_user_id is None
+    ):
+        return _problem(404, "Activation unavailable", "This landlord activation is invalid or expired.", "invalid-activation")
+    return JsonResponse(
+        {
+            "existing_account": challenge.existing_user_id is not None,
+            "identity_confirmation_required": challenge.existing_user_id is not None,
+        }
+    )
 
 
 @require_POST
@@ -7326,7 +7702,7 @@ def activate_landlord(request):
         or not isinstance(code, str)
         or not code.isascii()
         or not re.fullmatch(r"\d{6}", code)
-        or not isinstance(password, str)
+        or (password is not None and not isinstance(password, str))
     ):
         return _problem(
             400,
@@ -7337,14 +7713,29 @@ def activate_landlord(request):
 
     with transaction.atomic():
         try:
-            challenge = LandlordActivationChallenge.objects.select_for_update().select_related(
-                "landlord__portal_user"
-            ).get(
-                pk=challenge_id,
-                landlord__portal_user__is_active=False,
-            )
+            challenge = LandlordActivationChallenge.objects.select_for_update(
+                of=("self",)
+            ).select_related(
+                "landlord__portal_user",
+                "landlord__branch__agency",
+                "existing_user",
+            ).get(pk=challenge_id)
         except (LandlordActivationChallenge.DoesNotExist, ValueError):
             return _problem(400, "Invalid activation", "The activation code is invalid.", "invalid-activation")
+        if challenge.existing_user_id:
+            if (
+                challenge.landlord.portal_user_id is not None
+                or not challenge.existing_user.is_active
+                or challenge.landlord.email.strip().casefold()
+                != (challenge.existing_user.email or "").strip().casefold()
+            ):
+                return _problem(409, "Account unavailable", "This account link is no longer available.", "account-unavailable")
+        elif (
+            challenge.landlord.portal_user_id is None
+            or challenge.landlord.portal_user is None
+            or challenge.landlord.portal_user.is_active
+        ):
+            return _problem(400, "Invalid activation", "The landlord activation is invalid.", "invalid-activation")
         if challenge.is_expired() or challenge.attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
             challenge.delete()
             return _problem(
@@ -7360,19 +7751,60 @@ def activate_landlord(request):
             else:
                 challenge.save(update_fields=["attempts"])
             return _problem(400, "Invalid code", "The activation code is invalid.", "invalid-activation")
-        user = challenge.landlord.portal_user
-        try:
-            password_validation.validate_password(password, user=user)
-        except ValidationError as validation_error:
-            return _problem(
-                400,
-                "Invalid password",
-                " ".join(validation_error.messages),
-                "invalid-password",
+        user = challenge.existing_user or challenge.landlord.portal_user
+        if challenge.existing_user_id:
+            identity = body.get("id_or_registration_number")
+            profile = UserProfile.objects.filter(user=user).first()
+            if (
+                not isinstance(identity, str)
+                or identity.strip().casefold()
+                != challenge.landlord.id_or_registration_number.strip().casefold()
+                or profile is None
+                or profile.id_or_registration_number.strip().casefold()
+                != challenge.landlord.id_or_registration_number.strip().casefold()
+                or profile.phone != challenge.landlord.phone
+                or (user.email or "").strip().casefold()
+                != challenge.landlord.email.strip().casefold()
+            ):
+                challenge.attempts += 1
+                if challenge.attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                    challenge.delete()
+                else:
+                    challenge.save(update_fields=["attempts"])
+                return _problem(
+                    403,
+                    "Identity mismatch",
+                    "The ID or passport number and account contact details do not match the landlord KYC record.",
+                    "identity-mismatch",
+                )
+            challenge.landlord.portal_user = user
+            challenge.landlord.save(update_fields=["portal_user", "updated_at"])
+        else:
+            if not isinstance(password, str):
+                return _problem(400, "Invalid password", "A password is required to activate this account.", "invalid-password")
+            try:
+                password_validation.validate_password(password, user=user)
+            except ValidationError as validation_error:
+                return _problem(
+                    400,
+                    "Invalid password",
+                    " ".join(validation_error.messages),
+                    "invalid-password",
+                )
+            user.set_password(password)
+            user.is_active = True
+            user.save(update_fields=["password", "is_active"])
+        role, _ = Group.objects.get_or_create(name=LANDLORD_PORTAL_ROLE)
+        user.groups.add(role)
+        profile = UserProfile.objects.filter(user=user).first()
+        if profile:
+            membership = _agency_account_membership(
+                profile,
+                user,
+                challenge.landlord.branch.agency,
             )
-        user.set_password(password)
-        user.is_active = True
-        user.save(update_fields=["password", "is_active"])
+            membership.branches.add(challenge.landlord.branch)
+            membership.roles.add(role)
         LandlordActivationChallenge.objects.filter(landlord=challenge.landlord).delete()
 
     _record_auth_event(request, "landlord.portal_activation_succeeded", user)
@@ -9308,6 +9740,7 @@ def _send_move_in_activation(
     deposit_entry = None
     move_in_accounting = None
     move_in_document_keys = []
+    existing_account_user = None
     try:
         with transaction.atomic():
             locked = MoveInSettlement.objects.select_for_update(of=("self",)).filter(
@@ -9379,11 +9812,27 @@ def _send_move_in_activation(
 
             tenant = locked.tenant
             if tenant is None:
-                if user_model.objects.filter(
+                existing_account_user = user_model.objects.filter(
                     Q(email__iexact=locked.tenant_email)
                     | Q(username__iexact=locked.tenant_email)
-                ).exists():
-                    return _problem(409, "Email already registered", "This email is already linked to another account.", "email-already-registered")
+                ).select_related("profile").first()
+                if existing_account_user:
+                    profile = getattr(existing_account_user, "profile", None)
+                    if (
+                        not existing_account_user.is_active
+                        or profile is None
+                        or (existing_account_user.email or "").strip().casefold()
+                        != locked.tenant_email.strip().casefold()
+                        or profile.phone != locked.tenant_phone
+                        or profile.id_or_registration_number.strip().casefold()
+                        != locked.national_id_or_passport.strip().casefold()
+                    ):
+                        return _problem(
+                            409,
+                            "Account identity mismatch",
+                            "To link an existing account, its active login, verified contact details, and recorded identity must match the tenant KYC details.",
+                            "account-identity-mismatch",
+                        )
                 if Tenant.objects.filter(email__iexact=locked.tenant_email).exists():
                     return _problem(409, "Email already registered", "This email is already linked to a tenant record.", "email-already-registered")
                 tenant = Tenant(
@@ -9480,6 +9929,7 @@ def _send_move_in_activation(
             challenge = TenantActivationChallenge.objects.create(
                 tenant=tenant,
                 unit=locked.unit,
+                existing_user=existing_account_user,
                 token_hash=_activation_hash(token),
                 code_hash=_activation_hash(activation_code),
                 phone_verification_required=True,
@@ -9624,6 +10074,7 @@ def _send_move_in_activation(
             activation_url,
             activation_code,
             phone_verification_required=True,
+            existing_account=existing_account_user is not None,
         )
     except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as exc:
         email_error = str(exc)
@@ -10106,9 +10557,16 @@ def property_officer_tenant_onboarding(request):
         .objects.filter(
             pk=caretaker_id,
             is_active=True,
-            groups__name=CARETAKER_ROLE,
             property_caretaker_assignments__property=unit.property,
             property_caretaker_assignments__ended_at__isnull=True,
+        )
+        .filter(
+            Q(groups__name=CARETAKER_ROLE)
+            | Q(
+                profile__agency_memberships__roles__name=CARETAKER_ROLE,
+                profile__agency_memberships__agency__is_active=True,
+                profile__agency_memberships__is_active=True,
+            )
         )
         .select_related("profile")
         .distinct()
@@ -10210,11 +10668,27 @@ def property_officer_tenant_onboarding(request):
         settlement = existing
     else:
         user_model = get_user_model()
-        if (
-            Tenant.objects.filter(email__iexact=email).exists()
-            or user_model.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).exists()
-        ):
-            return _problem(409, "Email already registered", "This email is already linked to an account. Use a different email or the tenant transfer workflow.", "email-already-registered")
+        existing_account_user = user_model.objects.filter(
+            Q(email__iexact=email) | Q(username__iexact=email)
+        ).select_related("profile").first()
+        if Tenant.objects.filter(email__iexact=email).exists():
+            return _problem(409, "Email already registered", "This email is already linked to a tenant record. Use that tenant record for an additional tenancy.", "email-already-registered")
+        if existing_account_user:
+            profile = getattr(existing_account_user, "profile", None)
+            if (
+                not existing_account_user.is_active
+                or profile is None
+                or (existing_account_user.email or "").strip().casefold() != email.casefold()
+                or profile.phone != phone
+                or profile.id_or_registration_number.strip().casefold()
+                != national_id_or_passport.casefold()
+            ):
+                return _problem(
+                    409,
+                    "Account identity mismatch",
+                    "An existing account can be linked only when its active email, phone, and recorded identity match the tenant KYC details.",
+                    "account-identity-mismatch",
+                )
         if MoveInSettlement.objects.filter(
             tenant_email__iexact=email,
             status__in=MoveInSettlement.OPEN_STATUSES,
@@ -13128,17 +13602,6 @@ def get_move_in_handover_photo(request, package_id, photo_index):
     return response
 
 
-def _caretaker_water_period():
-    today = timezone.localdate()
-    return (today.replace(day=28) + timedelta(days=4)).replace(day=1)
-
-
-def _caretaker_water_readings_due():
-    today = timezone.localdate()
-    due_day = min(30, calendar.monthrange(today.year, today.month)[1])
-    return today.day >= due_day
-
-
 def _caretaker_water_properties(user, period_start=None):
     period_start = period_start or _caretaker_water_period()
     return _accessible_properties(user).filter(
@@ -13151,91 +13614,16 @@ def _caretaker_water_properties(user, period_start=None):
     ).distinct()
 
 
-def _caretaker_water_units(property_obj, period_start):
-    tenancies = (
-        Tenancy.objects.filter(
-            unit__property=property_obj,
-            status=Tenancy.STATUS_ACTIVE,
-            start_date__lte=month_end(period_start),
-        )
-        .filter(Q(end_date__isnull=True) | Q(end_date__gte=period_start))
-        .select_related("unit", "tenant")
-        .order_by("unit__code", "id")
+def _caretaker_water_readings_lock_response():
+    opens_on = _caretaker_water_readings_open_date()
+    if timezone.localdate() >= opens_on:
+        return None
+    return _problem(
+        409,
+        "Readings are locked",
+        f"Reading entry opens on {opens_on.isoformat()}.",
+        "readings-locked",
     )
-    rows = []
-    for tenancy in tenancies:
-        unit = tenancy.unit
-        utility = (
-            unit.utilities.filter(
-                utility_type=UtilityConfiguration.UTILITY_WATER,
-                billing_method=UtilityConfiguration.METHOD_METERED,
-                effective_from__lte=period_start,
-            )
-            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=period_start))
-            .order_by("-effective_from", "-id")
-            .first()
-        )
-        if utility is None:
-            continue
-        meter = str(utility.metadata.get("meter") or unit.meters.get("water") or "").strip()
-        if not meter:
-            continue
-        published = MeterReading.objects.filter(
-            unit=unit,
-            meter=meter,
-            period=period_start,
-        ).first()
-        previous = MeterReading.objects.filter(
-            unit=unit,
-            meter=meter,
-            period__lt=period_start,
-        ).order_by("-period", "-submitted_at", "-id").first()
-        draft = MeterReadingDraft.objects.filter(
-            unit=unit,
-            meter=meter,
-            period=period_start,
-        ).first()
-        previous_value = (
-            published.previous_value
-            if published
-            else draft.previous_value
-            if draft
-            else previous.current_value
-            if previous
-            else tenancy.base_water_meter_reading
-            if tenancy.base_water_meter_reading is not None
-            else unit.meters.get("water_reading")
-        )
-        baseline_value = (
-            tenancy.base_water_meter_reading
-            if tenancy.base_water_meter_reading is not None
-            else unit.meters.get("water_reading")
-        )
-        rows.append(
-            {
-                "unit_id": unit.pk,
-                "unit_code": unit.code,
-                "meter": meter,
-                "previous_value": str(previous_value) if previous_value is not None else None,
-                "current_value": (
-                    str(published.current_value)
-                    if published
-                    else str(draft.current_value)
-                    if draft
-                    else None
-                ),
-                "status": "published" if published else "draft" if draft else "pending",
-                "photo_uploaded": bool(
-                    published.photo_key if published else draft.photo_key if draft else ""
-                ),
-                "baseline_value": (
-                    str(baseline_value)
-                    if baseline_value is not None
-                    else None
-                ),
-            }
-        )
-    return rows
 
 
 @require_GET
@@ -13244,7 +13632,8 @@ def caretaker_water_readings(request):
     if error:
         return error
     period_start = _caretaker_water_period()
-    readings_due = _caretaker_water_readings_due()
+    readings_open_date = _caretaker_water_readings_open_date()
+    readings_due = timezone.localdate() >= readings_open_date
     properties = _caretaker_water_properties(request.user).prefetch_related("units")
     property_payloads = []
     for property_obj in properties:
@@ -13256,7 +13645,9 @@ def caretaker_water_readings(request):
                 "period": period_start.isoformat(),
                 "units": rows,
                 "readings_due": readings_due,
-                "can_publish": bool(rows) and all(
+                "can_publish": readings_due
+                and any(row["status"] == "draft" for row in rows)
+                and all(
                     row["status"] == "published"
                     or (
                         row["previous_value"] is not None
@@ -13275,6 +13666,7 @@ def caretaker_water_readings(request):
     return JsonResponse(
         {
             "period": period_start.isoformat(),
+            "readings_open_date": readings_open_date.isoformat(),
             "readings_due": readings_due,
             "properties": property_payloads,
         }
@@ -13298,6 +13690,9 @@ def save_caretaker_water_reading_drafts(request):
         return _problem(400, "Invalid period", "The billing period must start on the first of a month.", "invalid-period")
     if period_start != _caretaker_water_period():
         return _problem(400, "Invalid period", "Readings can only be recorded for the upcoming billing month.", "invalid-period")
+    lock_response = _caretaker_water_readings_lock_response()
+    if lock_response:
+        return lock_response
     property_obj = _caretaker_water_properties(request.user, period_start).filter(pk=property_id).first()
     if property_obj is None:
         return _problem(404, "Property not found", "The property is unavailable or has no metered water.", "property-not-found")
@@ -13352,6 +13747,48 @@ def save_caretaker_water_reading_drafts(request):
 
     with transaction.atomic():
         Property.objects.select_for_update().get(pk=property_obj.pk)
+        locked_rows = {
+            row["unit_id"]: row
+            for row in _caretaker_water_units(property_obj, period_start)
+        }
+        for draft in prepared:
+            row = locked_rows.get(draft.unit_id)
+            if row is None:
+                return _problem(
+                    409,
+                    "Unit no longer eligible",
+                    "One or more units no longer require a reading for this period.",
+                    "unit-no-longer-eligible",
+                )
+            if row["status"] == "published":
+                return _problem(
+                    409,
+                    "Reading already published",
+                    f"Unit {row['unit_code']} is already published for this period.",
+                    "reading-already-published",
+                )
+            known_previous = (
+                Decimal(row["previous_value"])
+                if row["previous_value"] is not None
+                else None
+            )
+            if known_previous is not None and draft.previous_value != known_previous:
+                return _problem(
+                    409,
+                    "Previous reading changed",
+                    f"Unit {row['unit_code']} previous reading is now {known_previous}.",
+                    "previous-reading-changed",
+                )
+            draft.meter = row["meter"]
+            try:
+                draft.clean()
+            except ValidationError as validation_error:
+                return _problem(
+                    400,
+                    "Invalid meter reading",
+                    str(validation_error.message_dict),
+                    "invalid-meter-reading",
+                )
         for draft in prepared:
             saved_draft = MeterReadingDraft.objects.select_for_update().filter(
                 unit_id=draft.unit_id,
@@ -13382,7 +13819,9 @@ def save_caretaker_water_reading_drafts(request):
         {
             "saved": len(prepared),
             "pending_count": sum(row["status"] != "published" for row in current_rows),
-            "can_publish": bool(current_rows) and all(
+            "can_publish": _caretaker_water_readings_due() and any(
+                row["status"] == "draft" for row in current_rows
+            ) and all(
                 row["status"] == "published"
                 or (
                     row["previous_value"] is not None
@@ -13418,6 +13857,9 @@ def upload_caretaker_water_reading_photo(request):
             "Evidence can only be uploaded for the upcoming billing month.",
             "invalid-period",
         )
+    lock_response = _caretaker_water_readings_lock_response()
+    if lock_response:
+        return lock_response
     property_obj = _caretaker_water_properties(request.user, period_start).filter(
         pk=property_id
     ).first()
@@ -13446,11 +13888,13 @@ def upload_caretaker_water_reading_photo(request):
     upload = request.FILES.get("photo")
     if upload is None:
         return _problem(400, "Invalid evidence", "A meter photo is required.", "invalid-evidence")
-    try:
-        evidence = _prepare_tenant_evidence([upload])[0]
-    except ValueError as exc:
-        return _problem(400, "Invalid evidence", str(exc), "invalid-evidence")
-
+    if upload.size <= 0 or upload.size > MAX_METER_PHOTO_BYTES:
+        return _problem(
+            400,
+            "Invalid evidence",
+            "Send a valid JPEG, PNG, or WebP meter photo (maximum 5 MB).",
+            "invalid-evidence",
+        )
     draft = MeterReadingDraft.objects.filter(
         unit_id=unit_id,
         meter=row["meter"],
@@ -13463,71 +13907,20 @@ def upload_caretaker_water_reading_photo(request):
             "Save the current meter reading before uploading its photo.",
             "reading-not-saved",
         )
-
-    storage_key = (
-        f"water-meter-readings/{property_obj.pk}/{period_start.isoformat()}/"
-        f"{unit_id}/{uuid.uuid4().hex}.{evidence['extension']}"
-    )
-    old_storage_key = ""
     try:
-        upload_private_object(storage_key, evidence["file"], evidence["content_type"])
-        with transaction.atomic():
-            Property.objects.select_for_update().get(pk=property_obj.pk)
-            locked_draft = MeterReadingDraft.objects.select_for_update().filter(
-                pk=draft.pk,
-            ).first()
-            if (
-                locked_draft is None
-                or locked_draft.previous_value != draft.previous_value
-                or locked_draft.current_value != draft.current_value
-            ):
-                _cleanup_tenant_evidence([storage_key])
-                return _problem(
-                    409,
-                    "Reading changed",
-                    "The saved reading changed before its photo could be attached. Save it again and retry.",
-                    "reading-changed",
-                )
-            old_storage_key = locked_draft.photo_key
-            locked_draft.photo_key = storage_key
-            locked_draft.photo_metadata = {
-                "content_type": evidence["content_type"],
-                "size_bytes": evidence["size_bytes"],
-                "name": f"Meter evidence.{evidence['extension']}",
-            }
-            locked_draft.full_clean()
-            locked_draft.save(update_fields=["photo_key", "photo_metadata", "updated_at"])
-            record_audit_event(
-                request,
-                "meter_reading.evidence_uploaded",
-                "MeterReadingDraft",
-                new_values={
-                    "unit_id": unit_id,
-                    "property_id": property_obj.pk,
-                    "period": period_start.isoformat(),
-                    "size_bytes": evidence["size_bytes"],
-                    "content_type": evidence["content_type"],
-                },
-            )
-    except (BotoCoreError, ClientError, ImproperlyConfigured, OSError):
-        _cleanup_tenant_evidence([storage_key])
-        logger.exception("Caretaker meter evidence upload failed.")
-        return _problem(
-            503,
-            "Evidence storage unavailable",
-            "The meter photo could not be stored. Please try again.",
-            "meter-evidence-unavailable",
+        saved_draft = attach_caretaker_water_reading_photo(
+            request.user,
+            property_obj,
+            period_start,
+            unit_id,
+            upload.read(),
+            upload.content_type,
+            expected_current_value=draft.current_value,
+            source="portal",
         )
-    except ValidationError as validation_error:
-        _cleanup_tenant_evidence([storage_key])
-        return _problem(
-            400,
-            "Invalid evidence",
-            str(validation_error.message_dict),
-            "invalid-evidence",
-        )
+    except WaterReadingError as exc:
+        return _problem(exc.status, exc.title, exc.detail, exc.code)
     except DatabaseError:
-        _cleanup_tenant_evidence([storage_key])
         logger.exception("Could not save caretaker meter evidence metadata.")
         return _problem(
             503,
@@ -13535,17 +13928,13 @@ def upload_caretaker_water_reading_photo(request):
             "The meter photo could not be attached to the saved reading. Please try again.",
             "meter-evidence-unavailable",
         )
-    if old_storage_key:
-        transaction.on_commit(
-            lambda key=old_storage_key: _cleanup_tenant_evidence([key])
-        )
     return JsonResponse(
         {
             "unit_id": unit_id,
             "photo_uploaded": True,
             "photo_metadata": {
-                "content_type": evidence["content_type"],
-                "size_bytes": evidence["size_bytes"],
+                "content_type": saved_draft.photo_metadata["content_type"],
+                "size_bytes": saved_draft.photo_metadata["size_bytes"],
             },
         },
         status=201,
@@ -13569,81 +13958,21 @@ def publish_caretaker_water_readings(request):
         return _problem(400, "Invalid period", "The billing period must start on the first of a month.", "invalid-period")
     if period_start != _caretaker_water_period():
         return _problem(400, "Invalid period", "Only the upcoming billing month can be published.", "invalid-period")
+    lock_response = _caretaker_water_readings_lock_response()
+    if lock_response:
+        return lock_response
     property_obj = _caretaker_water_properties(request.user, period_start).filter(pk=property_id).first()
     if property_obj is None:
         return _problem(404, "Property not found", "The property is unavailable or has no metered water.", "property-not-found")
-    rows = _caretaker_water_units(property_obj, period_start)
-    if not rows:
-        return _problem(409, "No readings required", "There are no occupied units requiring water readings.", "no-readings-required")
-
-    missing = [
-        row["unit_code"]
-        for row in rows
-        if row["status"] != "published"
-        and (
-            row["previous_value"] is None
-            or row["current_value"] is None
-            or not row["photo_uploaded"]
-        )
-    ]
-    if missing:
-        return _problem(
-            409,
-            "Readings incomplete",
-            f"Save a valid reading and meter photo for every occupied unit before publishing: {', '.join(missing)}.",
-            "readings-incomplete",
-        )
-    prepared_readings = []
-    drafts_to_delete = []
-    with transaction.atomic():
-        Property.objects.select_for_update().get(pk=property_obj.pk)
-        for row in rows:
-            if row["status"] == "published":
-                continue
-            draft = MeterReadingDraft.objects.select_for_update().filter(
-                unit_id=row["unit_id"],
-                meter=row["meter"],
-                period=period_start,
-            ).first()
-            if draft is None:
-                return _problem(409, "Readings incomplete", f"Unit {row['unit_code']} has no saved draft.", "readings-incomplete")
-            reading = MeterReading(
-                unit_id=row["unit_id"],
-                meter=row["meter"],
-                period=period_start,
-                previous_value=draft.previous_value,
-                current_value=draft.current_value,
-                submitted_by=draft.submitted_by,
-                photo_key=draft.photo_key,
-                photo_metadata=draft.photo_metadata,
-            )
-            try:
-                reading.full_clean()
-            except ValidationError as validation_error:
-                return _problem(400, "Invalid meter reading", str(validation_error.message_dict), "invalid-meter-reading")
-            prepared_readings.append(reading)
-            drafts_to_delete.append(draft)
-        MeterReading.objects.bulk_create(prepared_readings)
-        MeterReadingDraft.objects.filter(
-            pk__in=[draft.pk for draft in drafts_to_delete]
-        ).delete()
-        for reading in prepared_readings:
-            record_audit_event(
-                request,
-                "meter_reading.published",
-                "MeterReading",
-                new_values=_meter_reading_payload(reading),
-            )
-    from users.tasks import draft_property_invoices
-
-    try:
-        draft_property_invoices.delay(property_obj.pk, period_start.isoformat())
-    except BrokerOperationalError:
-        logger.exception(
-            "Published caretaker readings but could not queue invoice drafting for property %s, period %s.",
-            property_obj.pk,
-            period_start,
-        )
+    result = _publish_caretaker_water_readings(
+        property_obj,
+        period_start,
+        request.user,
+        request,
+    )
+    if "error" in result:
+        return _problem(*result["error"])
+    if not result["invoice_drafting_queued"]:
         return _problem(
             503,
             "Invoice drafting delayed",
@@ -13652,8 +13981,8 @@ def publish_caretaker_water_readings(request):
         )
     return JsonResponse(
         {
-            "published": len(rows),
-            "period": period_start.isoformat(),
+            "published": result["published"],
+            "period": result["period"],
             "message": "All water readings have been published; invoice drafts are being generated.",
         },
         status=201,
@@ -17666,6 +17995,8 @@ def _tenant_activation_context_payload(challenge):
         "unit_code": challenge.unit.code,
         "property_name": challenge.unit.property.name,
         "identity_required": tenant.is_provisional,
+        "identity_confirmation_required": bool(tenant.national_id_or_passport),
+        "existing_account": challenge.existing_user_id is not None,
         "phone_verification_required": challenge.phone_verification_required,
         "expires_at": challenge.expires_at.isoformat(),
     }
@@ -17703,23 +18034,19 @@ def verify_tenant_activation_code(request):
 @require_POST
 def activate_tenant(request):
     body = _json_body(request)
-    if body is None or not isinstance(body.get("password"), str):
-        return _problem(400, "Invalid request", "password and an activation token or code are required.", "invalid-request")
+    if body is None:
+        return _problem(400, "Invalid request", "An activation token or code is required.", "invalid-request")
     token = body.get("token")
     code = body.get("code")
     if not isinstance(token, str) and not isinstance(code, str):
-        return _problem(400, "Invalid request", "password and an activation token or code are required.", "invalid-request")
+        return _problem(400, "Invalid request", "An activation token or code is required.", "invalid-request")
     if isinstance(token, str) and (
         not isinstance(code, str) or len(code.strip()) != 6 or not code.strip().isdigit()
     ):
         return _problem(400, "Invalid request", "The activation link must be used with its six-digit email code.", "invalid-request")
-    password = body["password"]
-    if len(password) < 12:
-        return _problem(400, "Invalid password", "Password must contain at least 12 characters.", "invalid-password")
-    try:
-        password_validation.validate_password(password)
-    except ValidationError as exc:
-        return _problem(400, "Invalid password", "; ".join(exc.messages), "invalid-password")
+    password = body.get("password")
+    if not isinstance(password, str) and password is not None:
+        return _problem(400, "Invalid request", "password must be a string.", "invalid-request")
     full_name = body.get("full_name")
     phone = body.get("phone")
     email = body.get("email")
@@ -17754,7 +18081,7 @@ def activate_tenant(request):
         with transaction.atomic():
             challenge = TenantActivationChallenge.objects.select_for_update(
                 of=("self",)
-            ).select_related("tenant", "unit").filter(**challenge_filter).first()
+            ).select_related("tenant", "unit", "existing_user__profile").filter(**challenge_filter).first()
             if not _usable_tenant_challenge(challenge):
                 return _problem(400, "Invalid activation", "The activation link or code is invalid, expired, or already used.", "invalid-activation")
             if isinstance(token, str) and challenge.code_hash != _activation_hash(code.strip().upper()):
@@ -17771,6 +18098,18 @@ def activate_tenant(request):
             ):
                 return _problem(400, "Invalid activation", "The activation code does not match this unit.", "invalid-activation")
             tenant = challenge.tenant
+            existing_user = challenge.existing_user
+            if existing_user is None:
+                if not isinstance(password, str):
+                    return _problem(400, "Invalid password", "A password is required to activate this account.", "invalid-password")
+                if len(password) < 12:
+                    return _problem(400, "Invalid password", "Password must contain at least 12 characters.", "invalid-password")
+                try:
+                    password_validation.validate_password(password)
+                except ValidationError as exc:
+                    return _problem(400, "Invalid password", "; ".join(exc.messages), "invalid-password")
+            elif not existing_user.is_active:
+                return _problem(409, "Account unavailable", "The linked account is no longer active. Contact the agency.", "account-unavailable")
             was_provisional = tenant.is_provisional
             if (
                 challenge.phone_verification_required
@@ -17790,9 +18129,52 @@ def activate_tenant(request):
                     or len(national_id_or_passport.strip()) > 100
                 ):
                     return _problem(400, "Identity required", "A national ID or passport number is required to activate this account.", "identity-required")
-                tenant.national_id_or_passport = national_id_or_passport.strip()
+                supplied_identity = national_id_or_passport.strip()
+                if tenant.national_id_or_passport:
+                    if tenant.national_id_or_passport.strip().casefold() != supplied_identity.casefold():
+                        return _problem(403, "Identity mismatch", "The ID or passport number does not match the KYC details recorded during onboarding.", "identity-mismatch")
+                else:
+                    tenant.national_id_or_passport = supplied_identity
                 tenant.name = (full_name or tenant.name).strip()
                 tenant.is_provisional = False
+            elif tenant.national_id_or_passport:
+                if (
+                    not isinstance(national_id_or_passport, str)
+                    or national_id_or_passport.strip().casefold()
+                    != tenant.national_id_or_passport.strip().casefold()
+                ):
+                    return _problem(
+                        403,
+                        "Identity mismatch",
+                        "The ID or passport number does not match the KYC details recorded during onboarding.",
+                        "identity-mismatch",
+                    )
+            if existing_user is not None:
+                existing_profile = UserProfile.objects.filter(user=existing_user).first()
+                profile_identity = (
+                    existing_profile.id_or_registration_number.strip()
+                    if existing_profile
+                    else ""
+                )
+                if (
+                    not isinstance(national_id_or_passport, str)
+                    or not tenant.national_id_or_passport
+                    or national_id_or_passport.strip().casefold()
+                    != tenant.national_id_or_passport.strip().casefold()
+                    or profile_identity.casefold()
+                    != tenant.national_id_or_passport.strip().casefold()
+                    or existing_user.email.strip().casefold()
+                    != tenant.email.strip().casefold()
+                    or existing_profile is None
+                    or existing_profile.phone != tenant.phone
+                ):
+                    challenge.failed_attempts += 1
+                    if challenge.failed_attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                        challenge.expires_at = timezone.now()
+                        challenge.save(update_fields=["failed_attempts", "expires_at"])
+                    else:
+                        challenge.save(update_fields=["failed_attempts"])
+                    return _problem(403, "Identity mismatch", "The account identity, contact details, and tenant KYC record must match before linking.", "identity-mismatch")
             if email and tenant.email and email.casefold() != tenant.email.casefold():
                 return _problem(403, "Email mismatch", "The activation code is not assigned to this email address.", "email-mismatch")
             tenant_changed = was_provisional
@@ -17818,8 +18200,14 @@ def activate_tenant(request):
                         "updated_at",
                     ]
                 )
-            user = tenant.portal_user
-            if user is None:
+            user = existing_user or tenant.portal_user
+            if existing_user is not None:
+                if tenant.portal_user_id not in (None, existing_user.pk):
+                    return _problem(409, "Account conflict", "This tenant record is already linked to another account.", "account-conflict")
+                profile = existing_profile
+                tenant.portal_user = existing_user
+                tenant.save(update_fields=["portal_user", "updated_at"])
+            elif user is None:
                 username = tenant.email.strip().lower() or tenant.phone
                 if user_model.objects.filter(
                     Q(username__iexact=username)
@@ -17832,7 +18220,12 @@ def activate_tenant(request):
                     password=password,
                     is_active=True,
                 )
-                profile = UserProfile(user=user, name=(full_name or tenant.name).strip(), phone=normalized_phone or tenant.phone)
+                profile = UserProfile(
+                    user=user,
+                    name=(full_name or tenant.name).strip(),
+                    phone=normalized_phone or tenant.phone,
+                    id_or_registration_number=tenant.national_id_or_passport,
+                )
                 profile.full_clean()
                 profile.save()
                 profile.branches.add(tenant.branch)
@@ -17850,16 +18243,18 @@ def activate_tenant(request):
                 profile.full_clean()
                 profile.save()
                 profile.branches.add(tenant.branch)
-                user.set_password(password)
-                user.is_active = True
+                if not user.is_active:
+                    user.set_password(password)
+                    user.is_active = True
                 if not user.email and tenant.email:
                     user.email = tenant.email
                 user.save(update_fields=["password", "is_active", "email"])
             tenant_portal_role, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
             user.groups.add(tenant_portal_role)
-            membership, _ = AgencyMembership.objects.get_or_create(
-                profile=profile,
-                agency=tenant.branch.agency,
+            membership = _agency_account_membership(
+                profile,
+                user,
+                tenant.branch.agency,
             )
             membership.branches.add(tenant.branch)
             membership.roles.add(tenant_portal_role)

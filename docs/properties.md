@@ -133,6 +133,18 @@ Caretakers can submit readings in one atomic mobile-friendly request through
 validates that every unit is currently assigned to the caretaker, rejects
 duplicate meter-period entries, and records an audit event for each reading.
 
+Monthly metered-water readings are collected separately through the caretaker
+portal or WhatsApp. Both flows guide the caretaker through one occupied unit at
+a time: enter the current value, capture and save a photo of that unit's meter,
+then continue to the next unit. The portal requests the device camera and keeps
+unfinished drafts available to resume. Publishing requires a saved reading and
+meter photo for every eligible unit; the portal and WhatsApp both require a
+final publish confirmation, after which invoice drafting is queued.
+The portal wizard stays visible between reading windows and shows each unit's
+previous reading, but entry, photo uploads, and publication stay locked until
+the 30th of the month, or February 27 in a common year / February 28 in a leap
+year. The API enforces the same opening date.
+
 Maintenance tickets are managed through:
 
 - `GET /api/v1/maintenance-tickets`
@@ -227,6 +239,9 @@ can switch properties from the caretaker menu; caretaker tasks and maintenance
 records are limited to that property. The menu's occupancy summary excludes
 draft and archived units from the total, counts occupied and notice-given units
 as occupied, and lists the unit codes currently marked vacant.
+The caretaker can also record monthly water readings unit-by-unit, attach a
+photo for each meter, review completion for all eligible units, and explicitly
+confirm publication from WhatsApp.
 
 Property expenses are managed through:
 
@@ -525,12 +540,14 @@ the later credit-note workflow; issued invoices cannot be edited or deleted.
 
 RabbitMQ-backed Celery Beat runs the billing cycle every minute in
 `Africa/Nairobi`; Celery workers draft and publish invoices idempotently.
-At 09:00 on the 30th (the final day of February), it notifies caretakers
-assigned to properties with metered water. Caretakers save readings as drafts,
+At 09:00 on the 30th, or February 27 in a common year / February 28 in a leap
+year, it notifies caretakers assigned to properties with metered water.
+Caretakers save readings as drafts,
 and the server blocks publication until every active tenancy at that property
 has a valid reading. Publishing creates the next month's invoice drafts and
 queues an SMS for the Property Officer. Fixed-utility properties without
-metered water are drafted and notified on the same schedule.
+metered water are drafted on the normal billing day: the 30th, or the final
+calendar day of shorter months.
 
 Draft invoices carry the prior issued balance and itemized current rent,
 recurring charges, and metered water. The scheduler issues eligible drafts on

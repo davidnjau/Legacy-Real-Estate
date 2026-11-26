@@ -45,23 +45,24 @@ does not add business workflows or permissions beyond the approved SRS.
   `Super Admin (Director)` role; prototype demo-role cookies do not grant
   access. From the dashboard, Directors can manage agency staff only within
   their own active agency membership. The staff roles currently available
-  there are Branch Manager, Accountant, Property Officer / Agent, and Land
-  Sales Agent; Director, landlord, caretaker, and tenant accounts use separate
-  provisioning or onboarding flows.
+  there are Branch Manager, Accountant, Property Officer / Agent, Land Sales
+  Agent, and Caretaker. A staff account may hold multiple agency roles;
+  Director, landlord, and tenant access use their own role-specific records.
 - `GET/POST /api/v1/director/staff` lists or creates staff for an `agency_id`.
   `PATCH/DELETE /api/v1/director/staff/<membership_id>` updates role, branch
   scope, or active status, or suspends that agency membership.
   `POST /api/v1/director/staff/<membership_id>/resend-activation` issues a new
-  activation code for a pending account. Branch assignments are validated
-  against the Director's agency. Suspending staff disables only that agency
+  activation code for a pending account or role link. Branch assignments are
+  validated against the Director's agency. Suspending staff disables only that agency
   membership; it does not disable a login or its memberships in other agencies.
 - A new staff login is inactive and password-disabled until the invitee submits
   the one-time email OTP and a new password to
   `POST /api/v1/auth/staff/activate`. Staff OTPs are hashed at rest, expire
   after 15 minutes by default, and are invalidated after five failed attempts
-  or a successful activation. Existing active accounts can receive a new
-  agency membership without resetting their password. Email delivery failures
-  leave the account pending so the Director can retry with Resend activation.
+  or a successful activation. An existing active account must confirm its
+  emailed OTP and recorded ID/passport number before a new staff role and
+  branch scope are applied; its password is preserved. Email delivery failures
+  leave the request pending so the Director can retry with Resend activation.
 - The Director, agency staff, tenant, and caretaker activation forms share the
   same website password checks: at least 12 characters with lowercase,
   uppercase, number, and symbol, plus matching confirmation. Django password
@@ -130,7 +131,10 @@ does not add business workflows or permissions beyond the approved SRS.
 - Landlord signup is not publicly available through the website or API.
   Authorized Property Officers can create landlord records and portal accounts
   for their assigned branches. The landlord receives an activation email and
-  must activate the account before signing in. During onboarding, an existing
+  must activate the account before signing in. An existing active account can
+  be linked only after an emailed OTP and exact match of its recorded name,
+  email, phone, and ID/registration number; linking preserves its password.
+  During onboarding, an existing
   unassigned property in the selected branch can optionally be linked to the
   landlord; property registration can also select an already-created landlord.
 - Public tenant self-registration at `POST /api/v1/auth/register-tenant`
@@ -162,6 +166,11 @@ does not add business workflows or permissions beyond the approved SRS.
   stored. Activation credentials expire after 48 hours, are invalidated when
   replaced, and successful activation returns the tenant to sign in rather
   than creating a session. An authorized staff member can resend the email.
+- Existing accounts can be linked to a tenancy only when their active login,
+  recorded phone and ID/passport number match the tenant KYC record. Activation
+  requires the one-time code and an exact ID/passport confirmation; it adds the
+  tenant role without changing the existing password. New tenant activations
+  also require the ID/passport number recorded during onboarding to match.
 - For active tenancies without a move-in package, the legacy tenant activation
   API still returns a one-time token and code to authorized staff; its
   code-only verification flow remains available. Tenant activation challenges

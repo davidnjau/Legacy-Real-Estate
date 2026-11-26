@@ -20,6 +20,7 @@ from users.models import (
 )
 from users.roles import SUPER_ADMIN_ROLE
 from users.sms import queue_template_sms
+from users.water_readings import caretaker_water_readings_open_date
 
 
 PROPERTY_OFFICER_ROLE = "Property Officer / Agent"
@@ -262,17 +263,32 @@ def run_monthly_billing_cycle():
     current_period = today.replace(day=1)
     next_period = _next_month(current_period)
     billing_day = min(30, calendar.monthrange(today.year, today.month)[1])
+    reading_open_day = caretaker_water_readings_open_date(today).day
     summary = {"caretakers_notified": 0, "drafts_created": 0, "drafts_published": 0, "held": []}
 
-    if today.day == billing_day and timezone.localtime().time() >= time(9, 0):
-        properties = Property.objects.filter(branch__agency__is_active=True).select_related("branch")
-        for property_obj in properties.iterator():
-            if _property_requires_metered_water(property_obj, next_period):
-                summary["caretakers_notified"] += _notify_caretakers(property_obj, next_period)
-            else:
+    if timezone.localtime().time() >= time(9, 0):
+        if today.day == billing_day:
+            properties = Property.objects.filter(
+                branch__agency__is_active=True
+            ).select_related("branch")
+            for property_obj in properties.iterator():
+                if _property_requires_metered_water(property_obj, next_period):
+                    continue
                 result = _draft_property_invoices(property_obj, next_period)
                 summary["drafts_created"] += result["created"]
                 summary["held"].extend(result["held"])
+
+        if today.day == reading_open_day:
+            properties = Property.objects.filter(
+                branch__agency__is_active=True
+            ).select_related("branch")
+            for property_obj in properties.iterator():
+                if not _property_requires_metered_water(property_obj, next_period):
+                    continue
+                summary["caretakers_notified"] += _notify_caretakers(
+                    property_obj,
+                    next_period,
+                )
 
     # Retry metered-water drafting on each scheduler tick after publication, so a
     # transient broker outage cannot strand a caretaker's published readings.

@@ -17,6 +17,7 @@ ROLE_NAMES = (
 FINANCE_ROLE_NAMES = ROLE_NAMES[:3]
 LANDLORD_MANAGEMENT_ROLE_NAMES = ROLE_NAMES[:4]
 AGENCY_STAFF_ROLE_NAMES = ROLE_NAMES[1:5]
+AGENCY_CARETAKER_ROLE_NAMES = (*AGENCY_STAFF_ROLE_NAMES, CARETAKER_ROLE)
 
 
 def requires_finance_mfa(user):
@@ -27,7 +28,9 @@ def requires_finance_mfa(user):
 
 def has_role(user, role_name):
     profile = getattr(user, "profile", None)
-    if profile is not None and profile.agency_memberships.exists():
+    if profile is not None and profile.agency_memberships.filter(
+        roles__isnull=False
+    ).exists():
         return profile.agency_memberships.filter(
             agency__is_active=True,
             is_active=True,

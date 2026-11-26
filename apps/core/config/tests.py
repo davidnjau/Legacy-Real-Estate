@@ -105,7 +105,13 @@ from users.models import (
     Vendor,
     ViewingLead,
 )
-from users.roles import CARETAKER_ROLE, LANDLORD_PORTAL_ROLE, SUPER_ADMIN_ROLE, TENANT_PORTAL_ROLE
+from users.roles import (
+    CARETAKER_ROLE,
+    LANDLORD_PORTAL_ROLE,
+    SUPER_ADMIN_ROLE,
+    TENANT_PORTAL_ROLE,
+    has_role,
+)
 from users.sms import (
     dispatch_next_sms_delivery,
     queue_template_sms,
@@ -113,6 +119,7 @@ from users.sms import (
     send_sms,
 )
 from users.totp import _code_for_counter, encrypt_secret, verify_code
+from users.views import _has_role
 
 
 class DarajaClientTests(SimpleTestCase):
@@ -175,6 +182,42 @@ class HealthCheckTests(SimpleTestCase):
         secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
         self.assertTrue(verify_code(secret, "287082", timestamp=59))
         self.assertFalse(verify_code(secret, "287083", timestamp=59))
+
+
+class WaterReadingScheduleTests(SimpleTestCase):
+    def test_reading_window_opens_on_the_configured_day(self):
+        from users.water_readings import (
+            caretaker_water_readings_due,
+            caretaker_water_readings_open_date,
+        )
+
+        cases = (
+            (date(2025, 2, 26), date(2025, 2, 27), False),
+            (date(2025, 2, 27), date(2025, 2, 27), True),
+            (date(2024, 2, 27), date(2024, 2, 28), False),
+            (date(2024, 2, 28), date(2024, 2, 28), True),
+            (date(2026, 11, 29), date(2026, 11, 30), False),
+            (date(2026, 11, 30), date(2026, 11, 30), True),
+        )
+        for today, opens_on, due in cases:
+            with self.subTest(today=today), patch(
+                "users.water_readings.timezone.localdate",
+                return_value=today,
+            ):
+                self.assertEqual(caretaker_water_readings_open_date(), opens_on)
+                self.assertEqual(caretaker_water_readings_due(), due)
+
+    def test_api_lock_response_explains_when_entry_opens(self):
+        from users.views import _caretaker_water_readings_lock_response
+
+        with patch(
+            "users.views.timezone.localdate",
+            return_value=date(2025, 2, 26),
+        ):
+            response = _caretaker_water_readings_lock_response()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Reading entry opens on 2025-02-27.")
 
 
 class PropertyBillingSettingsTests(TestCase):
@@ -1250,6 +1293,105 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(login.status_code, 200)
         self.assertIn(LANDLORD_PORTAL_ROLE, login.json()["user"]["roles"])
+
+    @patch("users.views._send_landlord_activation_email")
+    def test_property_officer_links_existing_account_to_landlord_after_otp_and_kyc_match(
+        self, send_activation_email
+    ):
+        officer = self.create_user(email="landlord-link-officer@example.com")
+        membership, _ = AgencyMembership.objects.get_or_create(
+            profile=officer.profile,
+            agency=self.nairobi.agency,
+        )
+        membership.roles.add(Group.objects.get(name="Property Officer / Agent"))
+        membership.branches.add(self.nairobi)
+        account = self.create_user(
+            email="existing-landlord-link@example.com",
+            name="Linked Landlord",
+            phone="254712345606",
+        )
+        account.profile.id_or_registration_number = "LANDLORD-LINK-1"
+        account.profile.save(update_fields=["id_or_registration_number"])
+        account.groups.add(Group.objects.get(name="Accountant"))
+        original_password = "Long-test-passphrase-29!"
+        self.client.force_login(officer)
+
+        mismatched_invite = self.client.post(
+            "/api/v1/property-officer/landlords",
+            data={
+                "branch_id": self.nairobi.pk,
+                "name": "Linked Landlord",
+                "email": "existing-landlord-link@example.com",
+                "phone": "254712345606",
+                "id_or_registration_number": "WRONG-LANDLORD-ID",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(mismatched_invite.status_code, 409)
+
+        invited = self.client.post(
+            "/api/v1/property-officer/landlords",
+            data={
+                "branch_id": self.nairobi.pk,
+                "name": "Linked Landlord",
+                "email": "existing-landlord-link@example.com",
+                "phone": "254712345606",
+                "id_or_registration_number": "LANDLORD-LINK-1",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(invited.status_code, 201, invited.content)
+        self.assertEqual(
+            invited.json()["landlord"]["account_status"],
+            "pending_activation",
+        )
+        landlord = Landlord.objects.get(id_or_registration_number="LANDLORD-LINK-1")
+        self.assertIsNone(landlord.portal_user_id)
+        challenge = LandlordActivationChallenge.objects.get(landlord=landlord)
+        self.assertEqual(challenge.existing_user_id, account.pk)
+        self.assertTrue(send_activation_email.call_args.kwargs["link_existing_account"])
+        _, challenge_id, code = send_activation_email.call_args.args
+
+        context = self.client.get(
+            f"/api/v1/auth/landlord/activate/context?challenge_id={challenge_id}"
+        )
+        self.assertEqual(context.status_code, 200, context.content)
+        self.assertTrue(context.json()["identity_confirmation_required"])
+        rejected = self.client.post(
+            "/api/v1/auth/landlord/activate",
+            data={
+                "challenge_id": str(challenge.pk),
+                "code": code,
+                "id_or_registration_number": "WRONG-ID",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(rejected.status_code, 403)
+        landlord.refresh_from_db()
+        self.assertIsNone(landlord.portal_user_id)
+
+        activated = self.client.post(
+            "/api/v1/auth/landlord/activate",
+            data={
+                "challenge_id": str(challenge.pk),
+                "code": code,
+                "id_or_registration_number": "LANDLORD-LINK-1",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(activated.status_code, 200, activated.content)
+        account.refresh_from_db()
+        landlord.refresh_from_db()
+        self.assertEqual(landlord.portal_user_id, account.pk)
+        self.assertTrue(account.check_password(original_password))
+        self.assertTrue(account.is_active)
+        self.assertTrue(account.groups.filter(name=LANDLORD_PORTAL_ROLE).exists())
+        linked_membership = AgencyMembership.objects.get(
+            profile=account.profile,
+            agency=self.nairobi.agency,
+        )
+        self.assertTrue(linked_membership.roles.filter(name=LANDLORD_PORTAL_ROLE).exists())
+        self.assertTrue(linked_membership.roles.filter(name="Accountant").exists())
 
     def test_property_officer_landlord_list_is_branch_scoped_and_resend_requires_auth(self):
         officer = self.create_user(email="landlord-scope-officer@example.com")
@@ -3270,6 +3412,152 @@ class UserAccessTests(TestCase):
         self.assertEqual(activated.status_code, 200)
 
     @patch("users.views._send_staff_activation_email")
+    def test_director_can_assign_and_update_multiple_staff_roles(self, send_email):
+        director = self.create_user(email="multi-role-director@example.com")
+        director_membership, _ = AgencyMembership.objects.get_or_create(
+            profile=director.profile,
+            agency=self.nairobi.agency,
+        )
+        director_membership.roles.add(Group.objects.get(name=SUPER_ADMIN_ROLE))
+        self.client.force_login(director)
+
+        invited = self.client.post(
+            "/api/v1/director/staff",
+            data={
+                "agency_id": self.nairobi.agency_id,
+                "name": "Multi Role Staff",
+                "email": "multi-role-staff@example.com",
+                "phone": "254712345609",
+                "id_or_registration_number": "STAFF-ID-609",
+                "roles": ["Accountant", "Caretaker"],
+                "branch_ids": [self.nairobi.pk],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(invited.status_code, 201, invited.content)
+        staff_data = invited.json()["staff"]
+        self.assertEqual(staff_data["roles"], ["Accountant", "Caretaker"])
+        staff_user = self.user_model.objects.get(email="multi-role-staff@example.com")
+        self.assertEqual(staff_user.profile.id_or_registration_number, "STAFF-ID-609")
+
+        updated = self.client.patch(
+            f"/api/v1/director/staff/{staff_data['membership_id']}",
+            data={
+                "roles": ["Caretaker", "Property Officer / Agent"],
+                "branch_ids": [self.nairobi.pk],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(updated.status_code, 200, updated.content)
+        self.assertEqual(
+            updated.json()["staff"]["roles"],
+            ["Caretaker", "Property Officer / Agent"],
+        )
+
+    @patch("users.views._send_staff_activation_email")
+    def test_staff_role_for_existing_user_waits_for_otp_and_identity_match(self, send_email):
+        director = self.create_user(email="existing-role-director@example.com")
+        director_membership, _ = AgencyMembership.objects.get_or_create(
+            profile=director.profile,
+            agency=self.nairobi.agency,
+        )
+        director_membership.roles.add(Group.objects.get(name=SUPER_ADMIN_ROLE))
+        account = self.create_user(
+            email="existing-role-user@example.com",
+            name="Existing Role User",
+            phone="254712345610",
+        )
+        account.profile.id_or_registration_number = "EXISTING-STAFF-ID-610"
+        account.profile.save(update_fields=["id_or_registration_number"])
+        account.groups.add(Group.objects.get(name=TENANT_PORTAL_ROLE))
+        original_password = "Long-test-passphrase-29!"
+        self.client.force_login(director)
+
+        mismatched_invite = self.client.post(
+            "/api/v1/director/staff",
+            data={
+                "agency_id": self.nairobi.agency_id,
+                "name": "Existing Role User",
+                "email": account.email,
+                "phone": "254712345610",
+                "id_or_registration_number": "WRONG-STAFF-ID",
+                "roles": ["Accountant"],
+                "branch_ids": [self.nairobi.pk],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(mismatched_invite.status_code, 409)
+
+        invited = self.client.post(
+            "/api/v1/director/staff",
+            data={
+                "agency_id": self.nairobi.agency_id,
+                "name": "Existing Role User",
+                "email": account.email,
+                "phone": "254712345610",
+                "id_or_registration_number": "EXISTING-STAFF-ID-610",
+                "roles": ["Accountant"],
+                "branch_ids": [self.nairobi.pk],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(invited.status_code, 201, invited.content)
+        self.assertTrue(invited.json()["existing_account_link"])
+        staff_data = invited.json()["staff"]
+        staff_membership = AgencyMembership.objects.get(
+            pk=staff_data["membership_id"]
+        )
+        self.assertFalse(staff_membership.roles.filter(name="Accountant").exists())
+        self.assertEqual(staff_data["status"], "pending_activation")
+        self.assertTrue(has_role(account, TENANT_PORTAL_ROLE))
+        self.assertTrue(_has_role(account, TENANT_PORTAL_ROLE))
+        challenge = StaffActivationChallenge.objects.get(
+            membership=staff_membership,
+            existing_user=account,
+        )
+        _, challenge_id, code = send_email.call_args.args
+        activation_context = self.client.get(
+            f"/api/v1/auth/staff/activate/context?challenge_id={challenge_id}"
+        )
+        self.assertEqual(activation_context.status_code, 200)
+        self.assertTrue(activation_context.json()["identity_confirmation_required"])
+
+        rejected = self.client.post(
+            "/api/v1/auth/staff/activate",
+            data={
+                "challenge_id": str(challenge.pk),
+                "code": code,
+                "id_or_registration_number": "WRONG-ID",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(rejected.status_code, 403)
+        self.assertFalse(staff_membership.roles.filter(name="Accountant").exists())
+
+        activated = self.client.post(
+            "/api/v1/auth/staff/activate",
+            data={
+                "challenge_id": str(challenge_id),
+                "code": code,
+                "id_or_registration_number": "EXISTING-STAFF-ID-610",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(activated.status_code, 200, activated.content)
+        account.refresh_from_db()
+        staff_membership.refresh_from_db()
+        self.assertTrue(account.check_password(original_password))
+        self.assertTrue(
+            staff_membership.roles.filter(name="Accountant").exists()
+        )
+        self.assertTrue(
+            staff_membership.roles.filter(name=TENANT_PORTAL_ROLE).exists()
+        )
+        self.assertTrue(has_role(account, TENANT_PORTAL_ROLE))
+        self.assertTrue(_has_role(account, TENANT_PORTAL_ROLE))
+        self.assertTrue(staff_membership.branches.filter(pk=self.nairobi.pk).exists())
+
+    @patch("users.views._send_staff_activation_email")
     def test_suspending_staff_access_does_not_disable_another_agency_membership(self, send_email):
         director = self.create_user(email="multi-agency-director@example.com")
         director_membership, _ = AgencyMembership.objects.get_or_create(
@@ -3996,24 +4284,25 @@ class UserAccessTests(TestCase):
         self.assertTrue(due_dashboard.json()["readings_due"])
         self.assertEqual(due_dashboard.json()["summary"]["readings_pending"], 2)
 
-        created = self.client.post(
-            "/api/v1/caretaker/water-readings/drafts",
-            data={
-                "property_id": property_obj.pk,
-                "period": period_start.isoformat(),
-                "readings": [
-                    {
-                        "unit_id": occupied.pk,
-                        "current_value": "14.5",
-                    },
-                    {
-                        "unit_id": second_occupied.pk,
-                        "current_value": "21.25",
-                    },
-                ]
-            },
-            content_type="application/json",
-        )
+        with patch("users.views.timezone.localdate", return_value=due_date):
+            created = self.client.post(
+                "/api/v1/caretaker/water-readings/drafts",
+                data={
+                    "property_id": property_obj.pk,
+                    "period": period_start.isoformat(),
+                    "readings": [
+                        {
+                            "unit_id": occupied.pk,
+                            "current_value": "14.5",
+                        },
+                        {
+                            "unit_id": second_occupied.pk,
+                            "current_value": "21.25",
+                        },
+                    ]
+                },
+                content_type="application/json",
+            )
         self.assertEqual(created.status_code, 200, created.content)
         self.assertEqual(created.json()["saved"], 2)
         self.assertEqual(
@@ -4024,15 +4313,16 @@ class UserAccessTests(TestCase):
             ).count(),
             2,
         )
-        outside_metered_scope = self.client.post(
-            "/api/v1/caretaker/water-readings/drafts",
-            data={
-                "property_id": property_obj.pk,
-                "period": period_start.isoformat(),
-                "readings": [{"unit_id": vacant.pk, "current_value": "1"}],
-            },
-            content_type="application/json",
-        )
+        with patch("users.views.timezone.localdate", return_value=due_date):
+            outside_metered_scope = self.client.post(
+                "/api/v1/caretaker/water-readings/drafts",
+                data={
+                    "property_id": property_obj.pk,
+                    "period": period_start.isoformat(),
+                    "readings": [{"unit_id": vacant.pk, "current_value": "1"}],
+                },
+                content_type="application/json",
+            )
         self.assertEqual(outside_metered_scope.status_code, 400, outside_metered_scope.content)
 
         self.client.force_login(manager)
@@ -6704,7 +6994,10 @@ class UserAccessTests(TestCase):
             1,
         )
 
-    def test_caretaker_must_save_all_metered_unit_readings_before_publish(self):
+    @patch("users.views._caretaker_water_readings_lock_response", return_value=None)
+    def test_caretaker_must_save_all_metered_unit_readings_before_publish(
+        self, _readings_unlocked
+    ):
         staff = self.create_user(
             email="water-readings-staff@example.com",
             phone="254712341106",
@@ -8902,9 +9195,29 @@ class UserAccessTests(TestCase):
         self.assertNotEqual(challenge.code_hash, activation_code)
 
         Group.objects.filter(name=TENANT_PORTAL_ROLE).delete()
+        mismatch = self.client.post(
+            "/api/v1/tenant-activation/complete",
+            data={
+                "token": token,
+                "code": activation_code,
+                "password": "a-secure-password",
+                "national_id_or_passport": "WRONG-ID",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(mismatch.status_code, 403)
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.is_provisional is False)
+        self.assertIsNone(tenant.portal_user_id)
+
         activated = self.client.post(
             "/api/v1/tenant-activation/complete",
-            data={"token": token, "code": activation_code, "password": "a-secure-password"},
+            data={
+                "token": token,
+                "code": activation_code,
+                "password": "a-secure-password",
+                "national_id_or_passport": tenant.national_id_or_passport,
+            },
             content_type="application/json",
         )
         self.assertEqual(activated.status_code, 200)
@@ -8913,15 +9226,110 @@ class UserAccessTests(TestCase):
         self.assertTrue(tenant.portal_user.is_active)
         self.assertTrue(tenant.portal_user.groups.filter(name=TENANT_PORTAL_ROLE).exists())
         self.assertTrue(tenant.portal_user.check_password("a-secure-password"))
+        self.assertEqual(
+            tenant.portal_user.profile.id_or_registration_number,
+            tenant.national_id_or_passport,
+        )
         self.assertEqual(self.client.get("/api/v1/auth/me").json()["user"]["id"], user.pk)
         self.assertEqual(
             self.client.post(
                 "/api/v1/tenant-activation/complete",
-                data={"token": token, "code": activation_code, "password": "another-password"},
+                data={
+                    "token": token,
+                    "code": activation_code,
+                    "password": "another-password",
+                    "national_id_or_passport": tenant.national_id_or_passport,
+                },
                 content_type="application/json",
             ).status_code,
             400,
         )
+
+    def test_tenant_activation_links_existing_account_only_after_kyc_match(self):
+        manager = self.create_user(email="tenant-link-manager@example.com")
+        manager.groups.add(Group.objects.get(name="Property Officer / Agent"))
+        manager.profile.branches.add(self.nairobi)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Tenant Link Property",
+            property_type="Apartment",
+            location="Kilimani",
+        )
+        unit = Unit.objects.create(
+            property=property_obj,
+            code="LINK-101",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        tenant = Tenant.objects.create(
+            branch=self.nairobi,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Linked Tenant",
+            national_id_or_passport="TENANT-LINK-ID-1",
+            phone="254712345681",
+            email="existing-tenant-link@example.com",
+        )
+        Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=date(2026, 1, 1),
+            due_day=5,
+        )
+        account = self.create_user(
+            email=tenant.email,
+            name=tenant.name,
+            phone=tenant.phone,
+        )
+        account.profile.id_or_registration_number = tenant.national_id_or_passport
+        account.profile.save(update_fields=["id_or_registration_number"])
+        account.groups.add(Group.objects.get(name="Accountant"))
+        original_password = "Long-test-passphrase-29!"
+        self.client.force_login(manager)
+        issued = self.client.post(
+            f"/api/v1/tenancies/{Tenancy.objects.get(tenant=tenant).pk}/tenant-activation",
+            content_type="application/json",
+        )
+        self.assertEqual(issued.status_code, 201, issued.content)
+        challenge = TenantActivationChallenge.objects.get(tenant=tenant)
+        challenge.existing_user = account
+        challenge.save(update_fields=["existing_user"])
+        code = issued.json()["activation_code"]
+        activation_url = "/api/v1/tenant-activation/complete"
+
+        rejected = self.client.post(
+            activation_url,
+            data={
+                "code": code,
+                "unit_code": unit.code,
+                "national_id_or_passport": "WRONG-TENANT-ID",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(rejected.status_code, 403)
+        tenant.refresh_from_db()
+        self.assertIsNone(tenant.portal_user_id)
+
+        activated = self.client.post(
+            activation_url,
+            data={
+                "code": code,
+                "unit_code": unit.code,
+                "national_id_or_passport": tenant.national_id_or_passport,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(activated.status_code, 200, activated.content)
+        tenant.refresh_from_db()
+        account.refresh_from_db()
+        self.assertEqual(tenant.portal_user_id, account.pk)
+        self.assertTrue(account.check_password(original_password))
+        tenant_membership = AgencyMembership.objects.get(
+            profile=account.profile,
+            agency=self.nairobi.agency,
+        )
+        self.assertTrue(tenant_membership.roles.filter(name="Accountant").exists())
+        self.assertTrue(has_role(account, "Accountant"))
 
     def test_tenant_activation_code_requires_matching_active_unit_without_auto_login(self):
         manager = self.create_user(phone="254712345682")
@@ -14100,6 +14508,173 @@ class WhatsAppBotTests(TestCase):
         self.assertIn("Vacant unit codes: None", second_summary)
         state.refresh_from_db()
         self.assertEqual(state.active_property_id, second_property.pk)
+
+    def test_caretaker_records_metered_water_readings_unit_by_unit_on_whatsapp(self):
+        from users.models import (
+            ConversationState,
+            MeterReading,
+            MeterReadingDraft,
+            PropertyCaretakerAssignment,
+            UtilityConfiguration,
+            WhatsAppContact,
+        )
+        from users import whatsapp_bot, water_readings
+
+        _, first_tenancy = self._tenant_with_tenancy("90")
+        property_obj = first_tenancy.unit.property
+        period = date(2026, 12, 1)
+        first_tenancy.base_water_meter_reading = Decimal("10.0000")
+        first_tenancy.save(update_fields=["base_water_meter_reading"])
+        UtilityConfiguration.objects.create(
+            unit=first_tenancy.unit,
+            utility_type=UtilityConfiguration.UTILITY_WATER,
+            name="Water",
+            billing_method=UtilityConfiguration.METHOD_METERED,
+            rate_per_unit=Decimal("12.0000"),
+            effective_from=period,
+            metadata={"meter": "WA-METER-90"},
+        )
+
+        second_unit = Unit.objects.create(
+            property=property_obj,
+            code="WA-90-02",
+            unit_type="Studio",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        second_tenant = Tenant.objects.create(
+            branch=self.branch,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Water Readings Tenant",
+            national_id_or_passport="WA-WATER-ID-90",
+            phone="254700009090",
+        )
+        Tenancy.objects.create(
+            unit=second_unit,
+            tenant=second_tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=timezone.localdate() - timedelta(days=30),
+            status=Tenancy.STATUS_ACTIVE,
+            base_water_meter_reading=Decimal("20.0000"),
+        )
+        UtilityConfiguration.objects.create(
+            unit=second_unit,
+            utility_type=UtilityConfiguration.UTILITY_WATER,
+            name="Water",
+            billing_method=UtilityConfiguration.METHOD_METERED,
+            rate_per_unit=Decimal("12.0000"),
+            effective_from=period,
+            metadata={"meter": "WA-METER-90-02"},
+        )
+
+        manager = self.user_model.objects.create_user(
+            username="wa-water-manager@example.com",
+            email="wa-water-manager@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(manager, "Property Officer / Agent")
+        caretaker = self.user_model.objects.create_user(
+            username="wa-water-caretaker@example.com",
+            email="wa-water-caretaker@example.com",
+            password="Long-test-passphrase-29!",
+        )
+        self._grant_branch_role(caretaker, "Caretaker")
+        PropertyCaretakerAssignment.objects.create(
+            property=property_obj,
+            caretaker=caretaker,
+            assigned_by=manager,
+        )
+        contact = WhatsAppContact.objects.create(
+            wa_id="254700009090",
+            user=caretaker,
+            verified_at=timezone.now(),
+        )
+        state = ConversationState.objects.create(
+            contact=contact,
+            active_role="caretaker",
+        )
+        photo = b"\xff\xd8\xffmeter photo"
+
+        with (
+            patch("users.water_readings.timezone.localdate", return_value=date(2026, 11, 30)),
+            patch.object(whatsapp_bot, "_post_message") as post,
+            patch.object(
+                whatsapp_bot,
+                "_fetch_media",
+                return_value=(photo, "image/jpeg"),
+            ),
+            patch.object(water_readings, "upload_private_object") as store_photo,
+            patch("users.tasks.draft_property_invoices.delay") as enqueue_invoices,
+        ):
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="c_water_readings")
+            )
+            self.assertIn("WA-90", post.call_args.args[0]["text"]["body"])
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="9")
+            )
+            self.assertIn("cannot be lower", post.call_args.args[0]["text"]["body"])
+            self.assertFalse(MeterReadingDraft.objects.exists())
+
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="11")
+            )
+            self.assertIn("send a clear photo", post.call_args.args[0]["text"]["body"].lower())
+            state.refresh_from_db()
+            state.state["current_value"] = "not-a-number"
+            state.save(update_fields=["state"])
+            whatsapp_bot.handle_inbound_message(
+                self._message(
+                    contact.wa_id,
+                    image={"id": "water-meter-90-1", "mime_type": "image/jpeg"},
+                )
+            )
+            self.assertIn("missing or invalid", post.call_args.args[0]["text"]["body"])
+            state.refresh_from_db()
+            self.assertEqual(state.state.get("step"), "reading")
+            store_photo.assert_not_called()
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="11")
+            )
+            self.assertIn("send a clear photo", post.call_args.args[0]["text"]["body"].lower())
+            whatsapp_bot.handle_inbound_message(
+                self._message(
+                    contact.wa_id,
+                    image={"id": "water-meter-90-1", "mime_type": "image/jpeg"},
+                )
+            )
+            self.assertIn("WA-90-02", post.call_args.args[0]["text"]["body"])
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, text="21")
+            )
+            whatsapp_bot.handle_inbound_message(
+                self._message(
+                    contact.wa_id,
+                    image={"id": "water-meter-90-2", "mime_type": "image/jpeg"},
+                )
+            )
+
+            confirmation = post.call_args.args[0]
+            self.assertIn("All 2 of 2", confirmation["interactive"]["body"]["text"])
+            buttons = confirmation["interactive"]["action"]["buttons"]
+            self.assertEqual(buttons[0]["reply"]["id"], "cwr_publish")
+            state.refresh_from_db()
+            self.assertEqual(state.state.get("step"), "confirm")
+
+            whatsapp_bot.handle_inbound_message(
+                self._message(contact.wa_id, choice="cwr_publish")
+            )
+
+        self.assertEqual(MeterReading.objects.filter(period=period).count(), 2)
+        self.assertFalse(MeterReadingDraft.objects.filter(period=period).exists())
+        self.assertEqual(store_photo.call_count, 2)
+        enqueue_invoices.assert_called_once_with(property_obj.pk, period.isoformat())
+        self.assertTrue(
+            any(
+                "Published 2 water readings"
+                in message.get("text", {}).get("body", "")
+                for message in (call.args[0] for call in post.call_args_list)
+            )
+        )
 
     def test_caretaker_submits_move_in_handover_through_whatsapp(self):
         from users.models import ConversationState, PropertyCaretakerAssignment, WhatsAppContact

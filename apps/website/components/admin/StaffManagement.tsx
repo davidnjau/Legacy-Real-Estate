@@ -23,6 +23,8 @@ type StaffMember = {
   email: string;
   phone: string | null;
   roles: string[];
+  pending_roles?: string[];
+  pending_branch_ids?: number[];
   branches: Branch[];
   active: boolean;
   account_active: boolean;
@@ -39,7 +41,8 @@ const EMPTY_FORM = {
   name: '',
   email: '',
   phone: '',
-  role: '',
+  idOrRegistrationNumber: '',
+  roles: [] as string[],
   branchIds: [] as number[],
 };
 
@@ -67,7 +70,7 @@ export default function StaffManagement({
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editing, setEditing] = useState<number | null>(null);
-  const [editRole, setEditRole] = useState('');
+  const [editRoles, setEditRoles] = useState<string[]>([]);
   const [editBranchIds, setEditBranchIds] = useState<number[]>([]);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -89,8 +92,8 @@ export default function StaffManagement({
       setBranches(result.branches);
       setRoles(result.roles);
       setStaff(result.staff);
-      if (!form.role && result.roles.length > 0) {
-        setForm((current) => ({ ...current, role: result.roles[0] }));
+      if (!form.roles.length && result.roles.length > 0) {
+        setForm((current) => ({ ...current, roles: [result.roles[0]] }));
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to load agency staff.');
@@ -134,7 +137,8 @@ export default function StaffManagement({
           name: form.name,
           email: form.email,
           phone: form.phone,
-          role: form.role,
+          id_or_registration_number: form.idOrRegistrationNumber,
+          roles: form.roles,
           branch_ids: form.branchIds,
         }),
       });
@@ -150,11 +154,13 @@ export default function StaffManagement({
         return;
       }
       setNotice(
-        payload.activation_email_sent
-          ? 'Staff account created. An activation code was sent by email.'
-          : 'Existing account added to this agency.',
+        payload.existing_account_link
+          ? 'A one-time code was sent. The selected staff role will be added after identity confirmation.'
+          : payload.activation_email_sent
+            ? 'Staff account created. An activation code was sent by email.'
+            : 'Existing account added to this agency.',
       );
-      setForm({ ...EMPTY_FORM, role: roles[0] || '' });
+      setForm({ ...EMPTY_FORM, roles: roles[0] ? [roles[0]] : [] });
       setShowCreate(false);
       await loadStaff(agencyId);
     } catch (cause) {
@@ -164,7 +170,7 @@ export default function StaffManagement({
     }
   }
 
-  async function updateStaff(member: StaffMember, changes: { role: string; branchIds: number[]; active: boolean }) {
+  async function updateStaff(member: StaffMember, changes: { roles: string[]; branchIds: number[]; active: boolean }) {
     setBusy(true);
     setError('');
     setNotice('');
@@ -174,7 +180,7 @@ export default function StaffManagement({
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
         body: JSON.stringify({
-          role: changes.role,
+          roles: changes.roles,
           branch_ids: changes.branchIds,
           active: changes.active,
         }),
@@ -232,7 +238,7 @@ export default function StaffManagement({
 
   function startEditing(member: StaffMember) {
     setEditing(member.membership_id);
-    setEditRole(member.roles[0] || roles[0] || '');
+    setEditRoles(member.roles.length ? member.roles : (roles[0] ? [roles[0]] : []));
     setEditBranchIds(member.branches.map((branch) => branch.id));
   }
 
@@ -242,7 +248,7 @@ export default function StaffManagement({
         <div>
           <h2 className="text-base font-bold text-slate-900">Agency staff accounts</h2>
           <p className="mt-1 text-xs text-slate-500">
-            Add staff, assign one agency role and branch scope, and suspend agency access.
+            Add staff, assign one or more agency roles and branch scope, and suspend agency access.
             Finance and branch-manager roles require authenticator MFA at sign-in.
           </p>
         </div>
@@ -277,12 +283,30 @@ export default function StaffManagement({
               <input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="2547XXXXXXXX" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
             </label>
             <label className="text-xs font-bold text-slate-700">
-              Agency role
-              <select required value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal">
-                {roles.map((role) => <option key={role} value={role}>{role}</option>)}
-              </select>
+              National ID / passport
+              <input required maxLength={100} value={form.idOrRegistrationNumber} onChange={(event) => setForm({ ...form, idOrRegistrationNumber: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
             </label>
           </div>
+          <fieldset className="mt-4">
+            <legend className="text-xs font-bold text-slate-700">Agency roles</legend>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {roles.map((role) => (
+                <label key={role} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={form.roles.includes(role)}
+                    onChange={() => setForm((current) => ({
+                      ...current,
+                      roles: current.roles.includes(role)
+                        ? current.roles.filter((item) => item !== role)
+                        : [...current.roles, role],
+                    }))}
+                  />
+                  {role}
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <fieldset className="mt-4">
             <legend className="text-xs font-bold text-slate-700">Branch access</legend>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -302,7 +326,7 @@ export default function StaffManagement({
             </div>
           </fieldset>
           <div className="mt-4 flex gap-2">
-            <button type="submit" disabled={busy || !form.branchIds.length} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
+            <button type="submit" disabled={busy || !form.branchIds.length || !form.roles.length} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
               {busy ? 'Sending…' : 'Create and send activation'}
             </button>
             <button type="button" onClick={() => setShowCreate(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold">Cancel</button>
@@ -324,9 +348,18 @@ export default function StaffManagement({
           </thead>
           <tbody className="divide-y divide-slate-100">
             {staff.map((member) => {
-              const role = member.roles[0] || 'Unassigned';
+              const roleLabel = member.roles.length ? member.roles.join(', ') : 'Unassigned';
+              const pendingRoleLabel = member.pending_roles?.length
+                ? `${member.pending_roles.join(', ')} (confirmation pending)`
+                : null;
+              const branchLabel = member.branches.map((branch) => branch.name).join(', ');
+              const pendingBranchLabel = branches
+                .filter((branch) => member.pending_branch_ids?.includes(branch.id))
+                .map((branch) => branch.name)
+                .join(', ');
               const editingThis = editing === member.membership_id;
-              const requiresMfa = role === 'Branch Manager' || role === 'Accountant';
+              const requiresMfa = [...member.roles, ...(member.pending_roles || [])]
+                .some((role) => role === 'Branch Manager' || role === 'Accountant');
               return (
                 <tr key={member.membership_id} className="align-top hover:bg-slate-50/50">
                   <td className="px-3 py-3">
@@ -336,10 +369,23 @@ export default function StaffManagement({
                   </td>
                   <td className="px-3 py-3 font-semibold text-emerald-800">
                     {editingThis ? (
-                      <select value={editRole} onChange={(event) => setEditRole(event.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs">
-                        {roles.map((option) => <option key={option} value={option}>{option}</option>)}
-                      </select>
-                    ) : role}
+                      <div className="space-y-1">
+                        {roles.map((option) => (
+                          <label key={option} className="flex items-center gap-1 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={editRoles.includes(option)}
+                              onChange={() => setEditRoles((current) =>
+                                current.includes(option)
+                                  ? current.filter((item) => item !== option)
+                                  : [...current, option],
+                              )}
+                            />
+                            {option}
+                          </label>
+                        ))}
+                      </div>
+                    ) : pendingRoleLabel || roleLabel}
                   </td>
                   <td className="px-3 py-3">
                     {editingThis ? (
@@ -351,7 +397,9 @@ export default function StaffManagement({
                           </label>
                         ))}
                       </div>
-                    ) : member.branches.map((branch) => branch.name).join(', ') || 'No branches'}
+                    ) : pendingBranchLabel
+                      ? `${branchLabel ? `${branchLabel}; ` : ''}${pendingBranchLabel} (pending)`
+                      : branchLabel || 'No branches'}
                   </td>
                   <td className="px-3 py-3">
                     <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
@@ -376,9 +424,9 @@ export default function StaffManagement({
                         <>
                           <button
                             type="button"
-                            disabled={busy || editBranchIds.length === 0}
+                            disabled={busy || editBranchIds.length === 0 || !editRoles.length}
                             onClick={() => void updateStaff(member, {
-                              role: editRole,
+                              roles: editRoles,
                               branchIds: editBranchIds,
                               active: member.active,
                             })}
@@ -390,10 +438,12 @@ export default function StaffManagement({
                         </>
                       ) : (
                         <>
-                          <button type="button" onClick={() => startEditing(member)} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-semibold">
-                            <Pencil size={12} /> Edit
-                          </button>
-                          {!member.account_active && member.active && (
+                          {!member.pending_roles?.length && (
+                            <button type="button" onClick={() => startEditing(member)} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-semibold">
+                              <Pencil size={12} /> Edit
+                            </button>
+                          )}
+                          {((!member.account_active && member.active) || member.pending_roles?.length) && (
                             <button type="button" disabled={busy} onClick={() => void resendActivation(member)} className="inline-flex items-center gap-1 rounded-md border border-amber-300 px-2.5 py-1.5 text-xs font-semibold text-amber-900 disabled:opacity-50">
                               <RefreshCw size={12} /> Resend
                             </button>
@@ -407,7 +457,7 @@ export default function StaffManagement({
                               type="button"
                               disabled={busy}
                               onClick={() => void updateStaff(member, {
-                                role,
+                                roles: member.roles,
                                 branchIds: member.branches.map((branch) => branch.id),
                                 active: true,
                               })}

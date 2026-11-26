@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Camera, CheckCircle, RefreshCw, Save, Send } from 'lucide-react';
+import { AlertTriangle, Camera, CheckCircle, RefreshCw, Send } from 'lucide-react';
 
 type MeterUnit = {
   unit_id: number;
@@ -10,7 +10,6 @@ type MeterUnit = {
   previous_value: string | null;
   current_value: string | null;
   status: 'pending' | 'draft' | 'published';
-  baseline_value: string | null;
   photo_uploaded: boolean;
 };
 
@@ -25,20 +24,36 @@ type WaterProperty = {
 
 type WaterReadingsResponse = {
   period: string;
+  readings_open_date: string;
   readings_due: boolean;
   properties: WaterProperty[];
 };
 
-type ReadingFilter = 'pending' | 'completed';
+type ApiMessage = {
+  detail?: string;
+  message?: string;
+  error?: string;
+};
+
+function isComplete(unit: MeterUnit) {
+  return unit.status === 'published'
+    || (
+      unit.previous_value !== null
+      && unit.current_value !== null
+      && unit.photo_uploaded
+    );
+}
 
 export default function WaterReadingsPage() {
   const [data, setData] = useState<WaterReadingsResponse | null>(null);
   const [selectedPropertyId, setSelectedPropertyId] = useState<number | null>(null);
-  const [readingFilter, setReadingFilter] = useState<ReadingFilter>('pending');
+  const [selectedUnitId, setSelectedUnitId] = useState<number | null>(null);
+  const [previousValue, setPreviousValue] = useState('');
+  const [currentValue, setCurrentValue] = useState('');
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [photoFiles, setPhotoFiles] = useState<Record<number, File>>({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -47,11 +62,7 @@ export default function WaterReadingsPage() {
     setError('');
     try {
       const response = await fetch('/api/caretaker/water-readings', { cache: 'no-store' });
-      const payload = (await response.json()) as WaterReadingsResponse & {
-        detail?: string;
-        message?: string;
-        error?: string;
-      };
+      const payload = (await response.json()) as WaterReadingsResponse & ApiMessage;
       if (!response.ok) {
         throw new Error(payload.detail || payload.message || payload.error || 'Unable to load water readings.');
       }
@@ -77,142 +88,154 @@ export default function WaterReadingsPage() {
     () => data?.properties.find((item) => item.id === selectedPropertyId) ?? null,
     [data, selectedPropertyId],
   );
+  const nextUnit = useMemo(() => {
+    if (!property) return null;
+    if (selectedUnitId !== null) {
+      const selected = property.units.find(
+        (unit) => unit.unit_id === selectedUnitId && unit.status !== 'published',
+      );
+      if (selected) return selected;
+    }
+    return property.units.find((unit) => !isComplete(unit)) ?? null;
+  }, [property, selectedUnitId]);
+  const completedCount = property?.units.filter(isComplete).length ?? 0;
+  const allPublished = Boolean(
+    property?.units.length && property.units.every((unit) => unit.status === 'published'),
+  );
   const periodLabel = property
     ? new Date(`${property.period}T00:00:00`).toLocaleDateString('en-KE', {
         month: 'long',
         year: 'numeric',
       })
     : '';
-  const visibleUnits = property?.units.filter((unit) =>
-      readingFilter === 'pending' ? unit.status !== 'published' : unit.status === 'published',
-  ) ?? [];
-  const completedCount = property?.units.filter((unit) => unit.status === 'published').length ?? 0;
+  const readingsOpenDateLabel = data
+    ? new Date(`${data.readings_open_date}T00:00:00`).toLocaleDateString('en-KE', {
+        day: 'numeric',
+        month: 'long',
+      })
+    : '';
 
-  const updateUnit = (unitId: number, field: 'previous_value' | 'current_value', value: string) => {
-    setData((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        properties: current.properties.map((item) => {
-          if (item.id !== selectedPropertyId) return item;
-          const units = item.units.map((unit) =>
-            unit.unit_id === unitId
-              ? {
-                  ...unit,
-                  [field]: value === '' ? null : value,
-                  status: 'draft' as const,
-                  photo_uploaded: false,
-                }
-              : unit,
-          );
-          return {
-            ...item,
-            units,
-            can_publish: units.length > 0 && units.every(
-              (unit) =>
-                unit.status === 'published' ||
-                (
-                  unit.previous_value !== null
-                  && unit.current_value !== null
-                  && unit.photo_uploaded
-                ),
-            ),
-          };
-        }),
-      };
-    });
-  };
+  useEffect(() => {
+    setSelectedUnitId(null);
+    setPreviousValue('');
+    setCurrentValue('');
+    setPhotoFile(null);
+  }, [selectedPropertyId]);
 
-  const submit = async (method: 'POST' | 'PATCH') => {
-    if (!property) return;
-    const isPublish = method === 'PATCH';
-    const readings = property.units
-      .filter((unit) => unit.status !== 'published' && unit.current_value !== null)
-      .map((unit) => ({
-        unit_id: unit.unit_id,
-        previous_value: unit.previous_value,
-        current_value: unit.current_value,
-      }));
-    if (!isPublish && readings.length === 0) {
-      setNotice({ success: false, message: 'Enter at least one current reading before saving.' });
+  useEffect(() => {
+    setPreviousValue(nextUnit?.previous_value ?? '');
+    setCurrentValue(nextUnit?.current_value ?? '');
+    setPhotoFile(null);
+  }, [nextUnit?.unit_id, nextUnit?.previous_value, nextUnit?.current_value]);
+
+  const saveUnit = async () => {
+    if (!property || !nextUnit || !data?.readings_due) return;
+    const current = currentValue.trim();
+    const previous = (nextUnit.previous_value ?? previousValue).trim();
+    if (!current) {
+      setNotice({ success: false, message: 'Enter the current meter reading first.' });
       return;
     }
-    if (isPublish && !property.can_publish) {
-      setNotice({ success: false, message: 'Every occupied unit needs a valid reading before publishing.' });
+    if (!previous) {
+      setNotice({ success: false, message: 'Enter the previous reading to establish this meter baseline.' });
       return;
     }
-    isPublish ? setPublishing(true) : setSaving(true);
+    if (!photoFile) {
+      setNotice({ success: false, message: 'Take a clear photo of this unit’s meter before continuing.' });
+      return;
+    }
+
+    setSaving(true);
     setNotice(null);
     try {
-      const response = await fetch('/api/caretaker/water-readings', {
-        method,
+      const draftResponse = await fetch('/api/caretaker/water-readings', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           property_id: property.id,
           period: property.period,
-          ...(isPublish ? {} : { readings }),
+          readings: [{
+            unit_id: nextUnit.unit_id,
+            previous_value: previous,
+            current_value: current,
+          }],
         }),
       });
-      const payload = (await response.json()) as { detail?: string; message?: string; error?: string };
-      if (!response.ok) {
-        throw new Error(payload.detail || payload.message || payload.error || 'The water reading request failed.');
+      const draftPayload = (await draftResponse.json()) as ApiMessage;
+      if (!draftResponse.ok) {
+        throw new Error(draftPayload.detail || draftPayload.message || draftPayload.error || 'Unable to save this reading.');
       }
-      if (!isPublish) {
-        const uploadedUnitIds: number[] = [];
-        for (const [unitId, file] of Object.entries(photoFiles)) {
-          const unit = property.units.find((item) => item.unit_id === Number(unitId));
-          if (!unit || unit.status === 'published' || unit.current_value === null) continue;
-          const formData = new FormData();
-          formData.set('property_id', String(property.id));
-          formData.set('unit_id', String(unit.unit_id));
-          formData.set('period', property.period);
-          formData.set('photo', file);
-          const photoResponse = await fetch('/api/caretaker/water-readings/photo', {
-            method: 'POST',
-            body: formData,
-          });
-          const photoPayload = (await photoResponse.json()) as {
-            detail?: string;
-            message?: string;
-            error?: string;
-          };
-          if (!photoResponse.ok) {
-            throw new Error(
-              photoPayload.detail
-                || photoPayload.message
-                || photoPayload.error
-                || `Unable to upload the photo for ${unit.unit_code}.`,
-            );
-          }
-          uploadedUnitIds.push(unit.unit_id);
-        }
-        setPhotoFiles((current) =>
-          Object.fromEntries(
-            Object.entries(current).filter(([unitId]) => !uploadedUnitIds.includes(Number(unitId))),
-          ),
+
+      const formData = new FormData();
+      formData.set('property_id', String(property.id));
+      formData.set('unit_id', String(nextUnit.unit_id));
+      formData.set('period', property.period);
+      formData.set('photo', photoFile);
+      const photoResponse = await fetch('/api/caretaker/water-readings/photo', {
+        method: 'POST',
+        body: formData,
+      });
+      const photoPayload = (await photoResponse.json()) as ApiMessage;
+      if (!photoResponse.ok) {
+        throw new Error(
+          photoPayload.detail
+            || photoPayload.message
+            || photoPayload.error
+            || `Unable to save the meter photo for ${nextUnit.unit_code}.`,
         );
+      }
+
+      setNotice({
+        success: true,
+        message: `Reading and camera photo saved for ${nextUnit.unit_code}.`,
+      });
+      setSelectedUnitId(null);
+      setPhotoFile(null);
+      await loadReadings();
+    } catch (caught) {
+      setNotice({
+        success: false,
+        message: caught instanceof Error ? caught.message : 'Unable to save this reading and photo.',
+      });
+      await loadReadings();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const publish = async () => {
+    if (!property || !property.can_publish || !data?.readings_due) return;
+    const confirmation = window.confirm(
+      `Publish all ${property.units.length} readings for ${property.name} (${periodLabel}) and start invoice drafting?`,
+    );
+    if (!confirmation) return;
+    setPublishing(true);
+    setNotice(null);
+    try {
+      const response = await fetch('/api/caretaker/water-readings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ property_id: property.id, period: property.period }),
+      });
+      const payload = (await response.json()) as ApiMessage;
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || payload.error || 'Unable to publish readings.');
       }
       setNotice({
         success: true,
-        message: isPublish
-          ? 'All readings are published. Invoice drafts are being generated.'
-          : 'Reading drafts and selected meter photos are saved. Publish is enabled once every occupied unit has a reading and photo.',
+        message: payload.message || 'All readings are published. Invoice drafts are being generated.',
       });
       await loadReadings();
     } catch (caught) {
       setNotice({
         success: false,
-        message: caught instanceof Error ? caught.message : 'The water reading request failed.',
+        message: caught instanceof Error ? caught.message : 'Unable to publish readings.',
       });
+      await loadReadings();
     } finally {
-      setSaving(false);
       setPublishing(false);
     }
   };
-
-  const missingPrevious = property?.units.filter(
-    (unit) => unit.status !== 'published' && unit.previous_value === null,
-  ) ?? [];
 
   return (
     <div className="space-y-6">
@@ -223,7 +246,7 @@ export default function WaterReadingsPage() {
             Water Meter Readings
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Record each occupied unit and attach a meter photo before publishing readings for invoice drafting.
+            Review previous meter readings anytime. Current-period entry unlocks on the scheduled reading date.
           </p>
         </div>
         <button
@@ -280,187 +303,187 @@ export default function WaterReadingsPage() {
             <div className="text-sm text-slate-600">
               Billing period: <span className="font-bold text-slate-900">{periodLabel}</span>
               <span className="ml-3 text-xs">
-                {data?.readings_due
-                  ? `${property.pending_count} reading${property.pending_count === 1 ? '' : 's'} not yet published`
-                  : 'Readings open on the 30th'}
+                {completedCount} of {property.units.length} units recorded
               </span>
             </div>
-            {data?.readings_due && (
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => void submit('POST')}
-                  disabled={saving || property.units.every((unit) => unit.status === 'published' || unit.current_value === null)}
-                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-700 px-4 py-2 text-xs font-semibold text-emerald-800 disabled:opacity-50"
-                >
-                  <Save size={14} /> {saving ? 'Saving…' : 'Save drafts'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void submit('PATCH')}
-                  disabled={publishing || !property.can_publish}
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-                >
-                  <Send size={14} /> {publishing ? 'Publishing…' : 'Publish readings'}
-                </button>
-              </div>
-            )}
           </section>
 
-          {!data?.readings_due ? (
+          {!data?.readings_due && (
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-5 text-sm text-sky-900">
-              <p className="font-semibold">Meter readings are not due yet</p>
-              <p className="mt-1">You can review the active readings on the unit roster. Reading entry opens on the 30th (or the final day of shorter months).</p>
-            </div>
-          ) : (
-          <>
-          <section
-            className="flex flex-wrap items-center justify-between gap-3"
-            aria-label="Meter reading progress filter"
-          >
-            <p className="text-sm font-semibold text-slate-700">
-              {property.units.length - completedCount} pending · {completedCount} completed for this billing period
-            </p>
-            <div className="flex rounded-xl border border-slate-200 bg-white p-1">
-              {([
-                ['pending', 'Pending Reading', property.pending_count],
-                ['completed', 'Completed This Month', completedCount],
-              ] as const).map(([filter, label, count]) => (
-                <button
-                  key={filter}
-                  type="button"
-                  aria-pressed={readingFilter === filter}
-                  onClick={() => setReadingFilter(filter)}
-                  className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
-                    readingFilter === filter
-                      ? 'bg-emerald-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {label} <span className="ml-1 opacity-80">({count})</span>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          {missingPrevious.length > 0 && (
-            <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-              <AlertTriangle size={17} className="mt-0.5 shrink-0" />
-              <p>
-                {missingPrevious.length} unit(s) have no prior meter value. Enter the previous value as well as
-                the current reading to establish their baseline.
+              <p className="font-semibold">Readings are visible, but entry is locked</p>
+              <p className="mt-1">
+                Previous readings are available below. Current-period fields unlock on {readingsOpenDateLabel}.
               </p>
             </div>
           )}
 
-          <section className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
-                <tr>
-                  <th className="px-4 py-3 text-left">Unit</th>
-                  <th className="px-4 py-3 text-right">Previous reading (m³)</th>
-                  <th className="px-4 py-3 text-right">Current reading (m³)</th>
-                  <th className="px-4 py-3 text-right">Usage (m³)</th>
-                  <th className="px-4 py-3 text-center">Meter photo</th>
-                  <th className="px-4 py-3 text-center">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {visibleUnits.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
-                      {readingFilter === 'pending'
-                        ? 'All required readings are published for this billing period.'
-                        : 'No readings have been published for this billing period yet.'}
-                    </td>
-                  </tr>
-                ) : visibleUnits.map((unit) => {
-                  const usage =
-                    unit.current_value !== null && unit.previous_value !== null
-                      ? Number(unit.current_value) - Number(unit.previous_value)
-                      : null;
-                  return (
-                    <tr key={unit.unit_id}>
-                      <td className="px-4 py-3 font-semibold text-slate-900">{unit.unit_code}</td>
-                      <td className="px-4 py-3 text-right">
-                        {unit.status === 'published' || unit.previous_value !== null ? (
-                          <span className="text-slate-700">{unit.previous_value ?? '—'}</span>
-                        ) : (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.0001"
-                            aria-label={`Previous meter reading for ${unit.unit_code}`}
-                            value={unit.previous_value ?? ''}
-                            onChange={(event) => updateUnit(unit.unit_id, 'previous_value', event.target.value)}
-                            className="w-28 rounded-lg border border-slate-300 px-2 py-1 text-right"
-                          />
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {unit.status === 'published' ? (
-                          <span className="text-slate-700">{unit.current_value}</span>
-                        ) : (
-                          <input
-                            type="number"
-                            min={unit.previous_value ?? 0}
-                            step="0.0001"
-                            aria-label={`Current meter reading for ${unit.unit_code}`}
-                            value={unit.current_value ?? ''}
-                            onChange={(event) => updateUnit(unit.unit_id, 'current_value', event.target.value)}
-                            className="w-28 rounded-lg border border-slate-300 px-2 py-1 text-right"
-                          />
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right text-slate-700">
-                        {usage !== null && usage >= 0 ? usage.toFixed(2) : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {unit.status === 'published' ? (
-                          <span className={`text-xs ${unit.photo_uploaded ? 'text-emerald-700' : 'text-amber-700'}`}>
-                            {unit.photo_uploaded ? 'Evidence saved' : 'No photo on record'}
-                          </span>
-                        ) : (
-                          <label className="inline-flex cursor-pointer flex-col items-center gap-1 text-xs font-medium text-slate-700">
-                            <span className="inline-flex items-center gap-1">
-                              <Camera size={14} />
-                              {photoFiles[unit.unit_id]?.name ?? (unit.photo_uploaded ? 'Photo saved' : 'Add photo')}
-                            </span>
-                            <input
-                              type="file"
-                              accept="image/jpeg,image/png,image/webp"
-                              capture="environment"
-                              aria-label={`Meter photo for ${unit.unit_code}`}
-                              onChange={(event) => {
-                                const file = event.target.files?.[0];
-                                if (file) {
-                                  setPhotoFiles((current) => ({ ...current, [unit.unit_id]: file }));
-                                }
-                              }}
-                              className="sr-only"
-                            />
-                          </label>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                          unit.status === 'published'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : unit.status === 'draft'
-                              ? 'bg-blue-100 text-blue-800'
-                              : 'bg-amber-100 text-amber-800'
-                        }`}>
-                          {unit.status === 'published' ? 'Published' : unit.status === 'draft' ? 'Draft' : 'Pending'}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </section>
-          </>
+          {nextUnit ? (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                    Unit {property.units.findIndex((unit) => unit.unit_id === nextUnit.unit_id) + 1} of {property.units.length}
+                  </p>
+                  <h2 className="mt-1 text-xl font-bold text-slate-900">{nextUnit.unit_code}</h2>
+                  <p className="mt-1 text-sm text-slate-600">Meter: {nextUnit.meter}</p>
+                </div>
+                {nextUnit.status === 'draft' && (
+                  <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800">
+                    Saved draft — photo or correction needed
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                  Previous month’s reading (m³)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    value={nextUnit.previous_value ?? previousValue}
+                    disabled={!data?.readings_due || nextUnit.previous_value !== null}
+                    onChange={(event) => setPreviousValue(event.target.value)}
+                    aria-label={`Previous meter reading for ${nextUnit.unit_code}`}
+                    className="rounded-lg border border-slate-300 px-3 py-2 disabled:bg-slate-50"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                  Current reading (m³)
+                  <input
+                    type="number"
+                    min={nextUnit.previous_value ?? (previousValue || '0')}
+                    step="0.0001"
+                    value={currentValue}
+                    disabled={!data?.readings_due}
+                    onChange={(event) => setCurrentValue(event.target.value)}
+                    aria-label={`Current meter reading for ${nextUnit.unit_code}`}
+                    className="rounded-lg border border-slate-300 px-3 py-2"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-5 flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-emerald-300 bg-emerald-50 p-6 text-center">
+                <Camera size={24} className="text-emerald-700" />
+                <span className="text-sm font-semibold text-slate-800">
+                  {photoFile ? photoFile.name : 'Take a photo of this unit’s water meter'}
+                </span>
+                <span className="text-xs text-slate-600">
+                  Use the device camera and make sure the meter number and reading are visible.
+                </span>
+                <input
+                  key={nextUnit.unit_id}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  capture="environment"
+                  disabled={!data?.readings_due}
+                  aria-label={`Take meter photo for ${nextUnit.unit_code}`}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    event.currentTarget.value = '';
+                    setPhotoFile(file);
+                  }}
+                  className="sr-only"
+                />
+              </label>
+
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                {property.units.some((unit) => unit.status === 'draft' && unit.unit_id !== nextUnit.unit_id) ? (
+                  <label className="text-xs font-medium text-slate-600">
+                    Review/edit saved unit
+                    <select
+                      value=""
+                      disabled={!data?.readings_due}
+                      onChange={(event) => {
+                        const unitId = Number(event.target.value);
+                        if (unitId) setSelectedUnitId(unitId);
+                      }}
+                      className="ml-2 rounded-lg border border-slate-300 bg-white px-2 py-2 text-slate-800"
+                    >
+                      <option value="">Choose unit</option>
+                      {property.units
+                        .filter((unit) => unit.status === 'draft')
+                        .map((unit) => (
+                          <option key={unit.unit_id} value={unit.unit_id}>{unit.unit_code}</option>
+                        ))}
+                    </select>
+                  </label>
+                ) : <span />}
+                <button
+                  type="button"
+                  onClick={() => void saveUnit()}
+                  disabled={saving || !data?.readings_due}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  <Camera size={16} />
+                  {saving ? 'Saving reading and photo…' : 'Save unit and continue'}
+                </button>
+              </div>
+            </section>
+          ) : (
+            <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+              <div className="flex items-start gap-3">
+                <CheckCircle size={20} className="mt-0.5 text-emerald-700" />
+                <div>
+                  <h2 className="font-bold text-emerald-900">All unit readings are ready</h2>
+                  <p className="mt-1 text-sm text-emerald-800">
+                    {!data?.readings_due
+                      ? `${completedCount} of ${property.units.length} readings are already saved. Entry unlocks on ${readingsOpenDateLabel}.`
+                      : allPublished
+                      ? `All ${property.units.length} readings for ${periodLabel} are already published.`
+                      : `${completedCount} of ${property.units.length} units have readings and meter photos for ${periodLabel}. Review any saved drafts below, then publish to start invoice drafting.`}
+                  </p>
+                </div>
+              </div>
+            </section>
           )}
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h2 className="text-sm font-bold text-slate-800">Property reading progress</h2>
+            <ul className="mt-3 divide-y divide-slate-100">
+              {property.units.map((unit) => (
+                <li key={unit.unit_id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+                  <span className="font-semibold text-slate-800">{unit.unit_code}</span>
+                  <span className="flex flex-col text-slate-600">
+                    <span>Previous month: {unit.previous_value ?? 'Not recorded'} m³</span>
+                    <span>
+                      {unit.status === 'published'
+                        ? `Published · ${unit.current_value} m³`
+                        : unit.current_value !== null
+                          ? `Draft · ${unit.current_value} m³ · ${unit.photo_uploaded ? 'photo saved' : 'photo needed'}`
+                          : 'Current reading needed'}
+                    </span>
+                  </span>
+                  {unit.status === 'draft' && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedUnitId(unit.unit_id)}
+                      disabled={!data?.readings_due}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => void publish()}
+              disabled={publishing || !property.can_publish || !data?.readings_due}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              <Send size={16} />
+              {publishing
+                ? 'Publishing…'
+                : allPublished
+                  ? 'Readings already published'
+                  : `Confirm and publish ${property.units.length} readings`}
+            </button>
+          </div>
         </>
       )}
     </div>

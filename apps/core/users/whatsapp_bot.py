@@ -38,6 +38,7 @@ from users.models import (
     MaintenanceQuotation,
     MaintenanceTicket,
     MaintenanceTicketComment,
+    MeterReadingDraft,
     MoveInChecklistItem,
     MoveInPackage,
     MoveOutNotice,
@@ -62,6 +63,16 @@ from users.payment_allocations import (
     lock_tenant_invoice,
 )
 from users.roles import CARETAKER_ROLE, has_role
+from users.water_readings import (
+    WaterReadingError,
+    attach_caretaker_water_reading_photo,
+    caretaker_water_period,
+    caretaker_water_readings_due,
+    caretaker_water_readings_open_date,
+    caretaker_water_units,
+    publish_caretaker_water_readings,
+    save_caretaker_water_reading_draft,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +459,7 @@ def _show_menu(contact, state):
         _save_state(state)
         rows = [
             ("c_occupancy", "Occupancy status", "Unit totals, occupancy and vacant units"),
+            ("c_water_readings", "Monthly water readings", "Record meter readings unit by unit"),
             ("c_tickets", "Maintenance tickets", "View and update work at your properties"),
             ("c_report", "Report an issue", "Log an on-site maintenance issue"),
             ("c_checklists", "Checklists & inspections", "Move-in/out inspections and routine checks"),
@@ -1160,6 +1172,322 @@ def _caretaker_occupancy_summary(contact):
             chunk += next_code
     if chunk:
         send_text(contact.wa_id, f"Vacant unit codes: {chunk}")
+
+
+def _caretaker_water_reading_context(contact, state):
+    property_id = state.state.get("property_id")
+    period_value = state.state.get("period")
+    try:
+        property_id = int(property_id)
+        period = date.fromisoformat(str(period_value))
+    except (TypeError, ValueError):
+        return None, None, []
+    property_obj = _caretaker_properties(contact).filter(pk=property_id).first()
+    if property_obj is None:
+        return None, period, []
+    return property_obj, period, caretaker_water_units(property_obj, period)
+
+
+def _caretaker_water_readings_start(contact, state):
+    property_obj = _caretaker_properties(contact).select_related("branch").first()
+    if property_obj is None:
+        send_text(contact.wa_id, "Select an assigned property before recording water readings.")
+        return
+    period = caretaker_water_period()
+    if not caretaker_water_readings_due():
+        opens_on = caretaker_water_readings_open_date()
+        send_text(
+            contact.wa_id,
+            f"Monthly water readings open on {opens_on.strftime('%B')} {opens_on.day}. "
+            f"The upcoming billing period is {period.strftime('%B %Y')}.",
+        )
+        return
+    rows = caretaker_water_units(property_obj, period)
+    if not rows:
+        send_text(
+            contact.wa_id,
+            f"{property_obj.name} has no occupied units requiring metered water readings.",
+        )
+        return
+    if all(row["status"] == "published" for row in rows):
+        send_text(
+            contact.wa_id,
+            f"All water readings for {property_obj.name} ({period.strftime('%B %Y')}) "
+            "have already been published.",
+        )
+        return
+    state.state = {
+        "flow": "caretaker_water_readings",
+        "step": "unit",
+        "property_id": property_obj.pk,
+        "period": period.isoformat(),
+        "unit_ids": [row["unit_id"] for row in rows],
+        "unit_index": 0,
+    }
+    _caretaker_water_readings_next(contact, state)
+
+
+def _caretaker_water_readings_next(contact, state):
+    property_obj, period, rows = _caretaker_water_reading_context(contact, state)
+    if property_obj is None:
+        state.state = {"flow": "menu"}
+        _save_state(state)
+        send_text(
+            contact.wa_id,
+            "The selected property is no longer assigned to your caretaker account. "
+            "Please choose a property again.",
+        )
+        _show_menu(contact, state)
+        return
+    rows_by_id = {row["unit_id"]: row for row in rows}
+    unit_ids = state.state.get("unit_ids", [])
+    for unit_id in rows_by_id:
+        if unit_id not in unit_ids:
+            unit_ids.append(unit_id)
+    state.state["unit_ids"] = unit_ids
+    while state.state.get("unit_index", 0) < len(unit_ids):
+        unit_id = unit_ids[state.state["unit_index"]]
+        row = rows_by_id.get(unit_id)
+        if row is None or row["status"] == "published" or (
+            row["status"] == "draft"
+            and row["previous_value"] is not None
+            and row["current_value"] is not None
+            and row["photo_uploaded"]
+        ):
+            state.state["unit_index"] += 1
+            continue
+        state.state["unit_id"] = unit_id
+        state.state["current_value"] = row["current_value"]
+        draft = MeterReadingDraft.objects.filter(
+            unit_id=unit_id,
+            meter=row["meter"],
+            period=period,
+        ).first()
+        if draft and draft.current_value is not None:
+            state.state["current_value"] = str(draft.current_value)
+            state.state["step"] = "photo"
+            _save_state(state)
+            send_text(
+                contact.wa_id,
+                f"Unit {row['unit_code']} — meter {row['meter']}. "
+                f"Saved reading: {draft.current_value}. Send a clear meter photo, "
+                "or reply *edit* to correct the reading.",
+            )
+        elif row["previous_value"] is None:
+            state.state["step"] = "previous"
+            _save_state(state)
+            send_text(
+                contact.wa_id,
+                f"Unit {row['unit_code']} — meter {row['meter']} has no previous reading. "
+                "Enter the previous meter value first.",
+            )
+        else:
+            state.state["previous_value"] = row["previous_value"]
+            state.state["step"] = "reading"
+            _save_state(state)
+            send_text(
+                contact.wa_id,
+                f"Unit {row['unit_code']} — meter {row['meter']}\n"
+                f"Previous reading: {row['previous_value']}\n"
+                "Enter the current meter reading.",
+            )
+        return
+
+    completed = sum(
+        row["status"] == "published"
+        or (
+            row["previous_value"] is not None
+            and row["current_value"] is not None
+            and row["photo_uploaded"]
+        )
+        for row in rows
+    )
+    if completed != len(rows):
+        state.state["unit_ids"] = [row["unit_id"] for row in rows]
+        state.state["unit_index"] = 0
+        _save_state(state)
+        _caretaker_water_readings_next(contact, state)
+        return
+    state.state["step"] = "confirm"
+    _save_state(state)
+    send_buttons(
+        contact.wa_id,
+        f"✅ All {completed} of {len(rows)} occupied metered units at "
+        f"{property_obj.name} have a reading and meter photo for "
+        f"{period.strftime('%B %Y')}.\n\nPublish these readings and start invoice drafting?",
+        [
+            ("cwr_publish", "Publish readings"),
+            ("cwr_cancel", "Cancel"),
+        ],
+    )
+
+
+def _caretaker_water_reading_submit_value(contact, state, value):
+    try:
+        reading = Decimal(value.strip())
+        if (
+            not reading.is_finite()
+            or reading < 0
+            or reading.as_tuple().exponent < -4
+            or reading.adjusted() >= 10
+        ):
+            raise InvalidOperation
+    except (InvalidOperation, ValueError):
+        send_text(contact.wa_id, "Enter a non-negative meter value with at most 4 decimal places.")
+        return
+
+    property_obj, period, rows = _caretaker_water_reading_context(contact, state)
+    unit_id = state.state.get("unit_id")
+    row = next((item for item in rows if item["unit_id"] == unit_id), None)
+    if property_obj is None or row is None:
+        send_text(contact.wa_id, "That unit is no longer eligible for this reading. Restart the flow.")
+        state.state = {"flow": "menu"}
+        _save_state(state)
+        return
+    supplied_previous = None
+    if state.state.get("previous_value") is not None:
+        try:
+            supplied_previous = Decimal(str(state.state["previous_value"]))
+        except InvalidOperation:
+            send_text(contact.wa_id, "The saved previous reading is invalid. Restart this reading.")
+            state.state = {"flow": "menu"}
+            _save_state(state)
+            return
+    try:
+        draft = save_caretaker_water_reading_draft(
+            contact.user,
+            property_obj,
+            period,
+            unit_id,
+            reading,
+            supplied_previous=supplied_previous,
+        )
+    except WaterReadingError as exc:
+        send_text(contact.wa_id, exc.detail)
+        return
+    except DatabaseError:
+        logger.exception("Could not save caretaker water reading draft.")
+        send_text(contact.wa_id, "I couldn't save that reading right now. Please try again.")
+        return
+    state.state["current_value"] = str(draft.current_value)
+    state.state["step"] = "photo"
+    _save_state(state)
+    send_text(
+        contact.wa_id,
+        f"Reading {draft.current_value} saved for unit {row['unit_code']}. "
+        "Now send a clear photo of this unit's water meter.",
+    )
+
+
+def _caretaker_water_reading_add_photo(contact, state, image):
+    media_id = image.get("id")
+    if not media_id:
+        send_text(contact.wa_id, "I couldn't retrieve that meter photo. Please send it again.")
+        return
+    try:
+        content, content_type = _fetch_media(media_id)
+    except (HTTPError, OSError, TypeError, ValueError):
+        logger.exception("Caretaker water meter photo could not be downloaded.")
+        send_text(contact.wa_id, "I couldn't retrieve that meter photo. Please send it again.")
+        return
+    property_obj, period, rows = _caretaker_water_reading_context(contact, state)
+    unit_id = state.state.get("unit_id")
+    row = next((item for item in rows if item["unit_id"] == unit_id), None)
+    if property_obj is None or row is None:
+        send_text(contact.wa_id, "That unit is no longer eligible. Restart the reading flow.")
+        state.state = {"flow": "menu"}
+        _save_state(state)
+        return
+    try:
+        expected_current_value = Decimal(str(state.state["current_value"]))
+        if (
+            not expected_current_value.is_finite()
+            or expected_current_value < 0
+            or expected_current_value.as_tuple().exponent < -4
+            or expected_current_value.adjusted() >= 10
+        ):
+            raise InvalidOperation
+    except (KeyError, InvalidOperation, TypeError, ValueError):
+        state.state["step"] = "reading"
+        state.state.pop("current_value", None)
+        _save_state(state)
+        send_text(
+            contact.wa_id,
+            "The saved reading is missing or invalid. Enter the current meter reading again.",
+        )
+        return
+    try:
+        attach_caretaker_water_reading_photo(
+            contact.user,
+            property_obj,
+            period,
+            unit_id,
+            content,
+            content_type or image.get("mime_type", ""),
+            expected_current_value=expected_current_value,
+        )
+    except WaterReadingError as exc:
+        send_text(contact.wa_id, exc.detail)
+        return
+    except DatabaseError:
+        logger.exception("Could not attach caretaker water meter photo.")
+        send_text(contact.wa_id, "I couldn't save that meter photo right now. Please try again.")
+        return
+    state.state["unit_index"] += 1
+    state.state.pop("current_value", None)
+    state.state.pop("previous_value", None)
+    _save_state(state)
+    send_text(
+        contact.wa_id,
+        f"📸 Meter photo saved for {row['unit_code']}. Moving to the next unit.",
+    )
+    _caretaker_water_readings_next(contact, state)
+
+
+def _caretaker_water_readings_publish(contact, state):
+    property_obj, period, _ = _caretaker_water_reading_context(contact, state)
+    if property_obj is None or period != caretaker_water_period():
+        state.state = {"flow": "menu"}
+        _save_state(state)
+        send_text(contact.wa_id, "This reading period or property is no longer available. Restart the flow.")
+        return
+    try:
+        result = publish_caretaker_water_readings(property_obj, period, contact.user)
+    except DatabaseError:
+        logger.exception("Could not publish caretaker water readings.")
+        send_text(contact.wa_id, "I couldn't publish the readings right now. Please try again.")
+        return
+    if "error" in result:
+        _, title, detail, code = result["error"]
+        send_text(contact.wa_id, f"{title}: {detail}")
+        if code in {"no-readings-required", "readings-already-published"}:
+            state.state = {"flow": "menu"}
+            _save_state(state)
+            _show_menu(contact, state)
+            return
+        state.state["unit_ids"] = [
+            row["unit_id"]
+            for row in caretaker_water_units(property_obj, period)
+        ]
+        state.state["unit_index"] = 0
+        _save_state(state)
+        _caretaker_water_readings_next(contact, state)
+        return
+    state.state = {"flow": "menu"}
+    _save_state(state)
+    if result["invoice_drafting_queued"]:
+        send_text(
+            contact.wa_id,
+            f"✅ Published {result['published']} water readings for "
+            f"{period.strftime('%B %Y')}. Invoice drafts are being generated.",
+        )
+    else:
+        send_text(
+            contact.wa_id,
+            f"✅ Readings for {period.strftime('%B %Y')} are published, but invoice drafting "
+            "could not be queued. The scheduled billing task will retry.",
+        )
+    _show_menu(contact, state)
 
 
 def _caretaker_tickets(contact):
@@ -3638,6 +3966,56 @@ def _handle_caretaker_message(contact, state, message, choice, text, kind):
         return True
     if flow == "caretaker_property_select":
         return _handle_caretaker_property_selection(contact, state, choice)
+    if flow == "caretaker_water_readings":
+        step = state.state.get("step", "")
+        if step == "previous":
+            try:
+                previous = Decimal(text.strip())
+                if (
+                    not previous.is_finite()
+                    or previous < 0
+                    or previous.as_tuple().exponent < -4
+                    or previous.adjusted() >= 10
+                ):
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                send_text(contact.wa_id, "Enter a non-negative previous value with at most 4 decimal places.")
+                return True
+            state.state["previous_value"] = str(previous)
+            state.state["step"] = "reading"
+            _save_state(state)
+            send_text(contact.wa_id, f"Previous reading saved as {previous}. Enter the current meter reading.")
+            return True
+        if step == "reading":
+            if not text:
+                send_text(contact.wa_id, "Reply with the current meter reading as a number.")
+                return True
+            _caretaker_water_reading_submit_value(contact, state, text)
+            return True
+        if step == "photo":
+            if kind == "image":
+                _caretaker_water_reading_add_photo(contact, state, message.get("image", {}))
+                return True
+            if lowered == "edit":
+                state.state["step"] = "reading"
+                _save_state(state)
+                send_text(contact.wa_id, "Enter the corrected current meter reading. A new meter photo will be required.")
+                return True
+            send_text(contact.wa_id, "Send a clear meter photo, or reply *edit* to correct the reading.")
+            return True
+        if step == "confirm":
+            if choice == "cwr_publish":
+                _caretaker_water_readings_publish(contact, state)
+            elif choice == "cwr_cancel":
+                state.state = {"flow": "menu"}
+                _save_state(state)
+                send_text(contact.wa_id, "Publishing cancelled. Saved drafts are kept; choose Monthly water readings to resume.")
+                _show_menu(contact, state)
+            else:
+                send_text(contact.wa_id, "Choose Publish readings or Cancel.")
+            return True
+        _caretaker_water_readings_start(contact, state)
+        return True
     if _caretaker_active_property(contact, state) is None:
         if _caretaker_assigned_properties(contact).exists():
             _caretaker_property_selection_page(contact, state)
@@ -3650,6 +4028,9 @@ def _handle_caretaker_message(contact, state, message, choice, text, kind):
         return True
     if choice == "c_occupancy":
         _caretaker_occupancy_summary(contact)
+        return True
+    if choice == "c_water_readings":
+        _caretaker_water_readings_start(contact, state)
         return True
     if choice == "c_tickets":
         _caretaker_ticket_list(contact, state)

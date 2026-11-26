@@ -10,6 +10,8 @@ type TenantActivation = {
   email: string;
   unit_code: string;
   identity_required: boolean;
+  identity_confirmation_required: boolean;
+  existing_account: boolean;
   phone_verification_required: boolean;
 };
 
@@ -40,6 +42,8 @@ export default function TenantActivationPage() {
           email: data.email,
           unit_code: data.unit_code,
           identity_required: data.identity_required === true,
+          identity_confirmation_required: data.identity_confirmation_required === true,
+          existing_account: data.existing_account === true,
           phone_verification_required: data.phone_verification_required === true,
         };
         setActivation(context);
@@ -67,6 +71,8 @@ export default function TenantActivationPage() {
         email: data.email,
         unit_code: data.unit_code,
         identity_required: data.identity_required === true,
+        identity_confirmation_required: data.identity_confirmation_required === true,
+        existing_account: data.existing_account === true,
         phone_verification_required: data.phone_verification_required === true,
       });
       setFullName(data.full_name);
@@ -79,11 +85,12 @@ export default function TenantActivationPage() {
 
   const handleActivate = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (!activation) return;
     if (password !== confirmPassword) {
       setError('Passwords do not match.');
       return;
     }
-    if (!isActivationPasswordStrong(password)) {
+    if (!activation?.existing_account && !isActivationPasswordStrong(password)) {
       setError('Choose a password that meets all the strength requirements.');
       return;
     }
@@ -98,8 +105,10 @@ export default function TenantActivationPage() {
           code: activationCode,
           unitCode: linkToken ? undefined : unitCode,
           fullName,
-          nationalIdOrPassport,
-          password,
+          nationalIdOrPassport: activation.identity_required || activation.identity_confirmation_required
+            ? nationalIdOrPassport
+            : undefined,
+          password: activation.existing_account ? undefined : password,
         }),
       });
       const data = await response.json();
@@ -166,7 +175,9 @@ export default function TenantActivationPage() {
                 <h2 className="mb-1 text-xl font-bold text-emerald-900">Hi {fullName.split(' ')[0] || 'Tenant'}!</h2>
                 <p className="text-sm text-emerald-800">
                   {activation.unit_code && <>Your unit is <strong>{activation.unit_code}</strong>. </>}
-                  Create a password for <strong>{activation.email || 'your tenant account'}</strong>.
+                  {activation.existing_account
+                    ? <>Confirm your identity to add this tenancy to <strong>your existing account</strong>.</>
+                    : <>Create a password for <strong>{activation.email || 'your tenant account'}</strong>.</>}
                 </p>
               </div>
               {error && <div className="flex gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertTriangle size={18} />{error}</div>}
@@ -174,9 +185,13 @@ export default function TenantActivationPage() {
                 <label className="mb-1 block text-sm font-medium text-slate-700">Full Name</label>
                 <input required value={fullName} onChange={(event) => setFullName(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="name" />
               </div>
-              {activation.identity_required && (
+              {(activation.identity_required || activation.identity_confirmation_required) && (
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700">National ID or Passport Number</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    {activation.identity_confirmation_required
+                      ? 'Confirm the National ID or Passport Number provided during onboarding'
+                      : 'National ID or Passport Number'}
+                  </label>
                   <input required value={nationalIdOrPassport} onChange={(event) => setNationalIdOrPassport(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="off" />
                 </div>
               )}
@@ -191,14 +206,16 @@ export default function TenantActivationPage() {
                     className="w-full rounded-xl border border-slate-300 px-4 py-3 font-mono tracking-[0.3em]" />
                 </div>
               )}
-              <ActivationPasswordFields
-                password={password}
-                confirmation={confirmPassword}
-                onPasswordChange={setPassword}
-                onConfirmationChange={setConfirmPassword}
-              />
-              <button type="submit" disabled={activating || (linkToken && activationCode.length !== 6) || !isActivationPasswordStrong(password) || password !== confirmPassword} className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white disabled:opacity-70">
-                {activating ? 'Activating...' : 'Activate Account'}
+              {!activation.existing_account && (
+                <ActivationPasswordFields
+                  password={password}
+                  confirmation={confirmPassword}
+                  onPasswordChange={setPassword}
+                  onConfirmationChange={setConfirmPassword}
+                />
+              )}
+              <button type="submit" disabled={activating || (linkToken && activationCode.length !== 6) || (!activation.existing_account && (!isActivationPasswordStrong(password) || password !== confirmPassword))} className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white disabled:opacity-70">
+                {activating ? 'Confirming...' : activation.existing_account ? 'Confirm identity and link account' : 'Activate Account'}
               </button>
             </form>
           )}

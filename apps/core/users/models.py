@@ -3006,6 +3006,13 @@ class TenantActivationChallenge(models.Model):
         on_delete=models.PROTECT,
         related_name="activation_challenges",
     )
+    existing_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="tenant_account_link_challenges",
+        blank=True,
+        null=True,
+    )
     token_hash = models.CharField(max_length=128, unique=True)
     code_hash = models.CharField(max_length=64, unique=True, blank=True, null=True)
     phone_verification_required = models.BooleanField(default=False)
@@ -3518,6 +3525,15 @@ class StaffActivationChallenge(models.Model):
         on_delete=models.CASCADE,
         related_name="activation_challenges",
     )
+    existing_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="staff_account_link_challenges",
+        blank=True,
+        null=True,
+    )
+    pending_roles = models.JSONField(default=list, blank=True)
+    pending_branch_ids = models.JSONField(default=list, blank=True)
     code_hash = models.CharField(max_length=256)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
@@ -3536,6 +3552,13 @@ class LandlordActivationChallenge(models.Model):
         Landlord,
         on_delete=models.CASCADE,
         related_name="activation_challenges",
+    )
+    existing_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="landlord_account_link_challenges",
+        blank=True,
+        null=True,
     )
     code_hash = models.CharField(max_length=256)
     created_at = models.DateTimeField(auto_now_add=True)
