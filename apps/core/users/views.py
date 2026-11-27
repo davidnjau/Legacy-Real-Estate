@@ -42,9 +42,18 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from openpyxl import load_workbook
 
 from users.access import accessible_branches
-from users.arrears import arrears_for_accessible_invoices, invoice_arrears
+from users.arrears import (
+    arrears_for_accessible_invoices,
+    invoice_arrears,
+    is_migration_opening_balance_invoice,
+)
 from users.audit import record_audit_event
-from users.billing import generate_monthly_invoice, month_end, water_reading_status
+from users.billing import (
+    generate_monthly_invoice,
+    month_end,
+    refresh_draft_balance_lines_for_tenancy,
+    water_reading_status,
+)
 from users import daraja
 from users.email import email_delivery_is_configured, send_email
 from users.legacy_imports import import_legacy_data
@@ -89,6 +98,7 @@ from users.models import (
     MpesaCallback,
     Payment,
     PaymentAllocation,
+    PhoneOTPChallenge,
     Property,
     PropertyBillingSettings,
     PropertyCaretakerAssignment,
@@ -140,6 +150,7 @@ from users.object_storage import (
 )
 from users.roles import (
     AGENCY_CARETAKER_ROLE_NAMES,
+    AGENCY_STAFF_ROLE_NAMES,
     BRANCH_MANAGER_ROLE,
     CARETAKER_ROLE,
     LANDLORD_MANAGEMENT_ROLE_NAMES,
@@ -294,6 +305,29 @@ def _send_landlord_activation_email(user, challenge_id, code, *, link_existing_a
     )
 
 
+def _queue_landlord_activation_sms(request, landlord, challenge, code):
+    if not settings.PUBLIC_SITE_URL:
+        raise ImproperlyConfigured(
+            "PUBLIC_SITE_URL must be configured for landlord activation."
+        )
+    activation_url = (
+        f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate-landlord"
+        f"?challenge_id={challenge.pk}"
+    )
+    queue_template_sms(
+        landlord.phone,
+        "landlord_activation",
+        {
+            "landlord_name": landlord.name,
+            "activation_url": activation_url,
+            "code": code,
+        },
+        actor=request.user,
+        request=request,
+        expires_at=challenge.expires_at,
+    )
+
+
 def _send_caretaker_activation_email(email_address, property_name, activation_url, code):
     if not settings.PUBLIC_SITE_URL:
         raise ImproperlyConfigured("PUBLIC_SITE_URL must be configured for caretaker activation.")
@@ -315,75 +349,6 @@ def _send_caretaker_activation_email(email_address, property_name, activation_ur
         f"Activate your {property_name} caretaker account",
         text_content,
         html_content=html_content,
-    )
-
-
-def _send_tenant_activation_email(
-    full_name,
-    email,
-    unit_code,
-    property_name,
-    activation_url,
-    activation_code,
-    *,
-    phone_verification_required=False,
-    existing_account=False,
-):
-    if not settings.PUBLIC_SITE_URL:
-        raise ImproperlyConfigured("PUBLIC_SITE_URL must be configured for tenant activation.")
-    code_message = (
-        f"Your six-digit activation OTP is {activation_code}.\n"
-        + (
-            "The same code was also sent by SMS to your registered phone.\n"
-            if phone_verification_required
-            else ""
-        )
-    )
-    activation_message = (
-        f"Use this secure link and code to confirm your identity and link the tenancy to your existing account: {activation_url}\n\n"
-        if existing_account
-        else f"Use this secure link and code to create your password: {activation_url}\n\n"
-    )
-    text_content = (
-        f"Hi {full_name}, welcome to Legacy Real Estate!\n\n"
-        f"Your tenant account for {property_name}, unit {unit_code}, has been successfully onboarded.\n"
-        f"{code_message}"
-        f"{activation_message}"
-        "The link expires in 48 hours."
-    )
-    safe_full_name = html.escape(full_name)
-    safe_email = html.escape(email)
-    safe_property_name = html.escape(property_name)
-    safe_unit_code = html.escape(unit_code)
-    safe_url = html.escape(activation_url, quote=True)
-    phone_code_note = (
-        "<p>The same code was also sent by SMS to your registered phone.</p>"
-        if phone_verification_required
-        else ""
-    )
-    code_html = (
-        f'<p>Your six-digit activation OTP is <span style="display:inline-block;padding:8px 14px;border-radius:8px;background-color:#e8f3ec;color:#123b2c;font-size:20px;font-weight:700;letter-spacing:3px;">{html.escape(activation_code)}</span>.</p>'
-        f"{phone_code_note}"
-    )
-    activation_instructions = (
-        "Confirm your identity and link this tenancy to your existing account."
-        if existing_account
-        else "Create a password for your tenant account."
-    )
-    html_content = (
-        f"<p>Hi {safe_full_name}, welcome to Legacy Real Estate!</p>"
-        f"<p>Your tenant account for {safe_property_name}, unit {safe_unit_code}, has been successfully onboarded.</p>"
-        f"{code_html}"
-        f"<p>{activation_instructions}</p>"
-        f'<p><a style="display:inline-block;padding:12px 20px;border-radius:8px;background-color:#123b2c;color:#ffffff;font-weight:700;text-decoration:none;" href="{safe_url}">Continue</a></p>'
-        f"<p>This link is for {safe_email} and expires in 48 hours.</p>"
-    )
-    send_email(
-        email,
-        "Welcome to Legacy Real Estate - activate your tenant account",
-        text_content,
-        html_content=html_content,
-        recipient_name=full_name,
     )
 
 
@@ -422,8 +387,20 @@ def _send_move_in_invoice_activation(request, invoice_id, *, force=False):
     tenant = invoice.tenancy.tenant
     if tenant.portal_user_id:
         return None
-    if not tenant.email:
-        return {"activation_email_sent": False, "activation_email_error": "The tenant has no email address."}
+    if not settings.PUBLIC_SITE_URL:
+        return {
+            "activation_email_sent": False,
+            "activation_email_error": None,
+            "activation_sms_queued": False,
+            "activation_sms_error": "PUBLIC_SITE_URL must be configured before sending tenant activation SMS.",
+        }
+    if not tenant.phone:
+        return {
+            "activation_email_sent": False,
+            "activation_email_error": None,
+            "activation_sms_queued": False,
+            "activation_sms_error": "The tenant has no phone number.",
+        }
 
     now = timezone.now()
     token = secrets.token_urlsafe(32)
@@ -445,12 +422,17 @@ def _send_move_in_invoice_activation(request, invoice_id, *, force=False):
         existing_sent = TenantActivationChallenge.objects.filter(
             tenant=tenant,
             unit=invoice.tenancy.unit,
+            phone_verification_required=True,
             used_at__isnull=True,
             expires_at__gt=now,
-            email_sent_at__isnull=False,
         ).exists()
         if existing_sent and not force:
-            return {"activation_email_sent": True, "activation_email_error": None}
+            return {
+                "activation_email_sent": False,
+                "activation_email_error": None,
+                "activation_sms_queued": True,
+                "activation_sms_error": None,
+            }
         TenantActivationChallenge.objects.filter(
             tenant=tenant,
             unit=invoice.tenancy.unit,
@@ -461,34 +443,40 @@ def _send_move_in_invoice_activation(request, invoice_id, *, force=False):
             unit=invoice.tenancy.unit,
             token_hash=_activation_hash(token),
             code_hash=_activation_hash(activation_code),
+            phone_verification_required=True,
             expires_at=now + timedelta(hours=48),
         )
 
-    activation_url = f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate?token={token}"
+    activation_url = f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate"
     try:
-        _send_tenant_activation_email(
-            tenant.name,
-            tenant.email,
-            invoice.tenancy.unit.code,
-            invoice.tenancy.unit.property.name,
-            activation_url,
-            activation_code,
+        queue_template_sms(
+            tenant.phone,
+            "tenant_activation",
+            {
+                "tenant_name": tenant.name,
+                "activation_url": activation_url,
+                "code": activation_code,
+            },
+            actor=request.user,
+            request=request,
+            expires_at=challenge.expires_at,
         )
-    except (ImproperlyConfigured, RuntimeError) as exc:
+    except (ImproperlyConfigured, RuntimeError, ValueError, OSError) as exc:
+        challenge.expires_at = timezone.now()
+        challenge.save(update_fields=["expires_at"])
         challenge.email_delivery_error = str(exc)[:500]
         challenge.save(update_fields=["email_delivery_error"])
-        logger.error("Could not deliver a paid move-in activation email (%s).", type(exc).__name__)
+        logger.error("Could not queue a paid move-in activation SMS (%s).", type(exc).__name__)
         return {
             "activation_email_sent": False,
-            "activation_email_error": f"Payment is confirmed, but the tenant activation email was not sent: {exc}",
+            "activation_email_error": None,
+            "activation_sms_queued": False,
+            "activation_sms_error": f"Payment is confirmed, but the tenant activation SMS was not queued: {exc}",
         }
 
-    challenge.email_sent_at = timezone.now()
-    challenge.email_delivery_error = ""
-    challenge.save(update_fields=["email_sent_at", "email_delivery_error"])
     record_audit_event(
         request,
-        "tenant_activation.emailed",
+        "tenant_activation.sms_queued",
         "TenantActivationChallenge",
         new_values={
             "id": challenge.pk,
@@ -498,7 +486,12 @@ def _send_move_in_invoice_activation(request, invoice_id, *, force=False):
             "expires_at": challenge.expires_at.isoformat(),
         },
     )
-    return {"activation_email_sent": True, "activation_email_error": None}
+    return {
+        "activation_email_sent": False,
+        "activation_email_error": None,
+        "activation_sms_queued": True,
+        "activation_sms_error": None,
+    }
 
 
 def _record_auth_event(request, action, user=None):
@@ -931,6 +924,12 @@ def update_property_officer_viewing(request, viewing_id):
 
 def _has_role(user, role_name):
     profile = getattr(user, "profile", None)
+    if role_name in {
+        TENANT_PORTAL_ROLE,
+        LANDLORD_PORTAL_ROLE,
+        CARETAKER_ROLE,
+    } and user.groups.filter(name=role_name).exists():
+        return True
     if profile is not None and profile.agency_memberships.filter(
         roles__isnull=False
     ).exists():
@@ -940,6 +939,37 @@ def _has_role(user, role_name):
             roles__name=role_name,
         ).exists()
     return user.groups.filter(name=role_name).exists()
+
+
+def _user_is_associated_with_agency(user, agency):
+    profile = getattr(user, "profile", None)
+    if profile is None or not agency.is_active:
+        return False
+    return bool(
+        profile.branches.filter(agency=agency).exists()
+        or profile.agency_memberships.filter(
+            agency=agency,
+            agency__is_active=True,
+        ).exists()
+        or Tenant.objects.filter(portal_user=user, branch__agency=agency).exists()
+        or Landlord.objects.filter(portal_user=user, branch__agency=agency).exists()
+        or PropertyCaretakerAssignment.objects.filter(
+            caretaker=user,
+            property__branch__agency=agency,
+            ended_at__isnull=True,
+        ).exists()
+    )
+
+
+def _staff_self_tenancy_error(request, tenant):
+    if tenant is not None and tenant.portal_user_id == request.user.pk:
+        return _problem(
+            403,
+            "Personal tenancy action denied",
+            "Another staff member must handle this tenancy lifecycle, financial, or approval action.",
+            "staff-self-tenancy-action-denied",
+        )
+    return None
 
 
 def _agency_account_membership(profile, user, agency):
@@ -1850,7 +1880,8 @@ def _invoice_line_payload(line):
 
 
 def _invoice_payload(invoice):
-    waivers = list(
+    migration_balance = is_migration_opening_balance_invoice(invoice)
+    waivers = [] if migration_balance else list(
         ArrearsWaiver.objects.filter(invoice=invoice)
         .select_related("approved_by__profile")
         .order_by("approved_at", "id")
@@ -1932,7 +1963,8 @@ def _property_officer_waiver_payload(item):
 
 def _property_officer_billing_invoice_payload(invoice):
     payload = _invoice_payload(invoice)
-    approved_waivers = (
+    migration_balance = is_migration_opening_balance_invoice(invoice)
+    approved_waivers = Decimal("0.00") if migration_balance else (
         ArrearsWaiver.objects.filter(invoice=invoice)
         .aggregate(total=Sum("amount"))["total"]
         or Decimal("0.00")
@@ -1946,7 +1978,7 @@ def _property_officer_billing_invoice_payload(invoice):
             "tenant_name": invoice.tenancy.tenant.name,
             "waived_amount": str(approved_waivers),
             "net_amount_due": str(max(invoice.total - approved_waivers, Decimal("0.00"))),
-            "waiver_requests": [
+            "waiver_requests": [] if migration_balance else [
                 _property_officer_waiver_payload(item)
                 for item in invoice.waiver_requests.all()
             ],
@@ -2168,6 +2200,13 @@ def property_officer_invoice_waiver(request, invoice_id=None):
         )
         if invoice is None:
             return _problem(404, "Invoice not found", "The invoice is outside your access scope.", "invoice-not-found")
+        if is_migration_opening_balance_invoice(invoice):
+            return _problem(
+                400,
+                "Invalid invoice",
+                "Opening migration arrears cannot be waived. Use the Billing Wizard for monthly invoice waivers.",
+                "migration-arrears-not-waivable",
+            )
         property_id = invoice.tenancy.unit.property_id
         unit_id = invoice.tenancy.unit_id
         period_start = invoice.period_start
@@ -2220,6 +2259,13 @@ def property_officer_invoice_waiver(request, invoice_id=None):
         invoice = Invoice.objects.filter(tenancy=tenancy, period_start=period_start).first()
         if invoice and invoice.status not in (Invoice.STATUS_DRAFT, Invoice.STATUS_ISSUED):
             return _problem(400, "Invalid invoice", "The billing period invoice cannot receive a waiver request.", "invalid-invoice")
+        if invoice and is_migration_opening_balance_invoice(invoice):
+            return _problem(
+                400,
+                "Invalid invoice",
+                "Opening migration arrears cannot be waived. Use the Billing Wizard for monthly invoice waivers.",
+                "migration-arrears-not-waivable",
+            )
         existing_request = InvoiceWaiverRequest.objects.filter(
             unit=unit,
             period_start=period_start,
@@ -2349,6 +2395,27 @@ def decide_property_officer_invoice_waiver(request, waiver_id):
             return _problem(404, "Waiver not found", "The pending waiver is unavailable.", "waiver-not-found")
         if decision == InvoiceWaiverRequest.STATUS_REJECTED and not reason.strip():
             return _problem(400, "Invalid decision", "A rejection reason is required.", "invalid-decision")
+        if decision == InvoiceWaiverRequest.STATUS_APPROVED:
+            migration_invoice = waiver.invoice
+            if migration_invoice is None:
+                migration_invoice = (
+                    Invoice.objects.filter(
+                        tenancy__unit_id=waiver.unit_id,
+                        period_start=waiver.period_start,
+                        lines__metadata__migration_opening_balance=True,
+                    )
+                    .distinct()
+                    .first()
+                )
+            if migration_invoice and is_migration_opening_balance_invoice(
+                migration_invoice
+            ):
+                return _problem(
+                    400,
+                    "Invalid waiver",
+                    "Opening migration arrears cannot be waived.",
+                    "migration-arrears-not-waivable",
+                )
         if decision == InvoiceWaiverRequest.STATUS_APPROVED and waiver.invoice_id:
             approved = (
                 ArrearsWaiver.objects.filter(invoice=waiver.invoice)
@@ -3036,6 +3103,9 @@ def create_offline_payment(request):
         amount = Decimal(str(body.get("amount")))
     except (Tenant.DoesNotExist, TypeError, ValueError, InvalidOperation):
         return _problem(400, "Invalid payment", "tenant_id and amount must be valid.", "invalid-payment")
+    self_tenancy_error = _staff_self_tenancy_error(request, tenant)
+    if self_tenancy_error:
+        return self_tenancy_error
     source = body.get("source")
     reference = body.get("reference")
     if source not in {Payment.SOURCE_CASH, Payment.SOURCE_CHEQUE} or amount <= 0:
@@ -4356,6 +4426,9 @@ def create_staff_move_out_notice(request):
         tenancy = None
     if tenancy is None:
         return _problem(404, "Tenancy not found", "The active tenancy is unavailable.", "tenancy-not-found")
+    self_tenancy_error = _staff_self_tenancy_error(request, tenancy.tenant)
+    if self_tenancy_error:
+        return self_tenancy_error
     try:
         proposed_date = _move_out_notice_date(body, tenancy)
     except ValueError as exc:
@@ -4459,6 +4532,9 @@ def decide_move_out_notice(request, notice_id):
         )
         if notice is None:
             return _problem(404, "Notice not found", "The move-out notice is unavailable.", "move-out-notice-not-found")
+        self_tenancy_error = _staff_self_tenancy_error(request, notice.tenancy.tenant)
+        if self_tenancy_error:
+            return self_tenancy_error
         unit = Unit.objects.select_for_update().get(pk=tenancy.unit_id)
         caretaker = None
         if action == "accept":
@@ -4699,6 +4775,9 @@ def create_move_out_settlement(request):
             )
             if tenancy is None or notice is None:
                 return _problem(404, "Move-out notice not found", "The accepted notice is unavailable.", "move-out-notice-not-found")
+            self_tenancy_error = _staff_self_tenancy_error(request, tenancy.tenant)
+            if self_tenancy_error:
+                return self_tenancy_error
             if tenancy.status != Tenancy.STATUS_ACTIVE and not MoveOutSettlement.objects.filter(
                 tenancy=tenancy,
                 status=MoveOutSettlement.STATUS_REJECTED,
@@ -4895,6 +4974,12 @@ def decide_move_out_settlement(request, settlement_id):
             return _problem(404, "Settlement not found", "The move-out settlement is unavailable.", "move-out-settlement-not-found")
         if settlement.status != MoveOutSettlement.STATUS_AWAITING_APPROVAL:
             return _problem(409, "Settlement unavailable", "Only a settlement awaiting approval can be reviewed.", "move-out-settlement-conflict")
+        self_tenancy_error = _staff_self_tenancy_error(
+            request,
+            settlement.tenancy.tenant,
+        )
+        if self_tenancy_error:
+            return self_tenancy_error
         if action == "approve" and settlement.prepared_by_id == request.user.pk:
             return _problem(403, "Permission denied", "The settlement preparer cannot approve their own settlement.", "move-out-self-approval-denied")
         if action == "approve" and _move_out_settlement_balances_changed(settlement):
@@ -4993,6 +5078,12 @@ def record_move_out_payout(request, settlement_id):
         return _problem(404, "Settlement not found", "The move-out settlement is unavailable.", "move-out-settlement-not-found")
     if settlement.status != MoveOutSettlement.STATUS_APPROVED:
         return _problem(409, "Settlement unavailable", "Only an approved settlement can be paid.", "move-out-settlement-conflict")
+    self_tenancy_error = _staff_self_tenancy_error(
+        request,
+        settlement.tenancy.tenant,
+    )
+    if self_tenancy_error:
+        return self_tenancy_error
     body = _json_body(request)
     if body is None:
         return _problem(400, "Invalid request", "A JSON object is required.", "invalid-request")
@@ -5165,6 +5256,11 @@ def allocate_payment(request, payment_id):
         )
         if invoice is None:
             return _problem(404, "Invoice not found", "The invoice is unavailable or outside your access scope.", "invoice-not-found")
+        self_tenancy_error = _staff_self_tenancy_error(
+            request, invoice.tenancy.tenant
+        )
+        if self_tenancy_error:
+            return self_tenancy_error
         invoice.paid = PaymentAllocation.objects.filter(invoice_id=invoice.pk).aggregate(
             total=Coalesce(models.Sum("amount"), Decimal("0.00"))
         )["total"]
@@ -5407,8 +5503,22 @@ def _agreement_audit_values(agreement):
     return values
 
 
-def _user_payload(user):
+def _user_payload(user, request=None):
     profile = getattr(user, "profile", None)
+    residential_scope = bool(
+        request is not None
+        and request.session.get("auth_scope") == "residential"
+    )
+    residential_roles = {TENANT_PORTAL_ROLE, LANDLORD_PORTAL_ROLE}
+    portal_roles = set(
+        user.groups.filter(
+            name__in=(
+                TENANT_PORTAL_ROLE,
+                LANDLORD_PORTAL_ROLE,
+                CARETAKER_ROLE,
+            )
+        ).values_list("name", flat=True)
+    )
     agencies = []
     if profile is None:
         name = user.get_full_name() or user.get_username()
@@ -5418,21 +5528,29 @@ def _user_payload(user):
     else:
         name = profile.name
         phone = profile.phone or None
-        branches = profile.accessible_branches()
+        branches = profile.accessible_branches(
+            role_names=residential_roles if residential_scope else None
+        )
         memberships = profile.agency_memberships.filter(
             agency__is_active=True,
             is_active=True,
         ).select_related("agency").prefetch_related("roles")
-        role_names = (
-            set()
-            if profile.agency_memberships.filter(roles__isnull=False).exists()
-            else set(user.groups.values_list("name", flat=True))
-        )
+        role_names = portal_roles
+        if not profile.agency_memberships.filter(roles__isnull=False).exists():
+            role_names.update(user.groups.values_list("name", flat=True))
         for membership in memberships:
             membership_roles = sorted(
                 membership.roles.values_list("name", flat=True)
             )
             role_names.update(membership_roles)
+            if residential_scope:
+                membership_roles = [
+                    role
+                    for role in membership_roles
+                    if role in residential_roles
+                ]
+            if not membership_roles:
+                continue
             agencies.append(
                 {
                     "id": membership.agency_id,
@@ -5446,6 +5564,11 @@ def _user_payload(user):
                     ),
                 }
             )
+    staff_step_up_roles = (
+        sorted(role_names - residential_roles) if residential_scope else []
+    )
+    if residential_scope:
+        role_names.intersection_update(residential_roles)
     return {
         "id": user.pk,
         "name": name,
@@ -5454,6 +5577,8 @@ def _user_payload(user):
         "roles": sorted(role_names),
         "branches": list(branches.order_by("name").values("id", "name", "town")),
         "agencies": agencies,
+        "staff_step_up_required": bool(staff_step_up_roles),
+        "staff_step_up_roles": staff_step_up_roles,
     }
 
 
@@ -5469,50 +5594,11 @@ def register_landlord_portal(request):
 
 @require_POST
 def register_tenant_portal(request):
-    body = _json_body(request)
-    if body is None:
-        return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
-    name = body.get("name")
-    email = body.get("email")
-    phone = body.get("phone")
-    password = body.get("password")
-    if not all(isinstance(value, str) for value in (name, email, phone, password)):
-        return _problem(400, "Invalid request", "name, email, phone, and password are required.", "invalid-request")
-    name = name.strip()
-    email = email.strip().lower()
-    if not name or len(name) > 255:
-        return _problem(400, "Invalid name", "Enter a valid full name.", "invalid-name")
-    if len(password) < 12:
-        return _problem(400, "Invalid password", "Password must contain at least 12 characters.", "invalid-password")
-    try:
-        validate_email(email)
-        phone = _normalize_ke_phone(phone)
-        password_validation.validate_password(password)
-    except (ValidationError, ValueError) as error:
-        detail = "; ".join(error.messages) if isinstance(error, ValidationError) else str(error)
-        return _problem(400, "Invalid registration", detail, "invalid-registration")
-
-    user_model = get_user_model()
-    if user_model.objects.filter(Q(username__iexact=email) | Q(email__iexact=email)).exists():
-        return _problem(409, "Account exists", "An account already exists for this email.", "account-exists")
-    if UserProfile.objects.filter(phone=phone).exists():
-        return _problem(409, "Phone already in use", "An account already exists for this phone number.", "phone-exists")
-
-    try:
-        with transaction.atomic():
-            role, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
-            user = user_model.objects.create_user(username=email, email=email, password=password)
-            user.groups.add(role)
-            profile = UserProfile.objects.create(user=user, name=name, phone=phone)
-            profile.full_clean()
-        login(request, user, backend="users.authentication.EmailOrPhoneBackend")
-    except (ValidationError, IntegrityError) as error:
-        return _problem(409, "Account exists", str(error), "account-exists")
-
-    _record_auth_event(request, "tenant_portal.registered", user)
-    return JsonResponse(
-        {"user": _user_payload(user), "status": "awaiting_agency_linkage"},
-        status=201,
+    return _problem(
+        403,
+        "Registration unavailable",
+        "Tenant accounts are provisioned by their agency.",
+        "tenant-registration-disabled",
     )
 
 
@@ -5558,7 +5644,7 @@ def _director_staff_scope(request, agency_id):
 def _staff_membership_payload(membership):
     user = membership.profile.user
     roles = sorted(
-        membership.roles.filter(name__in=AGENCY_CARETAKER_ROLE_NAMES).values_list(
+        membership.roles.filter(name__in=AGENCY_STAFF_ROLE_NAMES).values_list(
             "name", flat=True
         )
     )
@@ -5623,8 +5709,7 @@ def _issue_landlord_activation(landlord, existing_user=None):
         landlord=landlord,
         existing_user=existing_user,
         code_hash=make_password(code),
-        expires_at=timezone.now()
-        + timedelta(seconds=settings.AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS),
+        expires_at=timezone.now() + timedelta(hours=48),
     )
     return challenge, code
 
@@ -5648,7 +5733,7 @@ def director_staff(request):
             AgencyMembership.objects.filter(
                 agency=director_membership.agency,
             ).filter(
-                Q(roles__name__in=AGENCY_CARETAKER_ROLE_NAMES)
+                Q(roles__name__in=AGENCY_STAFF_ROLE_NAMES)
                 | Q(activation_challenges__existing_user__isnull=False)
             )
             .select_related("profile__user")
@@ -5663,7 +5748,7 @@ def director_staff(request):
                     "name": director_membership.agency.name,
                 },
                 "branches": branches,
-                "roles": list(AGENCY_CARETAKER_ROLE_NAMES),
+                "roles": list(AGENCY_STAFF_ROLE_NAMES),
                 "staff": [_staff_membership_payload(item) for item in memberships],
             }
         )
@@ -5697,7 +5782,7 @@ def director_staff(request):
         or len(identity.strip()) > 100
         or not isinstance(role_names, list)
         or not role_names
-        or any(role_name not in AGENCY_CARETAKER_ROLE_NAMES for role_name in role_names)
+        or any(role_name not in AGENCY_STAFF_ROLE_NAMES for role_name in role_names)
         or len(set(role_names)) != len(role_names)
         or not isinstance(branch_ids, list)
         or not branch_ids
@@ -5733,6 +5818,27 @@ def director_staff(request):
 
     user_model = get_user_model()
     roles = [Group.objects.get_or_create(name=role_name)[0] for role_name in role_names]
+    raw_existing_user_id = body.get("existing_user_id")
+    if isinstance(raw_existing_user_id, bool):
+        return _problem(
+            400,
+            "Invalid account",
+            "existing_user_id must be an integer.",
+            "invalid-account",
+        )
+    try:
+        selected_existing_user_id = (
+            int(raw_existing_user_id)
+            if raw_existing_user_id not in (None, "")
+            else None
+        )
+    except (TypeError, ValueError):
+        return _problem(
+            400,
+            "Invalid account",
+            "existing_user_id must be an integer.",
+            "invalid-account",
+        )
     challenge = None
     activation_code = None
     existing_account_user = None
@@ -5741,6 +5847,15 @@ def director_staff(request):
             user = user_model.objects.select_for_update().filter(
                 Q(username__iexact=email) | Q(email__iexact=email)
             ).first()
+            if selected_existing_user_id is not None and (
+                user is None or user.pk != selected_existing_user_id
+            ):
+                return _problem(
+                    409,
+                    "Account selection changed",
+                    "Select the matching agency account again before linking it.",
+                    "account-selection-mismatch",
+                )
             if user is None:
                 if UserProfile.objects.filter(phone__iexact=normalized_phone).exists():
                     return _problem(409, "Phone already in use", "An account already uses this phone.", "phone-in-use")
@@ -5761,6 +5876,13 @@ def director_staff(request):
                 profile.full_clean()
                 profile.save()
             else:
+                if user.is_active and selected_existing_user_id != user.pk:
+                    return _problem(
+                        400,
+                        "Account selection required",
+                        "Select the existing agency account before assigning staff access.",
+                        "account-selection-required",
+                    )
                 if (user.email or "").strip().lower() != email:
                     return _problem(
                         409,
@@ -5796,6 +5918,16 @@ def director_staff(request):
                         "account-details-mismatch",
                     )
                 if user.is_active:
+                    if not _user_is_associated_with_agency(
+                        user,
+                        director_membership.agency,
+                    ):
+                        return _problem(
+                            409,
+                            "Account outside agency",
+                            "An existing account can be linked only when it is already associated with this agency.",
+                            "account-outside-agency",
+                        )
                     existing_account_user = user
                 if not user.is_active and user.has_usable_password():
                     return _problem(
@@ -5824,18 +5956,21 @@ def director_staff(request):
                     "This person already has one or more selected roles in the agency. Edit their existing staff record.",
                     "staff-role-exists",
                 )
-            if existing_account_user:
-                challenge, activation_code = _issue_staff_activation(
-                    staff_membership,
-                    existing_user=existing_account_user,
-                    pending_roles=role_names,
-                    pending_branch_ids=sorted(branch_ids),
+            if existing_account_user and existing_staff_roles and not staff_membership.is_active:
+                return _problem(
+                    409,
+                    "Staff access suspended",
+                    "Reactivate this agency membership before adding another staff role.",
+                    "staff-membership-suspended",
                 )
+            if existing_account_user:
+                staff_membership.roles.add(*roles)
+                staff_membership.branches.add(*branches)
             else:
-                staff_membership.is_active = True
-                staff_membership.save(update_fields=["is_active"])
                 staff_membership.roles.add(*roles)
                 staff_membership.branches.set(branches)
+            staff_membership.is_active = True
+            staff_membership.save(update_fields=["is_active"])
             if not user.is_active:
                 challenge, activation_code = _issue_staff_activation(staff_membership)
             record_audit_event(
@@ -5899,7 +6034,7 @@ def director_staff_detail(request, membership_id):
             AgencyMembership.objects.select_related("agency", "profile__user")
             .filter(pk=membership_id)
             .filter(
-                Q(roles__name__in=AGENCY_CARETAKER_ROLE_NAMES)
+                Q(roles__name__in=AGENCY_STAFF_ROLE_NAMES)
                 | Q(activation_challenges__existing_user__isnull=False)
             )
             .distinct()
@@ -5949,7 +6084,7 @@ def director_staff_detail(request, membership_id):
     if (
         not isinstance(role_names, list)
         or not role_names
-        or any(role_name not in AGENCY_CARETAKER_ROLE_NAMES for role_name in role_names)
+        or any(role_name not in AGENCY_STAFF_ROLE_NAMES for role_name in role_names)
         or len(set(role_names)) != len(role_names)
         or not isinstance(branch_ids, list)
         or not branch_ids
@@ -5981,7 +6116,7 @@ def director_staff_detail(request, membership_id):
             pk=staff_membership.pk
         )
         staff_membership.roles.remove(
-            *staff_membership.roles.filter(name__in=AGENCY_CARETAKER_ROLE_NAMES)
+            *staff_membership.roles.filter(name__in=AGENCY_STAFF_ROLE_NAMES)
         )
         staff_membership.roles.add(*roles)
         staff_membership.branches.set(branches)
@@ -6013,7 +6148,7 @@ def resend_staff_activation(request, membership_id):
             AgencyMembership.objects.select_related("agency", "profile__user")
             .filter(pk=membership_id)
             .filter(
-                Q(roles__name__in=AGENCY_CARETAKER_ROLE_NAMES)
+                Q(roles__name__in=AGENCY_STAFF_ROLE_NAMES)
                 | Q(activation_challenges__existing_user__isnull=False)
             )
             .distinct()
@@ -6376,13 +6511,240 @@ def login_view(request):
             "authentication-failed",
         )
 
+    if _is_residential_only_account(user):
+        _record_auth_event(request, "login.failed", user)
+        return _problem(
+            401,
+            "Phone verification required",
+            "Tenant and landlord accounts sign in with a one-time phone code.",
+            "phone-otp-required",
+        )
+
     if requires_finance_mfa(user):
         _record_auth_event(request, "login.totp_challenge_issued", user)
         return _issue_totp_challenge(request, user)
 
     login(request, user, backend="users.authentication.EmailOrPhoneBackend")
+    request.session.pop("auth_scope", None)
+    request.session.set_expiry(settings.SESSION_COOKIE_AGE)
     _record_auth_event(request, "login.succeeded", user)
-    return JsonResponse({"user": _user_payload(user)})
+    return JsonResponse({"user": _user_payload(user, request)})
+
+
+def _residential_roles_for_user(user):
+    roles = set()
+    if _has_role(user, TENANT_PORTAL_ROLE) and Tenant.objects.filter(
+        portal_user=user
+    ).exists():
+        roles.add(TENANT_PORTAL_ROLE)
+    if _has_role(user, LANDLORD_PORTAL_ROLE) and Landlord.objects.filter(
+        portal_user=user
+    ).exists():
+        roles.add(LANDLORD_PORTAL_ROLE)
+    return roles
+
+
+def _is_residential_only_account(user):
+    roles = set(_user_payload(user)["roles"])
+    residential_roles = {TENANT_PORTAL_ROLE, LANDLORD_PORTAL_ROLE}
+    return bool(roles & residential_roles) and roles.issubset(residential_roles)
+
+
+@require_POST
+def request_phone_login_otp(request):
+    body = _json_body(request)
+    if body is None or not isinstance(body.get("phone"), str):
+        return _problem(
+            400,
+            "Invalid request",
+            "A valid phone number is required.",
+            "invalid-request",
+        )
+    try:
+        phone = _normalize_ke_phone(body["phone"])
+    except ValueError as error:
+        return _problem(400, "Invalid phone", str(error), "invalid-phone")
+
+    now = timezone.now()
+    recent_challenge = PhoneOTPChallenge.objects.filter(
+        phone=phone,
+        purpose=PhoneOTPChallenge.PURPOSE_LOGIN,
+        created_at__gte=now
+        - timedelta(seconds=settings.AUTH_SMS_RESEND_COOLDOWN_SECONDS),
+    ).order_by("-created_at").first()
+    if recent_challenge is not None:
+        retry_after = max(
+            1,
+            settings.AUTH_SMS_RESEND_COOLDOWN_SECONDS
+            - int((now - recent_challenge.created_at).total_seconds()),
+        )
+        return JsonResponse(
+            {
+                "title": "Please wait before requesting another code",
+                "detail": (
+                    "A sign-in code can be requested once every "
+                    f"{settings.AUTH_SMS_RESEND_COOLDOWN_SECONDS} seconds."
+                ),
+                "error": "otp-resend-cooldown",
+                "retry_after_seconds": retry_after,
+            },
+            status=429,
+        )
+
+    profile = UserProfile.objects.filter(
+        phone=phone,
+        user__is_active=True,
+    ).select_related("user").first()
+    user = profile.user if profile is not None else None
+    if user is not None and not _residential_roles_for_user(user):
+        user = None
+
+    PhoneOTPChallenge.objects.filter(
+        phone=phone,
+        purpose=PhoneOTPChallenge.PURPOSE_LOGIN,
+        consumed_at__isnull=True,
+    ).update(consumed_at=now)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    challenge = PhoneOTPChallenge.objects.create(
+        phone=phone,
+        purpose=PhoneOTPChallenge.PURPOSE_LOGIN,
+        user=user,
+        code_hash=make_password(code),
+        expires_at=now
+        + timedelta(seconds=settings.AUTH_SMS_CODE_LIFETIME_SECONDS),
+    )
+    if user is not None:
+        try:
+            queue_template_sms(
+                phone,
+                "login_verification_code",
+                {"code": code},
+                expires_at=challenge.expires_at,
+            )
+        except (ImproperlyConfigured, RuntimeError, ValueError) as error:
+            challenge.consumed_at = timezone.now()
+            challenge.save(update_fields=["consumed_at"])
+            logger.error(
+                "Could not queue a tenant/landlord login OTP (%s).",
+                type(error).__name__,
+            )
+            return _problem(
+                503,
+                "Sign-in code unavailable",
+                "The sign-in code could not be sent. Please try again later.",
+                "otp-delivery-unavailable",
+            )
+        _record_auth_event(request, "login.otp_requested", user)
+
+    return JsonResponse(
+        {
+            "challenge_id": challenge.pk,
+            "expires_in_seconds": settings.AUTH_SMS_CODE_LIFETIME_SECONDS,
+            "resend_after_seconds": settings.AUTH_SMS_RESEND_COOLDOWN_SECONDS,
+            "message": (
+                "If an active tenant or landlord account matches this number, "
+                "a sign-in code has been sent."
+            ),
+        },
+        status=202,
+    )
+
+
+@require_POST
+def verify_phone_login_otp(request):
+    body = _json_body(request)
+    challenge_id = body.get("challenge_id") if body else None
+    code = body.get("code") if body else None
+    if (
+        not isinstance(challenge_id, int)
+        or isinstance(challenge_id, bool)
+        or not isinstance(code, str)
+        or not re.fullmatch(r"[0-9]{6}", code, flags=re.ASCII)
+    ):
+        return _problem(
+            400,
+            "Invalid request",
+            "A challenge ID and six-digit code are required.",
+            "invalid-request",
+        )
+
+    user = None
+    response = None
+    with transaction.atomic():
+        challenge = (
+            PhoneOTPChallenge.objects.select_for_update(of=("self",))
+            .select_related("user")
+            .filter(
+                pk=challenge_id,
+                purpose=PhoneOTPChallenge.PURPOSE_LOGIN,
+            )
+            .first()
+        )
+        if (
+            challenge is None
+            or not challenge.is_usable
+            or challenge.attempts >= settings.AUTH_SMS_MAX_ATTEMPTS
+        ):
+            response = _problem(
+                401,
+                "Invalid sign-in code",
+                "The sign-in code is invalid or expired. Request a new code.",
+                "invalid-otp",
+            )
+        elif not check_password(code, challenge.code_hash):
+            challenge.attempts += 1
+            update_fields = ["attempts"]
+            if challenge.attempts >= settings.AUTH_SMS_MAX_ATTEMPTS:
+                challenge.consumed_at = timezone.now()
+                update_fields.append("consumed_at")
+            challenge.save(update_fields=update_fields)
+            response = _problem(
+                401,
+                "Invalid sign-in code",
+                "The sign-in code is invalid or expired. Request a new code.",
+                "invalid-otp",
+            )
+        elif (
+            challenge.user is None
+            or not challenge.user.is_active
+            or not UserProfile.objects.filter(
+                user=challenge.user,
+                phone=challenge.phone,
+            ).exists()
+            or not _residential_roles_for_user(challenge.user)
+        ):
+            challenge.consumed_at = timezone.now()
+            challenge.save(update_fields=["consumed_at"])
+            response = _problem(
+                401,
+                "Invalid sign-in code",
+                "The sign-in code is invalid or expired. Request a new code.",
+                "invalid-otp",
+            )
+        else:
+            user = challenge.user
+            challenge.consumed_at = timezone.now()
+            challenge.save(update_fields=["consumed_at"])
+            Tenant.objects.filter(
+                portal_user=user,
+                phone=challenge.phone,
+                phone_verified_at__isnull=True,
+            ).update(phone_verified_at=timezone.now())
+
+    if response is not None:
+        _record_auth_event(request, "login.otp_failed", user)
+        return response
+
+    login(request, user, backend="users.authentication.EmailOrPhoneBackend")
+    request.session["auth_scope"] = "residential"
+    request.session.set_expiry(settings.AUTH_TENANT_SESSION_AGE_SECONDS)
+    _record_auth_event(request, "login.succeeded", user)
+    return JsonResponse(
+        {
+            "user": _user_payload(user, request),
+            "session_expires_in_seconds": settings.AUTH_TENANT_SESSION_AGE_SECONDS,
+        }
+    )
 
 
 @require_POST
@@ -6506,8 +6868,10 @@ def verify_totp_challenge(request):
     if response is not None:
         return response
     login(request, user, backend="users.authentication.EmailOrPhoneBackend")
+    request.session.pop("auth_scope", None)
+    request.session.set_expiry(settings.SESSION_COOKIE_AGE)
     _record_auth_event(request, "login.succeeded", user)
-    result = {"user": _user_payload(user)}
+    result = {"user": _user_payload(user, request)}
     if recovery_codes:
         result["recovery_codes"] = recovery_codes
     return JsonResponse(result)
@@ -6593,8 +6957,10 @@ def verify_sms_challenge(request):
         return response
 
     login(request, user, backend="users.authentication.EmailOrPhoneBackend")
+    request.session.pop("auth_scope", None)
+    request.session.set_expiry(settings.SESSION_COOKIE_AGE)
     _record_auth_event(request, "login.succeeded", user)
-    return JsonResponse({"user": _user_payload(user)})
+    return JsonResponse({"user": _user_payload(user, request)})
 
 
 @require_POST
@@ -6622,7 +6988,7 @@ def request_password_reset(request):
         return _problem(503, "Recovery unavailable", "Password recovery is not configured.", "recovery-unavailable")
 
     user = get_user_model().objects.filter(email__iexact=email, is_active=True).first()
-    if user is not None:
+    if user is not None and not _is_residential_only_account(user):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = default_token_generator.make_token(user)
         reset_url = f"{settings.PUBLIC_SITE_URL}/reset-password?uid={uid}&token={token}"
@@ -6657,6 +7023,13 @@ def confirm_password_reset(request):
         user = None
     if user is None or not default_token_generator.check_token(user, token):
         return _problem(400, "Invalid reset link", "This password reset link is invalid or has expired.", "invalid-reset-link")
+    if _is_residential_only_account(user):
+        return _problem(
+            403,
+            "Password sign-in unavailable",
+            "Tenant and landlord accounts use phone verification instead of passwords.",
+            "passwordless-account",
+        )
     try:
         password_validation.validate_password(password, user)
     except ValidationError as error:
@@ -6672,7 +7045,7 @@ def confirm_password_reset(request):
 def current_user(request):
     if not request.user.is_authenticated:
         return _problem(401, "Authentication required", "Sign in first.", "authentication-required")
-    return JsonResponse({"user": _user_payload(request.user)})
+    return JsonResponse({"user": _user_payload(request.user, request)})
 
 
 def _portal_profile_access_error(request, role):
@@ -7245,6 +7618,76 @@ def _landlord_portal_account_payload(landlord, *, pending_activation=False):
     }
 
 
+@require_GET
+def property_officer_account_search(request):
+    try:
+        agency_id = int(request.GET.get("agency_id", ""))
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid agency", "A valid agency_id is required.", "invalid-agency")
+    membership, error = _property_officer_membership(request.user, agency_id=agency_id)
+    if error:
+        director_membership, director_error = _director_staff_scope(
+            request,
+            agency_id,
+        )
+        if director_error:
+            return error
+        agency = director_membership.agency
+    else:
+        agency = membership.agency
+    query = request.GET.get("q", "").strip()
+    if len(query) < 2:
+        return _problem(
+            400,
+            "Search query required",
+            "Enter at least two characters to search existing agency accounts.",
+            "search-query-required",
+        )
+
+    agency_scope = (
+        Q(profile__branches__agency=agency)
+        | Q(
+            profile__agency_memberships__agency=agency,
+            profile__agency_memberships__agency__is_active=True,
+            profile__agency_memberships__is_active=True,
+        )
+        | Q(tenant_record__branch__agency=agency)
+        | Q(landlord_record__branch__agency=agency)
+        | Q(
+            property_caretaker_assignments__property__branch__agency=agency,
+            property_caretaker_assignments__ended_at__isnull=True,
+        )
+    )
+    matching_accounts = (
+        get_user_model()
+        .objects.filter(is_active=True, profile__isnull=False)
+        .filter(agency_scope)
+        .filter(
+            Q(profile__name__icontains=query)
+            | Q(email__icontains=query)
+            | Q(username__icontains=query)
+            | Q(profile__phone__icontains=query)
+            | Q(profile__id_or_registration_number__icontains=query)
+        )
+        .select_related("profile")
+        .distinct()
+        .order_by("profile__name", "email", "pk")[:20]
+    )
+    return JsonResponse(
+        {
+            "accounts": [
+                {
+                    "id": account.pk,
+                    "name": account.profile.name,
+                    "email": account.email or "",
+                    "phone": account.profile.phone,
+                }
+                for account in matching_accounts
+            ]
+        }
+    )
+
+
 @require_http_methods(["GET", "POST"])
 def property_officer_landlords(request):
     if request.method == "GET":
@@ -7296,6 +7739,17 @@ def property_officer_landlords(request):
     body = _json_body(request)
     if body is None:
         return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
+    raw_existing_user_id = body.get("existing_user_id")
+    if isinstance(raw_existing_user_id, bool):
+        return _problem(400, "Invalid account", "existing_user_id must be an integer.", "invalid-account")
+    try:
+        selected_existing_user_id = (
+            int(raw_existing_user_id)
+            if raw_existing_user_id not in (None, "")
+            else None
+        )
+    except (TypeError, ValueError):
+        return _problem(400, "Invalid account", "existing_user_id must be an integer.", "invalid-account")
 
     landlord_id = body.get("landlord_id")
     if landlord_id is not None:
@@ -7374,6 +7828,28 @@ def property_officer_landlords(request):
     existing_account_user = user_model.objects.filter(
         Q(username__iexact=email) | Q(email__iexact=email)
     ).select_related("profile").first()
+    if selected_existing_user_id is not None and (
+        existing_account_user is None
+        or selected_existing_user_id != existing_account_user.pk
+    ):
+        return _problem(
+            409,
+            "Account selection changed",
+            "Select the matching active account again before linking it.",
+            "account-selection-mismatch",
+        )
+    if (
+        existing_account_user
+        and existing_account_user.is_active
+        and landlord_id is None
+        and selected_existing_user_id is None
+    ):
+        return _problem(
+            400,
+            "Account selection required",
+            "Select the existing agency account before linking the landlord role.",
+            "account-selection-required",
+        )
     if existing_account_user:
         profile = getattr(existing_account_user, "profile", None)
         if (
@@ -7389,6 +7865,16 @@ def property_officer_landlords(request):
                 "Account identity mismatch",
                 "An existing account can be linked only when its active email, name, phone, and recorded identity match the landlord KYC details.",
                 "account-identity-mismatch",
+            )
+        if not _user_is_associated_with_agency(
+            existing_account_user,
+            membership.agency,
+        ):
+            return _problem(
+                409,
+                "Account outside agency",
+                "An existing account can be linked only when it is already associated with this agency.",
+                "account-outside-agency",
             )
     if UserProfile.objects.filter(phone__iexact=phone).exclude(
         user=existing_account_user
@@ -7478,7 +7964,6 @@ def property_officer_landlords(request):
                     },
                 )
 
-            role, _ = Group.objects.get_or_create(name=LANDLORD_PORTAL_ROLE)
             if existing_account_user is None:
                 user = user_model.objects.create_user(
                     username=email,
@@ -7497,7 +7982,6 @@ def property_officer_landlords(request):
                 )
                 profile.full_clean()
                 profile.save()
-                user.groups.add(role)
                 landlord.portal_user = user
                 landlord.save(update_fields=["portal_user", "updated_at"])
             else:
@@ -7509,7 +7993,11 @@ def property_officer_landlords(request):
             )
             record_audit_event(
                 request,
-                "landlord.portal_account_invited",
+                (
+                    "landlord.portal_account_link_pending"
+                    if existing_account_user is not None
+                    else "landlord.portal_account_invited"
+                ),
                 "Landlord",
                 new_values={
                     "landlord_id": landlord.pk,
@@ -7521,49 +8009,47 @@ def property_officer_landlords(request):
     except (IntegrityError, ValidationError) as validation_error:
         return _problem(400, "Invalid landlord", str(validation_error), "invalid-landlord")
 
-    try:
-        _send_landlord_activation_email(
-            user,
-            challenge.pk,
-            activation_code,
-            link_existing_account=existing_account_user is not None,
-        )
-    except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as mail_error:
-        challenge.delete()
+    if challenge and activation_code:
+        try:
+            _queue_landlord_activation_sms(
+                request,
+                landlord,
+                challenge,
+                activation_code,
+            )
+        except (DatabaseError, ImproperlyConfigured, RuntimeError, ValueError, OSError) as sms_error:
+            challenge.delete()
+            record_audit_event(
+                request,
+                "landlord.portal_activation_sms_failed",
+                "Landlord",
+                new_values={
+                    "landlord_id": landlord.pk,
+                    "user_id": user.pk,
+                    "error_type": type(sms_error).__name__,
+                },
+            )
+            return JsonResponse(
+                {
+                    "detail": "The landlord account was created, but the activation SMS could not be queued. Retry the invitation from this page.",
+                    "landlord": _landlord_portal_account_payload(landlord),
+                },
+                status=503,
+            )
+
         record_audit_event(
             request,
-            "landlord.portal_activation_email_failed",
+            "landlord.portal_activation_sms_queued",
             "Landlord",
-            new_values={
-                "landlord_id": landlord.pk,
-                "user_id": user.pk,
-                "error_type": type(mail_error).__name__,
-            },
+            new_values={"landlord_id": landlord.pk, "user_id": user.pk},
         )
-        return JsonResponse(
-            {
-                "detail": "The landlord account was created, but the activation email failed. Retry the invitation from this page.",
-                "landlord": _landlord_portal_account_payload(
-                    landlord,
-                    pending_activation=existing_account_user is not None,
-                ),
-            },
-            status=503,
-        )
-
-    record_audit_event(
-        request,
-        "landlord.portal_activation_email_sent",
-        "Landlord",
-        new_values={"landlord_id": landlord.pk, "user_id": user.pk},
-    )
     return JsonResponse(
         {
             "landlord": _landlord_portal_account_payload(
                 landlord,
-                pending_activation=existing_account_user is not None,
             ),
-            "activation_email_sent": True,
+            "activation_sms_queued": bool(challenge),
+            "existing_account_link": existing_account_user is not None,
         },
         status=201,
     )
@@ -7603,8 +8089,20 @@ def resend_landlord_activation(request, landlord_id):
         return error
     if landlord.portal_user_id is not None and landlord.portal_user.is_active:
         return _problem(409, "Already activated", "This landlord account is already active.", "already-activated")
-    if not landlord.email:
-        return _problem(400, "Email required", "Add an email address to the landlord record before sending an invitation.", "landlord-email-required")
+    if not landlord.phone:
+        return _problem(400, "Phone number required", "Add a phone number to the landlord record before sending an activation code.", "landlord-phone-required")
+    last_challenge = landlord.activation_challenges.order_by("-created_at").first()
+    if (
+        last_challenge
+        and (timezone.now() - last_challenge.created_at).total_seconds()
+        < settings.AUTH_SMS_RESEND_COOLDOWN_SECONDS
+    ):
+        return _problem(
+            429,
+            "Please wait before resending",
+            "A landlord activation code was recently sent. Wait before requesting another.",
+            "activation-resend-cooldown",
+        )
 
     existing_user = None
     if landlord.portal_user_id is None:
@@ -7635,35 +8133,30 @@ def resend_landlord_activation(request, landlord_id):
         existing_user=existing_user,
     )
     try:
-        _send_landlord_activation_email(
-            existing_user or landlord.portal_user,
-            challenge.pk,
-            code,
-            link_existing_account=existing_user is not None,
-        )
-    except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as mail_error:
+        _queue_landlord_activation_sms(request, landlord, challenge, code)
+    except (DatabaseError, ImproperlyConfigured, RuntimeError, ValueError, OSError) as sms_error:
         challenge.delete()
         record_audit_event(
             request,
-            "landlord.portal_activation_email_failed",
+            "landlord.portal_activation_sms_failed",
             "Landlord",
             new_values={
                 "landlord_id": landlord.pk,
                 "user_id": existing_user.pk if existing_user else landlord.portal_user_id,
-                "error_type": type(mail_error).__name__,
+                "error_type": type(sms_error).__name__,
             },
         )
-        return _problem(503, "Email unavailable", "The activation email could not be sent.", "activation-email-failed")
+        return _problem(503, "SMS unavailable", "The activation SMS could not be queued.", "activation-sms-failed")
     record_audit_event(
         request,
-        "landlord.portal_activation_resent",
+        "landlord.portal_activation_sms_resent",
         "Landlord",
         new_values={
             "landlord_id": landlord.pk,
             "user_id": existing_user.pk if existing_user else landlord.portal_user_id,
         },
     )
-    return JsonResponse({"activation_email_sent": True})
+    return JsonResponse({"activation_sms_queued": True})
 
 
 @require_GET
@@ -7676,9 +8169,18 @@ def landlord_activation_context(request):
         ).get(pk=challenge_id)
     except (LandlordActivationChallenge.DoesNotExist, ValueError):
         return _problem(404, "Activation unavailable", "This landlord activation is invalid or expired.", "invalid-activation")
-    if challenge.is_expired() or (
-        challenge.landlord.portal_user_id is not None
-        and challenge.existing_user_id is None
+    if challenge.is_expired() or challenge.attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+        return _problem(404, "Activation unavailable", "This landlord activation is invalid or expired.", "invalid-activation")
+    if challenge.existing_user_id:
+        if (
+            challenge.landlord.portal_user_id is not None
+            or not challenge.existing_user.is_active
+        ):
+            return _problem(404, "Activation unavailable", "This landlord activation is invalid or expired.", "invalid-activation")
+    elif (
+        challenge.landlord.portal_user_id is None
+        or challenge.landlord.portal_user is None
+        or challenge.landlord.portal_user.is_active
     ):
         return _problem(404, "Activation unavailable", "This landlord activation is invalid or expired.", "invalid-activation")
     return JsonResponse(
@@ -7696,18 +8198,16 @@ def activate_landlord(request):
         return _problem(400, "Invalid request", "Expected a JSON object.", "invalid-request")
     challenge_id = body.get("challenge_id")
     code = body.get("code")
-    password = body.get("password")
     if (
         not isinstance(challenge_id, str)
         or not isinstance(code, str)
         or not code.isascii()
         or not re.fullmatch(r"\d{6}", code)
-        or (password is not None and not isinstance(password, str))
     ):
         return _problem(
             400,
             "Invalid request",
-            "A challenge ID, six-digit code, and password are required.",
+            "A challenge ID and six-digit code are required.",
             "invalid-request",
         )
 
@@ -7780,18 +8280,7 @@ def activate_landlord(request):
             challenge.landlord.portal_user = user
             challenge.landlord.save(update_fields=["portal_user", "updated_at"])
         else:
-            if not isinstance(password, str):
-                return _problem(400, "Invalid password", "A password is required to activate this account.", "invalid-password")
-            try:
-                password_validation.validate_password(password, user=user)
-            except ValidationError as validation_error:
-                return _problem(
-                    400,
-                    "Invalid password",
-                    " ".join(validation_error.messages),
-                    "invalid-password",
-                )
-            user.set_password(password)
+            user.set_unusable_password()
             user.is_active = True
             user.save(update_fields=["password", "is_active"])
         role, _ = Group.objects.get_or_create(name=LANDLORD_PORTAL_ROLE)
@@ -9437,7 +9926,7 @@ def landlord_move_in_settlements(request):
     if settlement is None:
         return _problem(404, "Settlement not found", "The settlement is unavailable in the active property.", "settlement-not-found")
 
-    if body.get("sendActivationEmail") is True:
+    if body.get("sendActivationSMS") is True or body.get("sendActivationEmail") is True:
         return _send_move_in_activation(request, property_obj, settlement)
 
     raw_amount = body.get("amount")
@@ -9741,6 +10230,7 @@ def _send_move_in_activation(
     move_in_accounting = None
     move_in_document_keys = []
     existing_account_user = None
+    challenge = None
     try:
         with transaction.atomic():
             locked = MoveInSettlement.objects.select_for_update(of=("self",)).filter(
@@ -9755,11 +10245,7 @@ def _send_move_in_activation(
                 or locked.deposit_paid_amount < locked.deposit_total
             ):
                 return _problem(409, "Activation unavailable", "The full move-in balance and deposits must be paid before sending an activation link.", "activation-not-ready")
-            if (
-                locked.activation_email_sent_at
-                and locked.activation_sms_queued_at
-                and not force
-            ):
+            if locked.activation_sms_queued_at and not force:
                 tenancy = Tenancy.objects.filter(
                     tenant=locked.tenant,
                     unit=locked.unit,
@@ -9787,8 +10273,8 @@ def _send_move_in_activation(
                 return JsonResponse(
                     {
                         "success": caretaker_sms_queued is not False,
-                        "message": f"Activation email and SMS were already sent to {locked.tenant_email} and {locked.tenant_phone}.",
-                        "activation_email_sent": True,
+                        "message": f"Tenant activation SMS was already sent to {locked.tenant_phone}.",
+                        "activation_email_sent": False,
                         "activation_sms_queued": True,
                         "activation_email_error": None,
                         "activation_sms_error": None,
@@ -9799,7 +10285,11 @@ def _send_move_in_activation(
                         ),
                         "settlement": {
                             "id": locked.pk,
-                            "activation_email_sent_at": locked.activation_email_sent_at.isoformat(),
+                            "activation_email_sent_at": (
+                                locked.activation_email_sent_at.isoformat()
+                                if locked.activation_email_sent_at
+                                else None
+                            ),
                             "activation_email_error": None,
                             "activation_sms_queued_at": locked.activation_sms_queued_at.isoformat(),
                             "activation_sms_error": None,
@@ -9811,30 +10301,46 @@ def _send_move_in_activation(
                 )
 
             tenant = locked.tenant
+            existing_account_user = user_model.objects.filter(
+                Q(email__iexact=locked.tenant_email)
+                | Q(username__iexact=locked.tenant_email)
+            ).select_related("profile").first()
+            if existing_account_user:
+                profile = getattr(existing_account_user, "profile", None)
+                expected_account_name = (
+                    locked.contact_person
+                    if locked.tenant_type == Tenant.COMPANY
+                    else locked.tenant_name
+                )
+                if (
+                    not existing_account_user.is_active
+                    or profile is None
+                    or (existing_account_user.email or "").strip().casefold()
+                    != locked.tenant_email.strip().casefold()
+                    or profile.name.strip().casefold()
+                    != expected_account_name.strip().casefold()
+                    or profile.phone != locked.tenant_phone
+                    or profile.id_or_registration_number.strip().casefold()
+                    != locked.national_id_or_passport.strip().casefold()
+                ):
+                    return _problem(
+                        409,
+                        "Account identity mismatch",
+                        "The active account's name, email, phone, and recorded identity must match the tenant KYC details.",
+                        "account-identity-mismatch",
+                    )
+                if not _user_is_associated_with_agency(
+                    existing_account_user,
+                    locked.unit.property.branch.agency,
+                ):
+                    return _problem(
+                        409,
+                        "Account outside agency",
+                        "An existing account can be linked only when it is already associated with this agency.",
+                        "account-outside-agency",
+                    )
+
             if tenant is None:
-                existing_account_user = user_model.objects.filter(
-                    Q(email__iexact=locked.tenant_email)
-                    | Q(username__iexact=locked.tenant_email)
-                ).select_related("profile").first()
-                if existing_account_user:
-                    profile = getattr(existing_account_user, "profile", None)
-                    if (
-                        not existing_account_user.is_active
-                        or profile is None
-                        or (existing_account_user.email or "").strip().casefold()
-                        != locked.tenant_email.strip().casefold()
-                        or profile.phone != locked.tenant_phone
-                        or profile.id_or_registration_number.strip().casefold()
-                        != locked.national_id_or_passport.strip().casefold()
-                    ):
-                        return _problem(
-                            409,
-                            "Account identity mismatch",
-                            "To link an existing account, its active login, verified contact details, and recorded identity must match the tenant KYC details.",
-                            "account-identity-mismatch",
-                        )
-                if Tenant.objects.filter(email__iexact=locked.tenant_email).exists():
-                    return _problem(409, "Email already registered", "This email is already linked to a tenant record.", "email-already-registered")
                 tenant = Tenant(
                     branch=locked.unit.property.branch,
                     tenant_type=locked.tenant_type,
@@ -9851,14 +10357,50 @@ def _send_move_in_activation(
                     whatsapp_opted_in_at=timezone.now() if locked.whatsapp_opt_in else None,
                     phone=locked.tenant_phone,
                     email=locked.tenant_email,
-                    is_provisional=True,
+                    is_provisional=existing_account_user is None,
+                    portal_user=existing_account_user,
                 )
                 tenant.full_clean()
                 tenant.save()
                 created_tenant = True
                 locked.tenant = tenant
-            elif tenant.portal_user_id or not tenant.is_provisional:
-                return _problem(409, "Activation unavailable", "This reservation is already linked to an activated tenant account.", "tenant-already-activated")
+            elif tenant.portal_user_id not in (
+                None,
+                getattr(existing_account_user, "pk", None),
+            ):
+                return _problem(
+                    409,
+                    "Activation unavailable",
+                    "This reservation is already linked to an activated tenant account.",
+                    "tenant-already-activated",
+                )
+            elif existing_account_user and (
+                tenant.tenant_type != locked.tenant_type
+                or tenant.name.strip().casefold()
+                != locked.tenant_name.strip().casefold()
+                or tenant.phone != locked.tenant_phone
+                or tenant.national_id_or_passport.strip().casefold()
+                != locked.national_id_or_passport.strip().casefold()
+                or tenant.company_registration_number.strip().casefold()
+                != locked.company_registration_number.strip().casefold()
+                or tenant.contact_person.strip().casefold()
+                != locked.contact_person.strip().casefold()
+            ):
+                return _problem(
+                    409,
+                    "Tenant record differs",
+                    "The existing tenant record does not match the move-in KYC details.",
+                    "tenant-record-mismatch",
+                )
+
+            if existing_account_user:
+                role, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
+                existing_account_user.groups.add(role)
+                tenant.portal_user = existing_account_user
+                tenant.is_provisional = False
+                tenant.save(
+                    update_fields=["portal_user", "is_provisional", "updated_at"]
+                )
 
             tenancy = Tenancy.objects.filter(
                 unit=locked.unit,
@@ -9921,20 +10463,26 @@ def _send_move_in_activation(
                 identity_document,
                 assigned_caretaker,
             )
-            TenantActivationChallenge.objects.filter(
-                tenant=tenant,
-                unit=locked.unit,
-                used_at__isnull=True,
-            ).update(used_at=now)
-            challenge = TenantActivationChallenge.objects.create(
-                tenant=tenant,
-                unit=locked.unit,
-                existing_user=existing_account_user,
-                token_hash=_activation_hash(token),
-                code_hash=_activation_hash(activation_code),
-                phone_verification_required=True,
-                expires_at=now + timedelta(hours=48),
-            )
+            if existing_account_user is None:
+                TenantActivationChallenge.objects.filter(
+                    tenant=tenant,
+                    unit=locked.unit,
+                    used_at__isnull=True,
+                ).update(used_at=now)
+                challenge = TenantActivationChallenge.objects.create(
+                    tenant=tenant,
+                    unit=locked.unit,
+                    token_hash=_activation_hash(token),
+                    code_hash=_activation_hash(activation_code),
+                    phone_verification_required=True,
+                    expires_at=now + timedelta(hours=48),
+                )
+            else:
+                TenantActivationChallenge.objects.filter(
+                    tenant=tenant,
+                    unit=locked.unit,
+                    used_at__isnull=True,
+                ).update(used_at=now)
     except (IntegrityError, ValidationError, ValueError) as exc:
         _cleanup_tenant_evidence(move_in_document_keys)
         detail = (
@@ -10051,69 +10599,55 @@ def _send_move_in_activation(
                     "amount": str(move_in_accounting["payment"].amount),
                 },
             )
-    record_audit_event(
-        request,
-        "tenant_activation.issued",
-        "TenantActivationChallenge",
-        new_values={
-            "id": challenge.pk,
-            "tenant_id": tenant.pk,
-            "tenancy_id": tenancy.pk,
-            "settlement_id": locked.pk,
-            "expires_at": challenge.expires_at.isoformat(),
-        },
-    )
-    activation_url = f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate?token={token}"
-    email_error = None
-    try:
-        _send_tenant_activation_email(
-            locked.tenant_name,
-            locked.tenant_email,
-            locked.unit.code,
-            property_obj.name,
-            activation_url,
-            activation_code,
-            phone_verification_required=True,
-            existing_account=existing_account_user is not None,
-        )
-    except (ImproperlyConfigured, RuntimeError, smtplib.SMTPException, OSError) as exc:
-        email_error = str(exc)
-        locked.activation_email_error = str(exc)
-        challenge.email_delivery_error = str(exc)[:500]
-        challenge.save(update_fields=["email_delivery_error"])
-        locked.save(update_fields=["activation_email_error", "updated_at"])
-        logger.error("Could not deliver a move-in activation email (%s).", type(exc).__name__)
-    else:
-        locked.activation_email_sent_at = timezone.now()
-        locked.activation_email_error = ""
-        locked.save(update_fields=["activation_email_sent_at", "activation_email_error", "updated_at"])
-        challenge.email_sent_at = locked.activation_email_sent_at
-        challenge.email_delivery_error = ""
-        challenge.save(update_fields=["email_sent_at", "email_delivery_error"])
-
     sms_error = None
-    try:
-        queue_template_sms(
-            locked.tenant_phone,
-            "tenant_activation",
-            {
-                "tenant_name": locked.tenant_name,
-                "activation_url": activation_url,
-                "code": activation_code,
+    if challenge:
+        record_audit_event(
+            request,
+            "tenant_activation.issued",
+            "TenantActivationChallenge",
+            new_values={
+                "id": challenge.pk,
+                "tenant_id": tenant.pk,
+                "tenancy_id": tenancy.pk,
+                "settlement_id": locked.pk,
+                "expires_at": challenge.expires_at.isoformat(),
             },
-            actor=actor,
-            request=request,
-            expires_at=challenge.expires_at,
         )
-    except (ImproperlyConfigured, RuntimeError, ValueError, OSError) as exc:
-        sms_error = str(exc)
-        locked.activation_sms_error = sms_error
-        locked.save(update_fields=["activation_sms_error", "updated_at"])
-        logger.error("Could not queue a move-in activation SMS (%s).", type(exc).__name__)
+        activation_url = f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate"
+        try:
+            queue_template_sms(
+                locked.tenant_phone,
+                "tenant_activation",
+                {
+                    "tenant_name": locked.tenant_name,
+                    "activation_url": activation_url,
+                    "code": activation_code,
+                },
+                actor=actor,
+                request=request,
+                expires_at=challenge.expires_at,
+            )
+        except (DatabaseError, ImproperlyConfigured, RuntimeError, ValueError, OSError) as exc:
+            sms_error = str(exc)
+            locked.activation_sms_error = sms_error
+            locked.save(update_fields=["activation_sms_error", "updated_at"])
+            logger.error("Could not queue a move-in activation SMS (%s).", type(exc).__name__)
+        else:
+            locked.activation_sms_queued_at = timezone.now()
+            locked.activation_sms_error = ""
+            locked.save(update_fields=["activation_sms_queued_at", "activation_sms_error", "updated_at"])
     else:
-        locked.activation_sms_queued_at = timezone.now()
-        locked.activation_sms_error = ""
-        locked.save(update_fields=["activation_sms_queued_at", "activation_sms_error", "updated_at"])
+        record_audit_event(
+            request,
+            "tenant.account_linked",
+            "Tenant",
+            new_values={
+                "tenant_id": tenant.pk,
+                "user_id": existing_account_user.pk,
+                "tenancy_id": tenancy.pk,
+                "settlement_id": locked.pk,
+            },
+        )
 
     package = move_in_accounting["package"] if move_in_accounting else None
     if package and package.assigned_caretaker_id:
@@ -10124,14 +10658,19 @@ def _send_move_in_activation(
         )
     else:
         caretaker_sms_queued, caretaker_sms_error = None, None
-    activation_email_sent = email_error is None
-    activation_sms_queued = sms_error is None
+    activation_email_sent = False
+    activation_sms_queued = bool(challenge) and sms_error is None
     all_messages_queued = (
-        activation_email_sent
-        and activation_sms_queued
+        (
+            existing_account_user is not None
+            or activation_sms_queued
+        )
         and caretaker_sms_queued is not False
     )
     message = (
+        "Existing account linked to the tenancy."
+        if existing_account_user is not None
+        else
         "Tenant activation and move-in inspection SMS messages are queued."
         if all_messages_queued
         else "Tenant account is ready, but one or more activation or inspection messages could not be queued."
@@ -10139,8 +10678,9 @@ def _send_move_in_activation(
     activation_result = {
         "success": all_messages_queued,
         "message": message,
+        "existing_account_link": existing_account_user is not None,
         "activation_email_sent": activation_email_sent,
-        "activation_email_error": email_error,
+        "activation_email_error": None,
         "activation_sms_queued": activation_sms_queued,
         "activation_sms_error": sms_error,
         "move_in_caretaker_sms_queued": caretaker_sms_queued,
@@ -10150,12 +10690,8 @@ def _send_move_in_activation(
         "tenancy": _tenancy_payload(tenancy),
         "settlement": {
             "id": locked.pk,
-            "activation_email_sent_at": (
-                locked.activation_email_sent_at.isoformat()
-                if locked.activation_email_sent_at
-                else None
-            ),
-            "activation_email_error": email_error,
+            "activation_email_sent_at": None,
+            "activation_email_error": None,
             "activation_sms_queued_at": (
                 locked.activation_sms_queued_at.isoformat()
                 if locked.activation_sms_queued_at
@@ -10668,17 +11204,95 @@ def property_officer_tenant_onboarding(request):
         settlement = existing
     else:
         user_model = get_user_model()
+        existing_tenant = None
         existing_account_user = user_model.objects.filter(
             Q(email__iexact=email) | Q(username__iexact=email)
         ).select_related("profile").first()
-        if Tenant.objects.filter(email__iexact=email).exists():
-            return _problem(409, "Email already registered", "This email is already linked to a tenant record. Use that tenant record for an additional tenancy.", "email-already-registered")
+        raw_existing_user_id = body.get("existing_user_id")
+        if isinstance(raw_existing_user_id, bool):
+            return _problem(
+                400,
+                "Invalid account",
+                "existing_user_id must be an integer.",
+                "invalid-account",
+            )
+        try:
+            selected_existing_user_id = (
+                int(raw_existing_user_id)
+                if raw_existing_user_id not in (None, "")
+                else None
+            )
+        except (TypeError, ValueError):
+            return _problem(
+                400,
+                "Invalid account",
+                "existing_user_id must be an integer.",
+                "invalid-account",
+            )
+        existing_tenants = Tenant.objects.filter(email__iexact=email)
+        if existing_tenants.exists():
+            existing_tenant = existing_tenants.filter(
+                branch=unit.property.branch,
+            ).first()
+            if existing_tenant is None or existing_tenants.exclude(
+                pk=existing_tenant.pk,
+            ).exists():
+                return _problem(
+                    409,
+                    "Tenant record outside branch",
+                    "This account already has a tenant record outside the selected branch. Contact an administrator to link the correct tenant record.",
+                    "tenant-record-outside-branch",
+                )
+            if (
+                existing_tenant.tenant_type != tenant_type
+                or existing_tenant.name.strip().casefold()
+                != name.strip().casefold()
+                or existing_tenant.phone != phone
+                or existing_tenant.national_id_or_passport.strip().casefold()
+                != national_id_or_passport.casefold()
+                or existing_tenant.company_registration_number.strip().casefold()
+                != company_registration_number.casefold()
+                or existing_tenant.contact_person.strip().casefold()
+                != contact_person.casefold()
+            ):
+                return _problem(
+                    409,
+                    "Tenant record differs",
+                    "The existing tenant record does not match the submitted tenant and KYC details.",
+                    "tenant-record-mismatch",
+                )
         if existing_account_user:
+            if selected_existing_user_id != existing_account_user.pk:
+                return _problem(
+                    400,
+                    "Account selection required",
+                    "Select the existing agency account before linking the tenant role.",
+                    "account-selection-required",
+                )
+            self_tenancy_error = _staff_self_tenancy_error(
+                request,
+                existing_tenant,
+            )
+            if (
+                self_tenancy_error
+                or existing_account_user.pk == request.user.pk
+            ):
+                return self_tenancy_error or _problem(
+                    403,
+                    "Personal tenancy action denied",
+                    "Another staff member must handle this tenancy lifecycle or financial action.",
+                    "staff-self-tenancy-action-denied",
+                )
             profile = getattr(existing_account_user, "profile", None)
+            expected_account_name = (
+                contact_person if tenant_type == Tenant.COMPANY else name
+            )
             if (
                 not existing_account_user.is_active
                 or profile is None
                 or (existing_account_user.email or "").strip().casefold() != email.casefold()
+                or profile.name.strip().casefold()
+                != expected_account_name.strip().casefold()
                 or profile.phone != phone
                 or profile.id_or_registration_number.strip().casefold()
                 != national_id_or_passport.casefold()
@@ -10689,6 +11303,35 @@ def property_officer_tenant_onboarding(request):
                     "An existing account can be linked only when its active email, phone, and recorded identity match the tenant KYC details.",
                     "account-identity-mismatch",
                 )
+            if not _user_is_associated_with_agency(
+                existing_account_user,
+                unit.property.branch.agency,
+            ):
+                return _problem(
+                    409,
+                    "Account outside agency",
+                    "An existing account can be linked only when it is already associated with this agency.",
+                    "account-outside-agency",
+                )
+        elif selected_existing_user_id is not None:
+            return _problem(
+                409,
+                "Account selection changed",
+                "Select the matching active account again before linking it.",
+                "account-selection-mismatch",
+            )
+        if (
+            existing_tenant
+            and existing_tenant.portal_user_id
+            and existing_tenant.portal_user_id
+            != getattr(existing_account_user, "pk", None)
+        ):
+            return _problem(
+                409,
+                "Tenant account conflict",
+                "The existing tenant record is linked to a different account.",
+                "tenant-account-conflict",
+            )
         if MoveInSettlement.objects.filter(
             tenant_email__iexact=email,
             status__in=MoveInSettlement.OPEN_STATUSES,
@@ -10700,6 +11343,7 @@ def property_officer_tenant_onboarding(request):
         ).quantize(Decimal("0.01"))
         settlement = MoveInSettlement(
             unit=unit,
+            tenant=existing_tenant,
             tenant_name=name,
             tenant_email=email,
             tenant_phone=phone,
@@ -11067,7 +11711,7 @@ def receive_move_in_mpesa_callback(request):
                 actor=payment.recorded_by,
             )
             activation_result = json.loads(activation_response.content)
-            result["activation_email_sent"] = activation_result.get("success", False)
+            result["activation_sms_queued"] = activation_result.get("success", False)
             if activation_response.status_code >= 400:
                 result["activation_email_error"] = activation_result.get("error")
     return JsonResponse(result)
@@ -12073,9 +12717,57 @@ def create_caretaker_invitation(request):
         if property_id not in property_ids:
             property_ids.append(property_id)
     user_model = get_user_model()
-    if user_model.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).exists():
-        return _problem(409, "Account exists", "This email already belongs to an account.", "caretaker-exists")
-    if UserProfile.objects.filter(phone__iexact=phone).exists():
+    existing_account_user = user_model.objects.filter(
+        Q(email__iexact=email) | Q(username__iexact=email)
+    ).select_related("profile").first()
+    raw_existing_user_id = body.get("existing_user_id")
+    if isinstance(raw_existing_user_id, bool):
+        return _problem(
+            400,
+            "Invalid account",
+            "existing_user_id must be an integer.",
+            "invalid-account",
+        )
+    try:
+        selected_existing_user_id = (
+            int(raw_existing_user_id)
+            if raw_existing_user_id not in (None, "")
+            else None
+        )
+    except (TypeError, ValueError):
+        return _problem(
+            400,
+            "Invalid account",
+            "existing_user_id must be an integer.",
+            "invalid-account",
+        )
+    if existing_account_user:
+        if selected_existing_user_id != existing_account_user.pk:
+            return _problem(
+                400,
+                "Account selection required",
+                "Select the existing agency account before linking caretaker access.",
+                "account-selection-required",
+            )
+        profile = getattr(existing_account_user, "profile", None)
+        if (
+            not existing_account_user.is_active
+            or profile is None
+            or (existing_account_user.email or "").strip().casefold() != email.casefold()
+            or profile.name.strip().casefold() != full_name.casefold()
+            or profile.phone != phone
+            or profile.id_or_registration_number.strip().casefold()
+            != identity.casefold()
+        ):
+            return _problem(
+                409,
+                "Account identity mismatch",
+                "An existing caretaker account can be linked only when its active email, name, phone, and recorded identity match.",
+                "account-identity-mismatch",
+            )
+    if UserProfile.objects.filter(phone__iexact=phone).exclude(
+        user=existing_account_user,
+    ).exists():
         return _problem(409, "Phone already in use", "An account already uses this phone number.", "phone-in-use")
     token = secrets.token_urlsafe(32)
     activation_code = f"{secrets.randbelow(1_000_000):06d}"
@@ -12093,6 +12785,19 @@ def create_caretaker_invitation(request):
         )
         if len(assigned_properties) != len(property_ids):
             return _problem(404, "Property not found", "The property is outside your access scope.", "property-not-found")
+        if existing_account_user and any(
+            not _user_is_associated_with_agency(
+                existing_account_user,
+                property_obj.branch.agency,
+            )
+            for property_obj in assigned_properties
+        ):
+            return _problem(
+                409,
+                "Account outside agency",
+                "An existing account can be linked only to properties in an agency it is already associated with.",
+                "account-outside-agency",
+            )
         if CaretakerInvitation.objects.filter(
             Q(property_id__in=property_ids) | Q(properties__in=property_ids),
             email__iexact=email,
@@ -12109,21 +12814,55 @@ def create_caretaker_invitation(request):
             id_or_registration_number=identity,
             kra_pin=kra_pin,
             token_hash=_activation_hash(token),
-            code_hash=make_password(activation_code),
+            code_hash=(
+                make_password(activation_code)
+                if existing_account_user is None
+                else None
+            ),
             created_by=request.user,
             expires_at=expires_at,
+            used_by=existing_account_user,
+            used_at=timezone.now() if existing_account_user else None,
         )
         invitation.properties.set(assigned_properties)
+        if existing_account_user:
+            profile = existing_account_user.profile
+            group, _ = Group.objects.get_or_create(name=CARETAKER_ROLE)
+            existing_account_user.groups.add(group)
+            profile.branches.add(
+                *(property_obj.branch for property_obj in assigned_properties)
+            )
+            for property_obj in assigned_properties:
+                PropertyCaretakerAssignment.objects.get_or_create(
+                    property=property_obj,
+                    caretaker=existing_account_user,
+                    ended_at__isnull=True,
+                    defaults={"assigned_by": request.user},
+                )
+                property_obj.caretakers.add(existing_account_user)
     record_audit_event(
         request,
-        "caretaker_invitation.created",
+        (
+            "caretaker.account_linked"
+            if existing_account_user is not None
+            else "caretaker_invitation.created"
+        ),
         "CaretakerInvitation",
         new_values={
             "id": invitation.pk,
             "property_ids": [property_obj.pk for property_obj in assigned_properties],
             "email": email,
+            "user_id": existing_account_user.pk if existing_account_user else None,
         },
     )
+    if existing_account_user:
+        return JsonResponse(
+            {
+                "invitation": _caretaker_invitation_payload(invitation),
+                "existing_account_link": True,
+            },
+            status=201,
+        )
     property_names = ", ".join(property_obj.name for property_obj in assigned_properties)
     activation_url = f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate-caretaker?token={token}"
     try:
@@ -16413,6 +17152,9 @@ def create_tenancy_invoice(request, tenancy_id):
             "The tenancy is unavailable or outside your access scope.",
             "tenancy-not-found",
         )
+    self_tenancy_error = _staff_self_tenancy_error(request, tenancy.tenant)
+    if self_tenancy_error:
+        return self_tenancy_error
     body = _json_body(request)
     if body is None or not all(isinstance(body.get(field), str) for field in ("period_start", "period_end")):
         return _problem(
@@ -16598,49 +17340,110 @@ def property_officer_migration_ledger(request):
         .select_related(
             "tenancy__tenant",
             "tenancy__unit__property__branch",
+            "tenancy__unit__property__billing_settings",
         )
         .distinct()
         .order_by("tenancy__unit__property__name", "tenancy__unit__code", "id")
     )
     invoice_ids = [invoice.pk for invoice in invoices]
+    invoices_by_id = {invoice.pk: invoice for invoice in invoices}
+    transition_start_by_invoice = {}
+    transition_end_by_invoice = {}
+    for invoice in invoices:
+        billing_settings = getattr(
+            invoice.tenancy.unit.property,
+            "billing_settings",
+            None,
+        )
+        first_online_month = (
+            billing_settings.first_online_billing_month if billing_settings else ""
+        )
+        transition_start = (
+            date.fromisoformat(f"{first_online_month}-01")
+            if first_online_month
+            else invoice.period_start.replace(day=1)
+        )
+        transition_start_by_invoice[invoice.pk] = max(
+            transition_start,
+            invoice.period_start,
+        )
+        transition_end_by_invoice[invoice.pk] = month_end(transition_start)
     as_of = timezone.localdate()
-    allocated_by_invoice = {
-        row["invoice_id"]: row["total"] or Decimal("0.00")
-        for row in (
-            PaymentAllocation.objects.filter(
-                invoice_id__in=invoice_ids,
-                created_at__date__lte=as_of,
-                payment__received_at__date__lte=as_of,
+    allocated_by_invoice = {}
+    if invoices:
+        for allocation in PaymentAllocation.objects.filter(
+            invoice_id__in=invoice_ids,
+            payment__received_at__date__range=(
+                min(transition_start_by_invoice.values()),
+                max(transition_end_by_invoice.values()),
+            ),
+        ).exclude(
+            payment__instrument_status__in=(
+                Payment.INSTRUMENT_PENDING,
+                Payment.INSTRUMENT_BOUNCED,
             )
-            .exclude(
-                payment__instrument_status__in=(
-                    Payment.INSTRUMENT_PENDING,
-                    Payment.INSTRUMENT_BOUNCED,
+        ).values("invoice_id", "amount", "payment__received_at", "created_at"):
+            invoice = invoices_by_id[allocation["invoice_id"]]
+            transition_start = transition_start_by_invoice[invoice.pk]
+            transition_end = transition_end_by_invoice[invoice.pk]
+            payment_date = timezone.localdate(allocation["payment__received_at"])
+            allocation_date = timezone.localdate(allocation["created_at"])
+            if (
+                transition_start <= payment_date <= transition_end
+                and transition_start <= allocation_date <= transition_end
+            ):
+                allocated_by_invoice[invoice.pk] = (
+                    allocated_by_invoice.get(invoice.pk, Decimal("0.00"))
+                    + allocation["amount"]
                 )
-            )
-            .values("invoice_id")
-            .annotate(total=Sum("amount"))
+    migration_invoice_ids = set(invoice_ids)
+    credit_by_invoice = {}
+    credits = (
+        TenantCredit.objects.filter(
+            payment__allocations__invoice_id__in=invoice_ids,
         )
-    }
-    waived_by_invoice = {
-        row["invoice_id"]: row["total"] or Decimal("0.00")
-        for row in (
-            ArrearsWaiver.objects.filter(
-                invoice_id__in=invoice_ids,
-                approved_at__date__lte=as_of,
+        .exclude(
+            payment__instrument_status__in=(
+                Payment.INSTRUMENT_PENDING,
+                Payment.INSTRUMENT_BOUNCED,
             )
-            .values("invoice_id")
-            .annotate(total=Sum("amount"))
         )
-    }
+        .select_related("payment")
+        .prefetch_related("payment__allocations")
+        .distinct()
+    )
+    for credit in credits:
+        payment_date = timezone.localdate(credit.payment.received_at)
+        migration_allocations = [
+            allocation
+            for allocation in credit.payment.allocations.all()
+            if allocation.invoice_id in migration_invoice_ids
+            and transition_start_by_invoice[allocation.invoice_id]
+            <= payment_date
+            <= transition_end_by_invoice[allocation.invoice_id]
+            and transition_start_by_invoice[allocation.invoice_id]
+            <= timezone.localdate(allocation.created_at)
+            <= transition_end_by_invoice[allocation.invoice_id]
+        ]
+        if migration_allocations:
+            invoice_id = min(
+                migration_allocations,
+                key=lambda allocation: allocation.pk,
+            ).invoice_id
+            credit_by_invoice[invoice_id] = (
+                credit_by_invoice.get(invoice_id, Decimal("0.00"))
+                + credit.remaining_amount
+            )
     rows = []
     for invoice in invoices:
-        paid = allocated_by_invoice.get(invoice.pk, Decimal("0.00"))
-        waived = waived_by_invoice.get(invoice.pk, Decimal("0.00"))
-        outstanding = max(invoice.total - paid - waived, Decimal("0.00"))
+        paid = min(
+            allocated_by_invoice.get(invoice.pk, Decimal("0.00")),
+            invoice.total,
+        )
+        outstanding = max(invoice.total - paid, Decimal("0.00"))
         if outstanding == 0:
             status = "cleared"
-        elif paid or waived:
+        elif paid:
             status = "partial"
         else:
             status = "unpaid"
@@ -16662,7 +17465,9 @@ def property_officer_migration_ledger(request):
                 "arrears_as_of": invoice.period_start.isoformat(),
                 "opening_arrears": str(invoice.total),
                 "paid_to_arrears": str(paid),
-                "waived_amount": str(waived),
+                "overpayment_credit": str(
+                    credit_by_invoice.get(invoice.pk, Decimal("0.00"))
+                ),
                 "outstanding": str(outstanding),
                 "status": status,
             }
@@ -16673,7 +17478,9 @@ def property_officer_migration_ledger(request):
         "records": len(rows),
         "opening_arrears": str(sum((Decimal(row["opening_arrears"]) for row in rows), zero)),
         "paid_to_arrears": str(sum((Decimal(row["paid_to_arrears"]) for row in rows), zero)),
-        "waived_amount": str(sum((Decimal(row["waived_amount"]) for row in rows), zero)),
+        "overpayment_credit": str(
+            sum((Decimal(row["overpayment_credit"]) for row in rows), zero)
+        ),
         "outstanding": str(sum((Decimal(row["outstanding"]) for row in rows), zero)),
         "cleared": sum(row["status"] == "cleared" for row in rows),
         "partial": sum(row["status"] == "partial" for row in rows),
@@ -17020,32 +17827,12 @@ def create_arrears_waiver(request, invoice_id):
     error = _waiver_manager_error(request)
     if error:
         return error
-    invoice = Invoice.objects.filter(
-        pk=invoice_id,
-        tenancy__unit__property__in=_accessible_manager_properties(request.user),
-        status=Invoice.STATUS_ISSUED,
-    ).select_related("tenancy__unit__property").first()
-    if invoice is None:
-        return _problem(404, "Invoice not found", "The invoice is unavailable or outside your access scope.", "invoice-not-found")
-    body = _json_body(request)
-    if body is None or not isinstance(body.get("reason"), str) or not body["reason"].strip():
-        return _problem(400, "Invalid request", "A reason is required.", "invalid-request")
-    try:
-        amount = Decimal(str(body.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
-        return _problem(400, "Invalid request", "amount must be a valid number.", "invalid-request")
-    arrears = invoice_arrears(invoice, timezone.localdate())
-    if amount <= 0 or amount > arrears["outstanding"]:
-        return _problem(400, "Invalid waiver", "Waiver amount must be positive and no greater than outstanding arrears.", "invalid-waiver")
-    waiver = ArrearsWaiver.objects.create(
-        tenancy=invoice.tenancy,
-        invoice=invoice,
-        amount=amount,
-        reason=body["reason"].strip(),
-        approved_by=request.user,
+    return _problem(
+        410,
+        "Legacy waiver workflow retired",
+        "Invoice waivers can only be requested through the Billing Wizard for monthly invoices.",
+        "legacy-arrears-waiver-disabled",
     )
-    record_audit_event(request, "arrears_waiver.approved", "ArrearsWaiver", new_values={"id": waiver.pk, "invoice_id": invoice.pk, "amount": str(amount), "reason": waiver.reason})
-    return JsonResponse({"waiver": {"id": waiver.pk, "invoice_id": invoice.pk, "amount": str(amount), "reason": waiver.reason}}, status=201)
 
 
 @require_POST
@@ -17691,6 +18478,9 @@ def create_move_in_invoice(request, tenancy_id):
                 "The tenancy is unavailable or outside your access scope.",
                 "tenancy-not-found",
             )
+        self_tenancy_error = _staff_self_tenancy_error(request, tenancy.tenant)
+        if self_tenancy_error:
+            return self_tenancy_error
         package = (
             MoveInPackage.objects.filter(tenancy=tenancy)
             .prefetch_related("charges")
@@ -17863,7 +18653,7 @@ def issue_tenant_activation(request, tenancy_id):
             return _problem(
                 409,
                 "Activation unavailable",
-                "The move-in invoice must be issued and fully paid before activation can be emailed.",
+                "The move-in invoice must be issued and fully paid before activation can be sent.",
                 "activation-not-ready",
             )
         result = _send_move_in_invoice_activation(request, invoice.pk, force=True)
@@ -17871,21 +18661,35 @@ def issue_tenant_activation(request, tenancy_id):
             return _problem(
                 409,
                 "Activation unavailable",
-                "The move-in invoice must be fully paid before activation can be emailed.",
+                "The move-in invoice must be fully paid before activation can be sent.",
                 "activation-not-ready",
             )
-        if not result["activation_email_sent"]:
+        if not result["activation_sms_queued"]:
             return _problem(
                 502,
-                "Activation email failed",
-                result["activation_email_error"],
-                "activation-email-failed",
+                "Activation SMS failed",
+                result["activation_sms_error"],
+                "activation-sms-failed",
             )
         return JsonResponse(result)
     return _issue_tenant_activation_challenge(request, tenancy)
 
 
 def _issue_tenant_activation_challenge(request, tenancy):
+    if not settings.PUBLIC_SITE_URL:
+        return _problem(
+            503,
+            "Activation unavailable",
+            "PUBLIC_SITE_URL must be configured before sending tenant activation SMS.",
+            "activation-url-not-configured",
+        )
+    if not tenancy.tenant.phone:
+        return _problem(
+            409,
+            "Activation unavailable",
+            "A registered tenant phone number is required for activation.",
+            "activation-phone-required",
+        )
     token = secrets.token_urlsafe(32)
     activation_code = _new_tenant_activation_code()
     now = timezone.now()
@@ -17900,11 +18704,35 @@ def _issue_tenant_activation_challenge(request, tenancy):
             unit=tenancy.unit,
             token_hash=_activation_hash(token),
             code_hash=_activation_hash(activation_code),
+            phone_verification_required=True,
             expires_at=now + timedelta(hours=48),
+        )
+    try:
+        queue_template_sms(
+            tenancy.tenant.phone,
+            "tenant_activation",
+            {
+                "tenant_name": tenancy.tenant.name,
+                "activation_url": f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate",
+                "code": activation_code,
+            },
+            actor=request.user,
+            request=request,
+            expires_at=challenge.expires_at,
+        )
+    except (ImproperlyConfigured, RuntimeError, ValueError, OSError) as exc:
+        challenge.expires_at = timezone.now()
+        challenge.save(update_fields=["expires_at"])
+        logger.error("Could not queue tenant activation SMS (%s).", type(exc).__name__)
+        return _problem(
+            503,
+            "Activation SMS unavailable",
+            "The tenant activation SMS could not be queued. Retry after checking the SMS service.",
+            "activation-sms-failed",
         )
     record_audit_event(
         request,
-        "tenant_activation.issued",
+        "tenant_activation.sms_queued",
         "TenantActivationChallenge",
         new_values={
             "id": challenge.pk,
@@ -17915,8 +18743,7 @@ def _issue_tenant_activation_challenge(request, tenancy):
     )
     return JsonResponse(
         {
-            "activation_token": token,
-            "activation_code": activation_code,
+            "activation_sms_queued": True,
             "expires_at": challenge.expires_at.isoformat(),
             "tenant_id": tenancy.tenant_id,
             "unit_code": tenancy.unit.code,
@@ -18018,16 +18845,43 @@ def verify_tenant_activation_code(request):
     body = _json_body(request)
     code = body.get("code") if body else None
     unit_code = body.get("unit_code") if body else None
-    if not isinstance(code, str) or not code.strip():
-        return _problem(400, "Invalid request", "An activation code is required.", "invalid-request")
-    challenge = TenantActivationChallenge.objects.filter(
-        code_hash=_activation_hash(code.strip().upper()),
-    ).select_related("tenant", "unit__property").first()
-    if isinstance(unit_code, str) and unit_code.strip():
-        if challenge is None or challenge.unit.code.casefold() != unit_code.strip().casefold():
-            challenge = None
-    if not _usable_tenant_challenge(challenge):
-        return _problem(400, "Invalid activation code", "The activation code is invalid, expired, or already used.", "invalid-activation")
+    phone = body.get("phone") if body else None
+    if not isinstance(code, str) or len(code.strip()) != 6 or not code.strip().isdigit():
+        return _problem(400, "Invalid request", "A six-digit activation code is required.", "invalid-request")
+    if not isinstance(phone, str) or not phone.strip():
+        return _problem(400, "Invalid request", "The phone number used during onboarding is required.", "invalid-request")
+    try:
+        normalized_phone = _normalize_ke_phone(phone)
+    except ValueError as exc:
+        return _problem(400, "Invalid phone", str(exc), "invalid-phone")
+    with transaction.atomic():
+        challenge = (
+            TenantActivationChallenge.objects.select_for_update(of=("self",))
+            .filter(
+                tenant__phone=normalized_phone,
+                phone_verification_required=True,
+                used_at__isnull=True,
+            )
+            .select_related("tenant", "unit__property")
+            .order_by("-created_at")
+            .first()
+        )
+        if not _usable_tenant_challenge(challenge):
+            return _problem(400, "Invalid activation code", "The activation code is invalid, expired, or already used.", "invalid-activation")
+        code_matches = challenge.code_hash == _activation_hash(code.strip())
+        unit_matches = (
+            not isinstance(unit_code, str)
+            or not unit_code.strip()
+            or challenge.unit.code.casefold() == unit_code.strip().casefold()
+        )
+        if not code_matches or not unit_matches:
+            challenge.failed_attempts += 1
+            update_fields = ["failed_attempts"]
+            if challenge.failed_attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                challenge.expires_at = timezone.now()
+                update_fields.append("expires_at")
+            challenge.save(update_fields=update_fields)
+            return _problem(400, "Invalid activation code", "The activation code is invalid, expired, or already used.", "invalid-activation")
     return JsonResponse(_tenant_activation_context_payload(challenge))
 
 
@@ -18035,26 +18889,25 @@ def verify_tenant_activation_code(request):
 def activate_tenant(request):
     body = _json_body(request)
     if body is None:
-        return _problem(400, "Invalid request", "An activation token or code is required.", "invalid-request")
-    token = body.get("token")
+        return _problem(400, "Invalid request", "An activation code is required.", "invalid-request")
+    if "password" in body or "token" in body:
+        return _problem(
+            400,
+            "Passwordless activation required",
+            "Tenant activation uses the SMS code and registered phone number; passwords and email activation links are not accepted.",
+            "passwordless-activation-required",
+        )
     code = body.get("code")
-    if not isinstance(token, str) and not isinstance(code, str):
-        return _problem(400, "Invalid request", "An activation token or code is required.", "invalid-request")
-    if isinstance(token, str) and (
-        not isinstance(code, str) or len(code.strip()) != 6 or not code.strip().isdigit()
-    ):
-        return _problem(400, "Invalid request", "The activation link must be used with its six-digit email code.", "invalid-request")
-    password = body.get("password")
-    if not isinstance(password, str) and password is not None:
-        return _problem(400, "Invalid request", "password must be a string.", "invalid-request")
+    if not isinstance(code, str) or len(code.strip()) != 6 or not code.strip().isdigit():
+        return _problem(400, "Invalid request", "A six-digit activation code is required.", "invalid-request")
     full_name = body.get("full_name")
     phone = body.get("phone")
     email = body.get("email")
     national_id_or_passport = body.get("national_id_or_passport")
     if full_name is not None and (not isinstance(full_name, str) or not full_name.strip()):
         return _problem(400, "Invalid request", "full_name must be a non-empty string.", "invalid-request")
-    if phone is not None and not isinstance(phone, str):
-        return _problem(400, "Invalid request", "phone must be a string.", "invalid-request")
+    if not isinstance(phone, str) or not phone.strip():
+        return _problem(400, "Invalid request", "The phone number used during onboarding is required.", "invalid-request")
     if email is not None and not isinstance(email, str):
         return _problem(400, "Invalid request", "email must be a string.", "invalid-request")
     if national_id_or_passport is not None and not isinstance(national_id_or_passport, str):
@@ -18068,26 +18921,25 @@ def activate_tenant(request):
     else:
         email = ""
     try:
-        normalized_phone = _normalize_ke_phone(phone) if phone else None
+        normalized_phone = _normalize_ke_phone(phone)
     except ValueError as exc:
         return _problem(400, "Invalid phone", str(exc), "invalid-phone")
     user_model = get_user_model()
-    challenge_filter = (
-        {"token_hash": _activation_hash(token)}
-        if isinstance(token, str)
-        else {"code_hash": _activation_hash(code.strip().upper())}
-    )
     try:
         with transaction.atomic():
             challenge = TenantActivationChallenge.objects.select_for_update(
                 of=("self",)
-            ).select_related("tenant", "unit", "existing_user__profile").filter(**challenge_filter).first()
+            ).select_related("tenant", "unit", "existing_user__profile").filter(
+                tenant__phone=normalized_phone,
+                phone_verification_required=True,
+                used_at__isnull=True,
+            ).order_by("-created_at").first()
             if not _usable_tenant_challenge(challenge):
-                return _problem(400, "Invalid activation", "The activation link or code is invalid, expired, or already used.", "invalid-activation")
-            if isinstance(token, str) and challenge.code_hash != _activation_hash(code.strip().upper()):
+                return _problem(400, "Invalid activation", "The phone number or activation code is invalid, expired, or already used.", "invalid-activation")
+            if challenge.code_hash != _activation_hash(code.strip()):
                 challenge.failed_attempts += 1
                 update_fields = ["failed_attempts"]
-                if challenge.failed_attempts >= 5:
+                if challenge.failed_attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
                     challenge.expires_at = timezone.now()
                     update_fields.append("expires_at")
                 challenge.save(update_fields=update_fields)
@@ -18096,25 +18948,21 @@ def activate_tenant(request):
             if isinstance(unit_code, str) and unit_code.strip() and (
                 challenge.unit.code.casefold() != unit_code.strip().casefold()
             ):
+                challenge.failed_attempts += 1
+                update_fields = ["failed_attempts"]
+                if challenge.failed_attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                    challenge.expires_at = timezone.now()
+                    update_fields.append("expires_at")
+                challenge.save(update_fields=update_fields)
                 return _problem(400, "Invalid activation", "The activation code does not match this unit.", "invalid-activation")
             tenant = challenge.tenant
             existing_user = challenge.existing_user
-            if existing_user is None:
-                if not isinstance(password, str):
-                    return _problem(400, "Invalid password", "A password is required to activate this account.", "invalid-password")
-                if len(password) < 12:
-                    return _problem(400, "Invalid password", "Password must contain at least 12 characters.", "invalid-password")
-                try:
-                    password_validation.validate_password(password)
-                except ValidationError as exc:
-                    return _problem(400, "Invalid password", "; ".join(exc.messages), "invalid-password")
-            elif not existing_user.is_active:
+            if existing_user is not None and not existing_user.is_active:
                 return _problem(409, "Account unavailable", "The linked account is no longer active. Contact the agency.", "account-unavailable")
             was_provisional = tenant.is_provisional
             if (
                 challenge.phone_verification_required
-                and normalized_phone
-                and normalized_phone != tenant.phone
+                and (not normalized_phone or normalized_phone != tenant.phone)
             ):
                 return _problem(
                     403,
@@ -18132,6 +18980,12 @@ def activate_tenant(request):
                 supplied_identity = national_id_or_passport.strip()
                 if tenant.national_id_or_passport:
                     if tenant.national_id_or_passport.strip().casefold() != supplied_identity.casefold():
+                        challenge.failed_attempts += 1
+                        update_fields = ["failed_attempts"]
+                        if challenge.failed_attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                            challenge.expires_at = timezone.now()
+                            update_fields.append("expires_at")
+                        challenge.save(update_fields=update_fields)
                         return _problem(403, "Identity mismatch", "The ID or passport number does not match the KYC details recorded during onboarding.", "identity-mismatch")
                 else:
                     tenant.national_id_or_passport = supplied_identity
@@ -18217,9 +19071,10 @@ def activate_tenant(request):
                 user = user_model.objects.create_user(
                     username=username,
                     email=tenant.email.strip().lower(),
-                    password=password,
                     is_active=True,
                 )
+                user.set_unusable_password()
+                user.save(update_fields=["password"])
                 profile = UserProfile(
                     user=user,
                     name=(full_name or tenant.name).strip(),
@@ -18244,7 +19099,7 @@ def activate_tenant(request):
                 profile.save()
                 profile.branches.add(tenant.branch)
                 if not user.is_active:
-                    user.set_password(password)
+                    user.set_unusable_password()
                     user.is_active = True
                 if not user.email and tenant.email:
                     user.email = tenant.email
@@ -18349,6 +19204,9 @@ def create_tenancy(request):
             "The tenant and unit must belong to the same branch.",
             "invalid-tenancy",
         )
+    self_tenancy_error = _staff_self_tenancy_error(request, tenant)
+    if self_tenancy_error:
+        return self_tenancy_error
     if unit.status != Unit.STATUS_VACANT:
         return _problem(
             409,
@@ -20357,6 +21215,7 @@ def tenant_dashboard(request):
     zero = Decimal("0.00")
     invoice_rows = []
     current_balance = zero
+    opening_balance_due = zero
     outstanding_due_dates = []
     invoices = list(
         Invoice.objects.filter(
@@ -20410,8 +21269,16 @@ def tenant_dashboard(request):
             }
         )
     for invoice in invoices:
+        lines = list(invoice.lines.all())
+        is_opening_balance = any(
+            isinstance(line.metadata, dict)
+            and line.metadata.get("migration_opening_balance") is True
+            for line in lines
+        )
         amount_paid = allocated_by_invoice.get(invoice.pk, zero)
-        waived_amount = waived_by_invoice.get(invoice.pk, zero)
+        waived_amount = (
+            zero if is_opening_balance else waived_by_invoice.get(invoice.pk, zero)
+        )
         arrears = invoice_arrears(
             invoice,
             today,
@@ -20428,11 +21295,14 @@ def tenant_dashboard(request):
             status = "partial"
         else:
             status = "unpaid"
+        if is_opening_balance:
+            opening_balance_due += balance_due
         invoice_rows.append(
             {
                 "id": invoice.pk,
                 "number": invoice.number,
                 "invoice_type": invoice.invoice_type,
+                "is_opening_balance": is_opening_balance,
                 "period_start": invoice.period_start.isoformat(),
                 "period_end": invoice.period_end.isoformat(),
                 "due_date": invoice.due_date.isoformat(),
@@ -20440,7 +21310,11 @@ def tenant_dashboard(request):
                 "total": str(invoice.total),
                 "amount_paid": str(amount_paid),
                 "waived_amount": str(waived_amount),
-                "approved_waivers": waiver_details_by_invoice.get(invoice.pk, []),
+                "approved_waivers": (
+                    []
+                    if is_opening_balance
+                    else waiver_details_by_invoice.get(invoice.pk, [])
+                ),
                 "penalty": str(arrears["penalty"]),
                 "balance_due": str(balance_due),
                 "lines": [
@@ -20450,7 +21324,7 @@ def tenant_dashboard(request):
                         "description": line.description,
                         "amount": str(line.amount),
                     }
-                    for line in invoice.lines.all()
+                    for line in lines
                 ],
             }
         )
@@ -20554,6 +21428,7 @@ def tenant_dashboard(request):
             "tenant": profile,
             "summary": {
                 "balance_due": str(current_balance),
+                "opening_balance_due": str(opening_balance_due),
                 "credit_balance": str(credit_balance),
                 "net_balance_due": str(net_balance_due),
                 "next_due_date": (
@@ -21053,6 +21928,8 @@ def tenant_rent_stk_payment(request):
             else:
                 credit_applied = Decimal("0.00")
                 remaining_due = current_due
+        if credit_applied:
+            refresh_draft_balance_lines_for_tenancy(invoice.tenancy_id)
         if remaining_due > 0:
             return _problem(
                 409,

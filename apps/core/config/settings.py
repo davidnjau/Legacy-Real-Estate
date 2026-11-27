@@ -34,6 +34,13 @@ SOFTLINK_SMS_TRAFFIC_CLASS = os.environ.get(
 SOFTLINK_SMS_TIMEOUT_SECONDS = int(os.environ.get("SOFTLINK_SMS_TIMEOUT_SECONDS", "10"))
 AUTH_SMS_CODE_LIFETIME_SECONDS = int(os.environ.get("AUTH_SMS_CODE_LIFETIME_SECONDS", "300"))
 AUTH_SMS_MAX_ATTEMPTS = int(os.environ.get("AUTH_SMS_MAX_ATTEMPTS", "5"))
+AUTH_SMS_RESEND_COOLDOWN_SECONDS = int(
+    os.environ.get("AUTH_SMS_RESEND_COOLDOWN_SECONDS", "60")
+)
+if AUTH_SMS_RESEND_COOLDOWN_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        "AUTH_SMS_RESEND_COOLDOWN_SECONDS must be a positive integer."
+    )
 AUTH_MFA_CHALLENGE_TTL_SECONDS = int(os.environ.get("AUTH_MFA_CHALLENGE_TTL_SECONDS", "300"))
 AUTH_MFA_MAX_ATTEMPTS = int(os.environ.get("AUTH_MFA_MAX_ATTEMPTS", "5"))
 AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS = int(
@@ -96,6 +103,13 @@ AUTH_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("AUTH_LOGIN_LOCKOUT_SECONDS", "9
 SESSION_COOKIE_AGE = int(os.environ.get("AUTH_SESSION_AGE_SECONDS", "28800"))
 if SESSION_COOKIE_AGE <= 0:
     raise ImproperlyConfigured("AUTH_SESSION_AGE_SECONDS must be a positive integer.")
+AUTH_TENANT_SESSION_AGE_SECONDS = int(
+    os.environ.get("AUTH_TENANT_SESSION_AGE_SECONDS", "43200")
+)
+if AUTH_TENANT_SESSION_AGE_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        "AUTH_TENANT_SESSION_AGE_SECONDS must be a positive integer."
+    )
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
@@ -131,6 +145,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "users.middleware.ResidentialSessionAccessMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

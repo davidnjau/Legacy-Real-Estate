@@ -46,8 +46,12 @@ does not add business workflows or permissions beyond the approved SRS.
   access. From the dashboard, Directors can manage agency staff only within
   their own active agency membership. The staff roles currently available
   there are Branch Manager, Accountant, Property Officer / Agent, Land Sales
-  Agent, and Caretaker. A staff account may hold multiple agency roles;
-  Director, landlord, and tenant access use their own role-specific records.
+  Agent. A staff account may hold multiple agency roles; caretaker access is
+  provisioned separately through property-scoped invitations. Director,
+  landlord, and tenant access use their own role-specific records.
+- After sign-in, users with multiple portal roles are sent to a workspace
+  chooser; users with one role continue directly to its dashboard. Portal
+  headers expose workspace switching when more than one role is available.
 - `GET/POST /api/v1/director/staff` lists or creates staff for an `agency_id`.
   `PATCH/DELETE /api/v1/director/staff/<membership_id>` updates role, branch
   scope, or active status, or suspends that agency membership.
@@ -55,13 +59,19 @@ does not add business workflows or permissions beyond the approved SRS.
   activation code for a pending account or role link. Branch assignments are
   validated against the Director's agency. Suspending staff disables only that agency
   membership; it does not disable a login or its memberships in other agencies.
+- `GET/POST /api/v1/director/branches` lists or creates branches for an
+  `agency_id`. Only an authenticated Director with an active membership in
+  that agency can manage its branches. Newly created branches appear in the
+  Director staff list and can be assigned to staff memberships.
 - A new staff login is inactive and password-disabled until the invitee submits
   the one-time email OTP and a new password to
   `POST /api/v1/auth/staff/activate`. Staff OTPs are hashed at rest, expire
   after 15 minutes by default, and are invalidated after five failed attempts
-  or a successful activation. An existing active account must confirm its
-  emailed OTP and recorded ID/passport number before a new staff role and
-  branch scope are applied; its password is preserved. Email delivery failures
+  or a successful activation. To add staff access to an existing active
+  account, the Director selects that account from the agency-scoped search;
+  exact identity and contact details must match before the role and branch
+  scope are linked immediately. No activation OTP is issued and the existing
+  password is preserved. Email delivery failures for new or pending accounts
   leave the request pending so the Director can retry with Resend activation.
 - The Director, agency staff, tenant, and caretaker activation forms share the
   same website password checks: at least 12 characters with lowercase,
@@ -71,15 +81,20 @@ does not add business workflows or permissions beyond the approved SRS.
   endpoints, so the browser receives the Django `sessionid` and `csrftoken`
   cookies without exposing backend credentials or maintaining a second portal
   session.
-- Users sign in with either their email address or Kenyan mobile number; a
-  phone-only user may leave email blank.
-- Store mobile numbers in international format without a leading plus, using
+- Staff sign in with their staff email and password. Tenants and landlords
+  use a Kenyan mobile number and a six-digit SMS code instead of a password.
+  Store mobile numbers in international format without a leading plus, using
   `2547XXXXXXXX` or `2541XXXXXXXX`.
 - Browser clients use Django session cookies. Fetch a CSRF token from
   `GET /api/v1/auth/csrf` and send it as `X-CSRFToken` on unsafe requests.
-- Authenticated sessions expire after eight hours by default. Configure the
-  positive lifetime in seconds with `AUTH_SESSION_AGE_SECONDS`; expired sessions
-  are rejected by `GET /api/v1/auth/me` and portal routes return users to sign-in.
+- Staff password sessions expire after eight hours by default. Configure the
+  positive lifetime in seconds with `AUTH_SESSION_AGE_SECONDS`. Tenant and
+  landlord phone-code sessions are limited to the same browser/device and
+  expire after 12 hours by default; configure that lifetime with
+  `AUTH_TENANT_SESSION_AGE_SECONDS`. A phone-code session for an account that
+  also has staff roles is restricted to tenant/landlord APIs. Opening a staff
+  workspace requires a fresh staff sign-in; Director and finance roles still
+  complete mandatory authenticator verification.
 - Director and finance-role website sign-ins require authenticator-app TOTP
   before a session is established. First sign-in after activation requires
   enrolling an authenticator app. The TOTP secret is encrypted at rest; ten
@@ -94,20 +109,26 @@ does not add business workflows or permissions beyond the approved SRS.
   through a trusted Django management process before their first login.
 - `POST /api/v1/auth/director/activate` accepts `challenge_id`, `code`, and
   `password`, consumes a valid activation challenge, and activates the account.
-- `POST /api/v1/auth/login` accepts `identifier` and `password`. A successful
-  non-finance login returns the authenticated user. Director and finance-role
-  login returns `202` with an opaque TOTP challenge ID. During first enrollment,
-  the response also includes the authenticator setup secret and provisioning
-  URI after password authentication; no session is established until the
-  authenticator code is verified.
+- `POST /api/v1/auth/login` accepts a staff `identifier` and `password`. A
+  successful non-finance login returns the authenticated user. Director and
+  finance-role login returns `202` with an opaque TOTP challenge ID. During
+  first enrollment, the response also includes the authenticator setup secret
+  and provisioning URI after password authentication; no staff session is
+  established until the authenticator code is verified.
+- `POST /api/v1/auth/phone-otp/request` accepts a phone number and queues a
+  six-digit SMS code for a linked active tenant or landlord account.
+  `POST /api/v1/auth/phone-otp/verify` accepts its challenge ID and code.
+  Sign-in codes expire after five minutes, allow five attempts, and can be
+  resent once every 60 seconds. The API response does not reveal whether the
+  phone number belongs to an active account.
 - `POST /api/v1/auth/mfa/totp/verify` accepts `challenge_id` and the current
   authenticator code or an unused recovery code.
 - `POST /api/v1/auth/mfa/verify` retains the SMS challenge flow used by Django
   admin authentication and any existing SMS challenge consumer.
 - Password recovery uses `POST /api/v1/auth/password-reset` and
   `POST /api/v1/auth/password-reset/confirm`. Reset links use Django's
-  single-use password-reset token. Local `DEBUG=1` sends recovery and tenant
-  activation emails through Mailpit (`EMAIL_HOST`/`EMAIL_PORT`; local UI at
+  single-use password-reset token. Local `DEBUG=1` sends recovery emails
+  through Mailpit (`EMAIL_HOST`/`EMAIL_PORT`; local UI at
   `http://localhost:8025`). Staging uses the Softlink email API configured by
   `EMAIL_DELIVERY_BACKEND=softlink`, `SOFTLINK_EMAIL_API_URL`,
   `SOFTLINK_EMAIL_API_KEY`, and `SOFTLINK_EMAIL_TIMEOUT_SECONDS`; requests
@@ -130,19 +151,20 @@ does not add business workflows or permissions beyond the approved SRS.
   Django `UserProfile`.
 - Landlord signup is not publicly available through the website or API.
   Authorized Property Officers can create landlord records and portal accounts
-  for their assigned branches. The landlord receives an activation email and
-  must activate the account before signing in. An existing active account can
-  be linked only after an emailed OTP and exact match of its recorded name,
-  email, phone, and ID/registration number; linking preserves its password.
+  for their assigned branches. A new landlord account receives a phone
+  activation code and uses phone OTP to sign in. For an existing active
+  account, the Property Officer selects the account from the agency-scoped
+  search; an exact match of recorded name, email, phone, and ID/registration
+  number links landlord access immediately without another OTP and preserves
+  the existing password.
   During onboarding, an existing
   unassigned property in the selected branch can optionally be linked to the
   landlord; property registration can also select an already-created landlord.
-- Public tenant self-registration at `POST /api/v1/auth/register-tenant`
-  creates a tenant-role Django account and session, but deliberately does not
-  create a tenant, lease, or unit assignment. Until the agency links an
-  approved tenancy, the website shows an awaiting-linkage resident dashboard.
-  A move-in tenancy can issue a tenant activation link after the move-in
-  invoice is fully paid. Caretakers can complete a property-scoped invitation
+- Public tenant self-registration is disabled. Tenant accounts are provisioned
+  by an agency through the move-in or legacy-migration workflow.
+  New tenant activations use an SMS code and the phone number recorded during
+  onboarding; no email activation link or password is issued. Move-in
+  activation codes expire after 48 hours. Caretakers can complete a property-scoped invitation
   created by authorized property staff or the property's landlord; unrestricted
   caretaker signup is not offered.
 - The client-facing rental search reads `GET /api/v1/public/vacancies`, which
@@ -155,32 +177,53 @@ does not add business workflows or permissions beyond the approved SRS.
   after `AUTH_DIRECTOR_ACTIVATION_TTL_SECONDS` (15 minutes by default), allow
   at most five failed code attempts, and are consumed once when the caretaker
   account and durable assignments for the selected properties are created.
-  Authorized staff capture the caretaker's name, email, phone, ID or
-  registration number, and optional KRA PIN when inviting them; these details
-  are stored on the profile when the caretaker activates. The API does not
-  return the raw activation link or code.
-- Tenant activation for a Property Officer move-in package is sent by email
+  These activation requirements apply to new or pending accounts. To add
+  caretaker access to an existing active account, authorized staff select it
+  from the agency-scoped search; exact name, email, phone, and identity details
+  are checked and the property assignment is linked immediately without an
+  activation challenge.
+  For new invitees, authorized staff capture the caretaker's name, email,
+  phone, ID or registration number, and optional KRA PIN; these details are
+  stored on the profile when the caretaker activates. The API does not return
+  the raw activation link or code.
+- Tenant activation for a Property Officer move-in package is sent by SMS
   only after confirmed allocations fully pay the move-in invoice. Pending or
-  bounced cheques do not count as payment. The email contains a one-time link
-  and six-digit code, both of which are required; only their hashes are
-  stored. Activation credentials expire after 48 hours, are invalidated when
-  replaced, and successful activation returns the tenant to sign in rather
-  than creating a session. An authorized staff member can resend the email.
-- Existing accounts can be linked to a tenancy only when their active login,
-  recorded phone and ID/passport number match the tenant KYC record. Activation
-  requires the one-time code and an exact ID/passport confirmation; it adds the
-  tenant role without changing the existing password. New tenant activations
-  also require the ID/passport number recorded during onboarding to match.
+  bounced cheques do not count as payment. The tenant verifies the registered
+  phone, six-digit code, and unit code; provisional move-in tenants must also
+  provide the National ID/passport captured during onboarding. Activation
+  codes expire after 48 hours, allow at most five failed attempts, and are
+  invalidated when replaced. Successful activation creates or links a
+  password-disabled account and returns the tenant to sign in rather than
+  creating a session. An authorized staff member can resend the SMS.
+- Existing accounts can be linked to a tenancy only when the active account
+  has already been associated with the same agency and its recorded contact
+  and identity details match the tenant KYC record. The Property Officer must
+  explicitly select the account from the agency-scoped search. The tenant role
+  is linked immediately without an activation code or password change. For a
+  company tenant, the login identity matches the human contact person's
+  account, while the tenant record keeps the company identity. New tenant
+  activations require the ID/passport number recorded during onboarding to
+  match.
+- Staff who also hold a tenant account cannot perform sensitive tenancy
+  lifecycle, financial, or approval actions on their own tenancy. Another
+  authorized staff member must handle those actions.
 - For active tenancies without a move-in package, the legacy tenant activation
-  API still returns a one-time token and code to authorized staff; its
-  code-only verification flow remains available. Tenant activation challenges
-  expire after 48 hours and are invalidated when a new challenge is issued for
-  the same tenant and unit.
-- The landlord move-in workflow creates a provisional tenant record only after
-  the move-in balance and deposits are fully paid, then sends a Django
-  activation link. New move-in tenants must provide a national ID or passport
-  during activation; the tenant record is not considered complete or included
-  in ordinary tenant lists until that requirement is met.
+  API queues an activation SMS to the registered phone; activation requires
+  the phone and six-digit code, with unit code where supplied. It does not
+  return a usable email activation link or accept password setup. The
+  landlord move-in workflow creates a provisional tenant record only after
+  the move-in balance and deposits are fully paid, then queues the SMS.
+  New move-in tenants must provide a National ID or passport during
+  activation; the tenant record is not considered complete or included in
+  ordinary tenant lists until that requirement is met.
+- Legacy migration is available to authorized Property Officers for preview
+  and commit at any time.
+  The website collects the Units and Tenancies CSVs sequentially and previews
+  before commit. Import dates accept `DD/MM/YYYY` and ISO `YYYY-MM-DD`.
+  Occupied migrated tenants receive SMS activation codes valid for 72 hours;
+  still-valid challenges are not resent on repeated imports, and failed SMS
+  delivery expires the challenge so a later import can retry. The commit is
+  performed atomically without a secondary Accountant approval.
 - MFA SMS messages are rendered from the `login_verification_code` template
   and queued in the encrypted `SMSDelivery` outbox. Run
   `python manage.py dispatch_sms_deliveries` from a scheduled worker to send

@@ -7,7 +7,12 @@ from django.db.models import Q
 from django.utils import timezone
 
 from users.audit import record_audit_event
-from users.billing import generate_monthly_invoice, water_reading_status
+from users.billing import (
+    generate_monthly_invoice,
+    refresh_draft_invoice_balance,
+    water_reading_status,
+)
+from users.payment_allocations import apply_tenant_credit
 from users.models import (
     BillingNotification,
     Invoice,
@@ -28,6 +33,11 @@ PROPERTY_OFFICER_ROLE = "Property Officer / Agent"
 
 def _next_month(period_start):
     return (period_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+
+def _monthly_invoice_draft_day(year, month):
+    month_end_day = calendar.monthrange(year, month)[1]
+    return month_end_day - 1 if month == 2 else min(30, month_end_day)
 
 
 def _property_requires_metered_water(property_obj, period_start):
@@ -231,6 +241,10 @@ def _publish_due_drafts(period_start):
             )
             if invoice is None:
                 continue
+            refresh_draft_invoice_balance(
+                invoice,
+                as_of=timezone.localdate(),
+            )
             requires_reading, reading_note = water_reading_status(
                 invoice.tenancy.unit,
                 invoice.period_start,
@@ -242,6 +256,8 @@ def _publish_due_drafts(period_start):
                 continue
             invoice.status = Invoice.STATUS_ISSUED
             invoice.save(update_fields=["status", "issued_at", "updated_at"])
+            if invoice.invoice_type == Invoice.TYPE_STANDARD:
+                apply_tenant_credit(invoice)
         published += 1
         record_audit_event(
             type("TaskRequest", (), {"META": {}, "user": None})(),
@@ -262,7 +278,7 @@ def run_monthly_billing_cycle():
     today = timezone.localdate()
     current_period = today.replace(day=1)
     next_period = _next_month(current_period)
-    billing_day = min(30, calendar.monthrange(today.year, today.month)[1])
+    billing_day = _monthly_invoice_draft_day(today.year, today.month)
     reading_open_day = caretaker_water_readings_open_date(today).day
     summary = {"caretakers_notified": 0, "drafts_created": 0, "drafts_published": 0, "held": []}
 

@@ -92,9 +92,9 @@ paths:
       operationId: login
       summary: Start a session
       description: >
-        Requires the CSRF cookie and X-CSRFToken header. Finance-role users
-        receive a challenge while their verification code is queued for SMS
-        delivery; a session is established only after successful verification.
+        Requires the CSRF cookie and X-CSRFToken header. Staff use email and
+        password. Director and finance-role users must verify their authenticator
+        before a staff session is established.
       tags:
         - Authentication
       security: []
@@ -128,7 +128,7 @@ paths:
                   user:
                     $ref: "#/components/schemas/AuthUser"
         "202":
-          description: SMS verification is required
+          description: Authenticator verification is required
           content:
             application/json:
               schema:
@@ -142,11 +142,189 @@ paths:
                     const: true
                   challenge_id:
                     type: integer
+  /auth/phone-otp/request:
+    post:
+      operationId: requestPhoneLoginOtp
+      summary: Request a tenant or landlord sign-in code
+      description: >
+        Queues an SMS code for an active linked tenant or landlord account.
+        The response does not reveal whether the phone number belongs to an
+        account. Codes expire after five minutes, allow five attempts, and
+        can be requested once every 60 seconds.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - phone
+              properties:
+                phone:
+                  type: string
+                  description: Kenyan phone number in local or international format.
+      responses:
+        "202":
+          description: Request accepted without disclosing account existence
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - challenge_id
+                  - expires_in_seconds
+                  - resend_after_seconds
+                  - message
+                properties:
+                  challenge_id:
+                    type: integer
+                  expires_in_seconds:
+                    type: integer
+                    const: 300
+                  resend_after_seconds:
+                    type: integer
+                    const: 60
+                  message:
+                    type: string
         "400":
           $ref: "#/components/responses/Problem"
-        "401":
+        "429":
+          description: Resend cooldown has not elapsed
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                  - retry_after_seconds
+                properties:
+                  error:
+                    type: string
+                    const: otp-resend-cooldown
+                  retry_after_seconds:
+                    type: integer
+        "503":
+          $ref: "#/components/responses/Problem"
+  /auth/phone-otp/verify:
+    post:
+      operationId: verifyPhoneLoginOtp
+      summary: Verify a tenant or landlord sign-in code
+      description: >
+        Establishes a 12-hour same-device session restricted to tenant and
+        landlord APIs. Accounts with staff roles must complete a fresh staff
+        sign-in before accessing staff workspaces.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - challenge_id
+                - code
+              properties:
+                challenge_id:
+                  type: integer
+                code:
+                  type: string
+                  pattern: "^[0-9]{6}$"
+      responses:
+        "200":
+          description: Code verified and residential session established
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - user
+                  - session_expires_in_seconds
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+                  session_expires_in_seconds:
+                    type: integer
+                    const: 43200
+        "400":
+          $ref: "#/components/responses/Problem"
+  /auth/landlord/activate/context:
+    get:
+      operationId: getLandlordActivationContext
+      summary: Resolve a landlord activation challenge
+      description: Returns whether the SMS challenge activates a new account or links an existing account.
+      tags:
+        - Authentication
+      security: []
+      parameters:
+        - name: challenge_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Landlord activation context
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [existing_account, identity_confirmation_required]
+                properties:
+                  existing_account: {type: boolean}
+                  identity_confirmation_required: {type: boolean}
+        "404":
+          $ref: "#/components/responses/Problem"
+  /auth/landlord/activate:
+    post:
+      operationId: activateLandlord
+      summary: Activate or link a landlord account
+      description: >
+        Verifies the SMS activation code. Existing-account links additionally
+        require the ID or registration number already recorded for the landlord.
+        New accounts are activated without a password and must sign in with phone OTP.
+      tags:
+        - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id, code]
+              properties:
+                challenge_id: {type: string}
+                code:
+                  type: string
+                  pattern: "^[0-9]{6}$"
+                id_or_registration_number:
+                  type: string
+                  description: Required when the challenge context indicates an existing account.
+      responses:
+        "200":
+          description: Landlord account activated or linked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: activated}
+        "400":
           $ref: "#/components/responses/Problem"
         "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "401":
           $ref: "#/components/responses/Problem"
   /auth/password-reset:
     post:
@@ -768,6 +946,80 @@ paths:
           $ref: "#/components/responses/Problem"
         "404":
           $ref: "#/components/responses/Problem"
+  /director/branches:
+    get:
+      operationId: listAgencyBranches
+      summary: List branches for a Director's agency
+      description: Lists branches in the agency where the authenticated user has an active Director membership.
+      tags:
+        - Branches
+      parameters:
+        - name: agency_id
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Agency branches
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [branches]
+                properties:
+                  branches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Branch"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createAgencyBranch
+      summary: Create an agency branch
+      description: Creates a branch for an agency where the authenticated user has an active Director membership.
+      tags:
+        - Branches
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [agency_id, name, town]
+              properties:
+                agency_id:
+                  type: integer
+                name:
+                  type: string
+                  maxLength: 100
+                town:
+                  type: string
+                  maxLength: 100
+      responses:
+        "201":
+          description: Branch created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [branch]
+                properties:
+                  branch:
+                    $ref: "#/components/schemas/Branch"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
   /landlord/dashboard:
     get:
       operationId: getLandlordDashboard
@@ -1102,7 +1354,7 @@ paths:
     patch:
       operationId: updateLandlordMoveInSettlement
       summary: Record payment or send tenant activation
-      description: Records a manual settlement payment or issues a tenant activation link after the settlement is fully paid.
+      description: Records a manual settlement payment or queues a tenant activation SMS after the settlement is fully paid.
       tags:
         - Tenancies
       requestBody:
@@ -1122,16 +1374,16 @@ paths:
                     mpesaReference:
                       type: string
                 - type: object
-                  required: [settlementId, sendActivationEmail]
+                  required: [settlementId, sendActivationSMS]
                   properties:
                     settlementId:
                       type: integer
-                    sendActivationEmail:
+                    sendActivationSMS:
                       type: boolean
                       const: true
       responses:
         "200":
-          description: Payment recorded or activation email sent
+          description: Payment recorded or activation SMS queued
           content:
             application/json:
               schema:
@@ -1154,11 +1406,11 @@ paths:
                         type: string
                       settlement:
                         type: object
-                        required: [id, activation_email_sent_at, activation_email_error]
+                        required: [id, activation_sms_queued_at, activation_sms_error]
                         properties:
                           id: {type: integer}
-                          activation_email_sent_at: {type: string, format: date-time}
-                          activation_email_error: {type: "null"}
+                          activation_sms_queued_at: {type: [string, "null"], format: date-time}
+                          activation_sms_error: {type: [string, "null"]}
         "400":
           $ref: "#/components/responses/Problem"
         "401":
@@ -1172,7 +1424,7 @@ paths:
     delete:
       operationId: cancelLandlordMoveInSettlement
       summary: Cancel an unactivated move-in reservation
-      description: Cancels a reservation only if it has no linked tenant account or activation email.
+      description: Cancels a reservation only if it has no linked tenant account or tenant activation challenge.
       tags:
         - Tenancies
       requestBody:
@@ -3906,8 +4158,8 @@ paths:
   /tenancies/{tenancy_id}/tenant-activation:
     post:
       operationId: issueTenantActivation
-      summary: Issue a tenant activation link
-      description: Creates a single-use, expiring activation token for an active tenancy.
+      summary: Issue a tenant activation SMS
+      description: Queues a single-use SMS activation code to the registered phone for an active tenancy.
       tags:
         - Tenancies
       parameters:
@@ -3924,8 +4176,8 @@ paths:
   /units/{unit_id}/tenant-activation:
     post:
       operationId: issueUnitTenantActivation
-      summary: Issue a tenant activation link or code for an active tenancy
-      description: Issues a one-time activation token and code only when the caller can access the unit's active tenancy.
+      summary: Issue a tenant activation SMS for an active tenancy
+      description: Queues a one-time SMS activation code only when the caller can access the unit's active tenancy.
       tags:
         - Tenancies
       parameters:
@@ -3936,7 +4188,7 @@ paths:
             type: integer
       responses:
         "201":
-          description: One-time activation token and code returned
+          description: Activation SMS queued
         "401":
           $ref: "#/components/responses/Problem"
         "404":
@@ -3956,8 +4208,8 @@ paths:
   /tenant-activation/context:
     get:
       operationId: getTenantActivationContext
-      summary: Resolve a tenant activation link
-      description: Validates an unexpired token and returns the tenant and unit context without consuming the token.
+      summary: Resolve a legacy tenant activation token
+      description: Legacy compatibility endpoint. New tenant activations use the registered phone and SMS code through the verify endpoint.
       tags:
         - Authentication
       security: []
@@ -3980,7 +4232,7 @@ paths:
     post:
       operationId: verifyTenantActivationCode
       summary: Verify a tenant activation code
-      description: Validates an unexpired code and optional unit code without consuming the activation challenge.
+      description: Validates the registered phone, unexpired SMS code, and optional unit code without consuming the activation challenge.
       tags:
         - Authentication
       security: []
@@ -3990,10 +4242,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [code]
+              required: [code, phone]
               properties:
                 code:
                   type: string
+                  pattern: "^[0-9]{6}$"
+                phone:
+                  type: string
+                  description: Kenyan phone number used during onboarding.
                 unit_code:
                   type: string
       responses:
@@ -4009,24 +4265,26 @@ paths:
     post:
       operationId: activateTenant
       summary: Complete tenant activation
-      description: Consumes an activation token and sets the tenant portal password.
+      description: >
+        Consumes a valid SMS activation code, activates or links the tenant
+        account without setting a password, and does not create a sign-in session.
       tags:
         - Authentication
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [password]
-              anyOf:
-                - required: [token]
-                - required: [code]
+              required: [code, phone]
               properties:
-                token:
-                  type: string
                 code:
                   type: string
+                  pattern: "^[0-9]{6}$"
+                phone:
+                  type: string
+                  description: Kenyan phone number used during onboarding.
                 unit_code:
                   type: string
                 full_name:
@@ -4034,15 +4292,10 @@ paths:
                 email:
                   type: string
                   format: email
-                phone:
-                  type: string
                 national_id_or_passport:
                   type: string
                   maxLength: 100
-                  description: Required when the activation context marks a new move-in tenant as identity_required.
-                password:
-                  type: string
-                  minLength: 12
+                  description: Required for provisional move-in tenants and existing-account links.
       responses:
         "200":
           description: Tenant activated
@@ -5513,7 +5766,7 @@ components:
         expectedMoveOutDate: {type: [string, "null"], format: date}
     MoveInSettlement:
       type: object
-      required: [id, unit_id, tenant_id, tenant_name, tenant_email, tenant_phone, deposit_amount, rent_amount, garbage_amount, water_deposit_amount, utility_charges, total_required, total_paid, deposit_paid_amount, outstanding_balance, expected_move_in_date, status, activation_email_sent_at, activation_email_error, cancellation_reason, booked_at, activated_at, created_at, updated_at, units, payments]
+      required: [id, unit_id, tenant_id, tenant_name, tenant_email, tenant_phone, deposit_amount, rent_amount, garbage_amount, water_deposit_amount, utility_charges, total_required, total_paid, deposit_paid_amount, outstanding_balance, expected_move_in_date, status, activation_email_sent_at, activation_email_error, activation_sms_queued_at, activation_sms_error, cancellation_reason, booked_at, activated_at, created_at, updated_at, units, payments]
       properties:
         id: {type: integer}
         unit_id: {type: integer}
@@ -5541,6 +5794,8 @@ components:
         status: {type: string}
         activation_email_sent_at: {type: [string, "null"], format: date-time}
         activation_email_error: {type: [string, "null"]}
+        activation_sms_queued_at: {type: [string, "null"], format: date-time}
+        activation_sms_error: {type: [string, "null"]}
         cancellation_reason: {type: [string, "null"]}
         booked_at: {type: [string, "null"], format: date-time}
         activated_at: {type: [string, "null"], format: date-time}
@@ -5585,6 +5840,9 @@ components:
         unit_code: {type: string}
         property_name: {type: string}
         identity_required: {type: boolean}
+        identity_confirmation_required: {type: boolean}
+        existing_account: {type: boolean}
+        phone_verification_required: {type: boolean}
         expires_at: {type: string, format: date-time}
     Unit:
       allOf:
@@ -6119,7 +6377,7 @@ components:
     TenantDashboard:
       type: object
       additionalProperties: false
-      required: [tenant, summary, invoices, payments]
+      required: [tenant, summary, invoices, payments, deposit]
       properties:
         tenant:
           $ref: "#/components/schemas/TenantDashboardProfile"
@@ -6133,10 +6391,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TenantDashboardPayment"
+        deposit:
+          oneOf:
+            - $ref: "#/components/schemas/TenantDashboardDeposit"
+            - type: "null"
     TenantDashboardProfile:
       type: object
       additionalProperties: false
-      required: [id, name, email, phone, unit_code, property_name, move_in_date]
+      required: [id, name, email, phone, unit_code, property_name, paybill_number, move_in_date]
       properties:
         id: {type: integer}
         name: {type: string}
@@ -6149,23 +6411,53 @@ components:
     TenantDashboardSummary:
       type: object
       additionalProperties: false
-      required: [balance_due, next_due_date]
+      required: [balance_due, opening_balance_due, credit_balance, net_balance_due, next_due_date]
       properties:
         balance_due:
           type: string
           description: Sum of outstanding issued invoices and applicable overdue penalties after valid allocations and approved waivers.
           pattern: "^[0-9]+\\.[0-9]{2}$"
+        opening_balance_due:
+          type: string
+          description: Outstanding amount on imported migration opening-balance invoices.
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        credit_balance:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+        net_balance_due:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
         next_due_date:
           type: string
           format: date
           nullable: true
+    TenantDashboardDeposit:
+      type: object
+      required: [balance, target_amount, entries]
+      properties:
+        balance: {type: string}
+        target_amount: {type: string}
+        entries:
+          type: array
+          items:
+            type: object
+            required: [id, entry_type, amount, reference, description, created_at]
+            properties:
+              id: {type: integer}
+              entry_type: {type: string}
+              amount: {type: string}
+              reference: {type: string}
+              description: {type: string}
+              created_at: {type: string, format: date-time}
     TenantDashboardInvoice:
       type: object
       additionalProperties: false
-      required: [id, number, period_start, period_end, due_date, status, total, amount_paid, waived_amount, penalty, balance_due, lines]
+      required: [id, number, invoice_type, is_opening_balance, period_start, period_end, due_date, status, total, amount_paid, waived_amount, penalty, balance_due, lines]
       properties:
         id: {type: integer}
         number: {type: string}
+        invoice_type: {type: string}
+        is_opening_balance: {type: boolean}
         period_start: {type: string, format: date}
         period_end: {type: string, format: date}
         due_date: {type: string, format: date}
@@ -7121,6 +7413,12 @@ components:
             - string
             - "null"
         roles:
+          type: array
+          items:
+            type: string
+        staff_step_up_required:
+          type: boolean
+        staff_step_up_roles:
           type: array
           items:
             type: string

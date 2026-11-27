@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Mail, RefreshCw, Search, UserPlus } from 'lucide-react';
 import { usePropertyOfficerPortal } from '../../../components/property-officer/PortalShell';
+import ExistingAccountPicker, {
+  type ExistingAccount,
+} from '../../../components/property-officer/ExistingAccountPicker';
 
 type Branch = { id: number; name: string; town: string };
 type PropertyOption = {
@@ -53,6 +56,7 @@ export default function LandlordOnboardingPage() {
   const [phone, setPhone] = useState('');
   const [identity, setIdentity] = useState('');
   const [kraPin, setKraPin] = useState('');
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyLandlordId, setBusyLandlordId] = useState<number | null>(null);
@@ -123,6 +127,7 @@ export default function LandlordOnboardingPage() {
         body: JSON.stringify({
           branch_id: branchId,
           property_id: propertyId || null,
+          existing_user_id: selectedAccountId,
           name,
           email,
           phone,
@@ -140,8 +145,13 @@ export default function LandlordOnboardingPage() {
       setPhone('');
       setIdentity('');
       setKraPin('');
+      setSelectedAccountId(null);
       setPropertyId('');
-      setNotice(`Activation email sent to ${email.trim()}.`);
+      setNotice(
+        selectedAccountId
+          ? `Verification code sent to ${phone.trim()}. The landlord account will be linked after identity confirmation.`
+          : `Activation code sent to ${phone.trim()}.`,
+      );
       await loadAccounts();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to create the landlord account.');
@@ -165,11 +175,11 @@ export default function LandlordOnboardingPage() {
         body: JSON.stringify(landlord.account_status === 'not_invited' ? { landlord_id: landlord.id } : {}),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(responseError(payload, 'Unable to send the activation email.'));
-      setNotice(`Activation email sent to ${landlord.email}.`);
+      if (!response.ok) throw new Error(responseError(payload, 'Unable to send the activation SMS.'));
+      setNotice(`Activation code sent to ${landlord.phone}.`);
       await loadAccounts();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to send the activation email.');
+      setError(cause instanceof Error ? cause.message : 'Unable to send the activation SMS.');
     } finally {
       setBusyLandlordId(null);
     }
@@ -192,7 +202,7 @@ export default function LandlordOnboardingPage() {
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency.name}</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">Landlords & onboarding</h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Create landlord portal access for your assigned branches and resend pending activation emails.
+            Create landlord portal access for your assigned branches and resend pending activation SMS codes.
           </p>
         </div>
         <button onClick={() => void loadAccounts()} disabled={loading}
@@ -213,6 +223,18 @@ export default function LandlordOnboardingPage() {
               <p className="text-xs text-slate-500">The landlord receives an email to activate their login.</p>
             </div>
           </div>
+          <ExistingAccountPicker
+            agencyId={agency.id}
+            selectedId={selectedAccountId}
+            onSelect={(account: ExistingAccount | null) => {
+              setSelectedAccountId(account?.id ?? null);
+              if (account) {
+                setName(account.name);
+                setEmail(account.email);
+                setPhone(account.phone);
+              }
+            }}
+          />
           <label className="block text-sm font-semibold">Assigned branch
             <select required value={branchId} onChange={(event) => {
               setBranchId(event.target.value);
@@ -240,15 +262,18 @@ export default function LandlordOnboardingPage() {
           </label>
           <label className="block text-sm font-semibold">Full name
             <input required value={name} onChange={(event) => setName(event.target.value)} autoComplete="name"
+              readOnly={selectedAccountId !== null}
               className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2.5" />
           </label>
           <label className="block text-sm font-semibold">Email
             <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email"
+              readOnly={selectedAccountId !== null}
               className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2.5" />
           </label>
           <label className="block text-sm font-semibold">Phone
             <input required type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="07XX XXX XXX"
-              autoComplete="tel" className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2.5" />
+              autoComplete="tel" readOnly={selectedAccountId !== null}
+              className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2.5" />
           </label>
           <label className="block text-sm font-semibold">ID or registration number
             <input required value={identity} onChange={(event) => setIdentity(event.target.value)}

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Building2, LayoutGrid, LogOut } from 'lucide-react';
 import type { DjangoUser } from '../../lib/django-auth';
+import { getDjangoWorkspaceOptions } from '../../lib/django-routing';
 
 interface PrototypeHeaderProps {
   activeRole: string;
@@ -10,6 +11,7 @@ interface PrototypeHeaderProps {
 }
 
 export function PrototypeHeader({ activeRole, user }: PrototypeHeaderProps) {
+  const canSwitchWorkspaces = getDjangoWorkspaceOptions(user?.roles ?? []).length > 1;
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
@@ -61,14 +63,16 @@ export function PrototypeHeader({ activeRole, user }: PrototypeHeaderProps) {
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        <Link
-          href="/login"
-          className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#dfe5df] bg-white px-3 py-2 text-xs font-semibold text-[#385343] transition hover:border-[#cbd8c8] hover:bg-[#f5f8f3]"
-          title="Return to portals"
-        >
-          <LayoutGrid size={15} />
-          <span>Portals</span>
-        </Link>
+        {canSwitchWorkspaces && (
+          <Link
+            href="/workspace"
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#dfe5df] bg-white px-3 py-2 text-xs font-semibold text-[#385343] transition hover:border-[#cbd8c8] hover:bg-[#f5f8f3]"
+            title="Switch workspace"
+          >
+            <LayoutGrid size={15} />
+            <span>Switch workspace</span>
+          </Link>
+        )}
         <button
           type="button"
           onClick={handleLogout}

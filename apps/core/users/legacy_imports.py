@@ -2,7 +2,6 @@ import csv
 import logging
 import re
 import secrets
-import smtplib
 from zipfile import BadZipFile
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -192,9 +191,13 @@ def _date(value, sheet, row, field, *, required=True):
     if isinstance(value, date):
         return value
     try:
-        return date.fromisoformat(str(value))
+        value_text = str(value).strip()
+        try:
+            return datetime.strptime(value_text, "%d/%m/%Y").date()
+        except ValueError:
+            return date.fromisoformat(value_text)
     except (TypeError, ValueError) as exc:
-        raise ImportProblem(sheet, row["_row"], f"{field} must use YYYY-MM-DD.") from exc
+        raise ImportProblem(sheet, row["_row"], f"{field} must use DD/MM/YYYY.") from exc
 
 
 def _integer(value, sheet, row, field, default=None):
@@ -335,6 +338,22 @@ def _normalize_property_inventory(parsed):
     }
     if not tables["units"]:
         raise ImportProblem("units", 1, "The Units worksheet must contain at least one unit row.")
+    has_tenancy_units = any(
+        _sheet_key(row.get("occupancy_status")) in {"occupied", "notice_given"}
+        for row in tables["units"]
+    )
+    if has_tenancy_units and "tenancies" not in parsed:
+        raise ImportProblem(
+            "tenancies",
+            1,
+            "A Tenancies worksheet or tenancies.csv file is required for Occupied and Notice Given units.",
+        )
+    if "tenancies" in parsed and has_tenancy_units:
+        tables["tenancies"] = _table(
+            parsed,
+            "tenancies",
+            ("unit_code", "tenant_name", "tenant_phone", "tenancy_start_date"),
+        )
     return tables
 
 
@@ -353,10 +372,8 @@ def _prepare_tenant_activation(
     activation_key = tenant.pk
     if activation_key in activation_keys:
         return
-    if not tenant.email:
-        _problem(sheet, row, "Occupied tenant records need tenant_email to receive an activation link and code.")
     if not settings.PUBLIC_SITE_URL:
-        _problem(sheet, row, "PUBLIC_SITE_URL must be configured before importing tenants for activation.")
+        _problem(sheet, row, "PUBLIC_SITE_URL must be configured before sending tenant activation SMS.")
     from users.views import _normalize_ke_phone
 
     try:
@@ -382,7 +399,7 @@ def _prepare_tenant_activation(
             _problem(sheet, row, "The tenant is linked to a non-tenant portal account; resolve the account conflict first.")
         if user.is_active:
             return
-        if user.email and user.email.casefold() != tenant.email.casefold():
+        if tenant.email and user.email and user.email.casefold() != tenant.email.casefold():
             _problem(
                 sheet,
                 row,
@@ -390,27 +407,33 @@ def _prepare_tenant_activation(
             )
 
     if user is None:
-        username = tenant.email.strip().lower()
-        if user_model.objects.filter(
-            Q(username__iexact=username) | Q(email__iexact=username)
-        ).exists():
+        username = tenant.email.strip().lower() or activation_phone
+        account_conflict = Q(username__iexact=username)
+        if tenant.email:
+            account_conflict |= Q(email__iexact=tenant.email.strip())
+        if user_model.objects.filter(account_conflict).exists():
             _problem(
                 sheet,
                 row,
-                "The tenant email already belongs to another account. Resolve the account conflict before importing.",
+                "The tenant contact details already belong to another account. Resolve the account conflict before importing.",
             )
-        user = user_model(username=username, email=username, is_active=False)
+        user = user_model(username=username, email=tenant.email.strip().lower(), is_active=False)
         user.set_unusable_password()
         user.full_clean()
         user.save()
-        profile = UserProfile(user=user, name=tenant.name, phone=tenant.phone)
+        profile = UserProfile(
+            user=user,
+            name=tenant.name,
+            phone=tenant.phone,
+            id_or_registration_number=tenant.national_id_or_passport,
+        )
         profile.full_clean()
         profile.save()
         profile.branches.add(tenant.branch)
         tenant.portal_user = user
         tenant.save(update_fields=["portal_user", "updated_at"])
     else:
-        if not user.email:
+        if not user.email and tenant.email:
             username = tenant.email.strip().lower()
             if user_model.objects.filter(
                 Q(username__iexact=username) | Q(email__iexact=username)
@@ -421,8 +444,18 @@ def _prepare_tenant_activation(
             user.save(update_fields=["email", "username"])
         profile, _ = UserProfile.objects.get_or_create(
             user=user,
-            defaults={"name": tenant.name, "phone": tenant.phone},
+            defaults={
+                "name": tenant.name,
+                "phone": tenant.phone,
+                "id_or_registration_number": tenant.national_id_or_passport,
+            },
         )
+        if (
+            tenant.national_id_or_passport
+            and not profile.id_or_registration_number
+        ):
+            profile.id_or_registration_number = tenant.national_id_or_passport
+            profile.save(update_fields=["id_or_registration_number"])
         profile.branches.add(tenant.branch)
 
     user.groups.add(tenant_role)
@@ -438,6 +471,16 @@ def _prepare_tenant_activation(
     token = secrets.token_urlsafe(32)
     activation_code = _new_tenant_activation_code()
     now = timezone.now()
+    existing_challenge = TenantActivationChallenge.objects.filter(
+        tenant=tenant,
+        unit=tenancy.unit,
+        phone_verification_required=True,
+        used_at__isnull=True,
+        expires_at__gt=now,
+    ).order_by("-created_at").first()
+    if existing_challenge:
+        activation_keys.add(activation_key)
+        return
     TenantActivationChallenge.objects.filter(
         tenant=tenant,
         used_at__isnull=True,
@@ -448,7 +491,7 @@ def _prepare_tenant_activation(
         token_hash=_activation_hash(token),
         code_hash=_activation_hash(activation_code),
         phone_verification_required=True,
-        expires_at=now + timedelta(hours=48),
+        expires_at=now + timedelta(hours=72),
     )
     activation_emails.append(
         {
@@ -458,7 +501,7 @@ def _prepare_tenant_activation(
             "phone": activation_phone,
             "unit_code": tenancy.unit.code,
             "property_name": tenancy.unit.property.name,
-            "activation_url": f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate?token={token}",
+            "activation_url": f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate",
             "activation_code": activation_code,
             "expires_at": challenge.expires_at,
         }
@@ -606,6 +649,16 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
             }],
             "activation": {"prepared": 0, "sent": 0, "sms_queued": 0, "failed": []},
         }
+    if property_has_water and tables["units"]:
+        unit_headers = set(tables["units"][0])
+        required_water_headers = {"water_meter_no", "water_current_reading"}
+        missing_water_headers = sorted(required_water_headers - unit_headers)
+        if missing_water_headers:
+            raise ImportProblem(
+                "units",
+                1,
+                f"Missing required columns for this property's paid water utility: {', '.join(missing_water_headers)}.",
+            )
 
     def skip(sheet, row, reason):
         skipped.append({"sheet": sheet, "row": row["_row"], "reason": reason})
@@ -710,6 +763,40 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
                 row,
                 "Occupied and Notice Given units need a matching row in the Tenancies worksheet.",
             )
+    expected_total = property_obj.expected_unit_count
+    expected_type_counts = {
+        unit_type.name.casefold(): unit_type.unit_count
+        for unit_type in property_obj.unit_types.all()
+    }
+    counts_configured = expected_total > 0 or any(
+        expected_type_counts.values()
+    )
+    if expected_total > 0 and len(unit_rows) != expected_total:
+        raise ImportProblem(
+            "units",
+            1,
+            f"The Units file contains {len(unit_rows)} rows; this property expects {expected_total} units.",
+        )
+    if counts_configured:
+        actual_type_counts = {}
+        for row in unit_rows.values():
+            type_name = _unit_type_values(row["_unit_type_definition"])["name"]
+            actual_type_counts[type_name.casefold()] = (
+                actual_type_counts.get(type_name.casefold(), 0) + 1
+            )
+        for type_name, expected_count in expected_type_counts.items():
+            actual_count = actual_type_counts.get(type_name, 0)
+            if actual_count != expected_count:
+                configured_type = next(
+                    item.name
+                    for item in property_obj.unit_types.all()
+                    if item.name.casefold() == type_name
+                )
+                raise ImportProblem(
+                    "units",
+                    1,
+                    f"The Units file contains {actual_count} {configured_type} units; this property expects {expected_count}.",
+                )
     if not tables["units"] and not tables["tenancies"]:
         raise ImportProblem("file", 1, "The upload contains no unit or tenancy data rows.")
 
@@ -915,15 +1002,13 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
 
                 _required(
                     row,
-                    ("tenant_name", "tenant_phone", "tenant_email", "tenancy_start_date"),
+                    ("tenant_name", "tenant_phone", "tenancy_start_date"),
                     "tenancies",
                 )
                 tenant_name = str(row["tenant_name"]).strip()
                 phone = str(row["tenant_phone"]).strip()
                 if not tenant_name:
                     problem("tenancies", row, "tenant_name cannot be empty.")
-                if not tenant_email:
-                    problem("tenancies", row, "Occupied tenants need tenant_email for account activation.")
                 start_date = _date(row["tenancy_start_date"], "tenancies", row, "tenancy_start_date")
                 end_date = _date(
                     row.get("tenancy_end_date"),
@@ -1175,45 +1260,8 @@ def _import_property_inventory(property_obj, user, tables, *, commit):
 def _deliver_activation_emails(report, activation_emails):
     if not activation_emails:
         return
-    from users.views import _send_tenant_activation_email
 
     for invitation in activation_emails:
-        try:
-            _send_tenant_activation_email(
-                invitation["full_name"],
-                invitation["email"],
-                invitation["unit_code"],
-                invitation["property_name"],
-                invitation["activation_url"],
-                invitation["activation_code"],
-                phone_verification_required=True,
-            )
-        except (
-            ImproperlyConfigured,
-            OSError,
-            RuntimeError,
-            smtplib.SMTPException,
-            ValueError,
-        ) as error:
-            TenantActivationChallenge.objects.filter(
-                pk=invitation["challenge_id"]
-            ).update(email_delivery_error=type(error).__name__)
-            logger.warning(
-                "Legacy tenant activation email delivery failed (%s).",
-                type(error).__name__,
-            )
-            report["activation"]["failed"].append(
-                {
-                    "unit_code": invitation["unit_code"],
-                    "email": invitation["email"],
-                    "message": "Activation email delivery failed; check the SMS result before retrying the invitation.",
-                }
-            )
-        else:
-            TenantActivationChallenge.objects.filter(
-                pk=invitation["challenge_id"]
-            ).update(email_sent_at=timezone.now(), email_delivery_error="")
-            report["activation"]["sent"] += 1
         try:
             queue_template_sms(
                 invitation["phone"],
@@ -1236,11 +1284,17 @@ def _deliver_activation_emails(report, activation_emails):
                 "Legacy tenant activation SMS could not be queued (%s).",
                 type(error).__name__,
             )
+            TenantActivationChallenge.objects.filter(
+                pk=invitation["challenge_id"]
+            ).update(
+                expires_at=timezone.now(),
+                email_delivery_error=type(error).__name__,
+            )
             report["activation"]["failed"].append(
                 {
                     "unit_code": invitation["unit_code"],
-                    "email": invitation["email"],
-                    "message": "Activation SMS could not be queued. The email delivery status is reported separately.",
+                    "phone": invitation["phone"],
+                    "message": "Activation SMS could not be queued.",
                 }
             )
         else:
@@ -1391,8 +1445,6 @@ def import_legacy_data(branch, user, files, *, commit, property_obj=None):
                     if not tenant_name or not phone or start_date is None:
                         _problem(sheet, row, "Occupied units require tenant_name, tenant_phone, and tenancy_start_date.")
                     tenant_email = str(row.get("tenant_email") or "").strip().lower()
-                    if property_obj is not None and not tenant_email:
-                        _problem(sheet, row, "Occupied tenant records need tenant_email to receive an activation link and code.")
                     tenant = Tenant.objects.filter(branch=branch, phone=phone).first()
                     if tenant is None:
                         tenant_type = str(row.get("tenant_type") or Tenant.INDIVIDUAL).strip().casefold()

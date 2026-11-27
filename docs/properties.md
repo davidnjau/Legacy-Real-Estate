@@ -365,8 +365,9 @@ and audited; they do not issue or mutate an invoice.
 Arrears ageing is available through `GET /api/v1/arrears?as_of=YYYY-MM-DD`.
 Invoices are grouped into current, 1-30, 31-60, 61-90, and 90+ day buckets.
 Branch policies configure grace days and percentage penalties. Managers can
-approve a reasoned partial waiver with
-`POST /api/v1/invoices/{invoice_id}/waiver`; the approval is audited.
+request monthly invoice waivers through the Billing Wizard for Director
+approval. Opening migration arrears are not waivable; the legacy direct waiver
+endpoint is retired.
 `POST /api/v1/invoices/{invoice_id}/demand-letter` issues one dated, idempotent
 demand letter with a 14-day response date. These operations are branch-scoped.
 
@@ -547,7 +548,7 @@ and the server blocks publication until every active tenancy at that property
 has a valid reading. Publishing creates the next month's invoice drafts and
 queues an SMS for the Property Officer. Fixed-utility properties without
 metered water are drafted on the normal billing day: the 30th, or the final
-calendar day of shorter months.
+day before February ends (the 27th in a common year or the 28th in a leap year).
 
 Draft invoices carry the prior issued balance and itemized current rent,
 recurring charges, and metered water. The scheduler issues eligible drafts on
@@ -557,6 +558,14 @@ against the invoice and its amount and reason are shown to the tenant, including
 when approval occurs after issuance. SMS notifications use the configured SMS
 backend and audited delivery queue. WhatsApp delivery is not enabled until a
 provider is configured.
+
+Opening migration arrears are tracked on the Migration Ledger only through the
+property's first online billing month (or the opening-balance month when no
+first month is configured). Confirmed payments received after the arrears
+as-of date and during that transition month update the ledger and any monthly
+invoice draft. When the monthly invoice is issued, available tenant credit is
+automatically applied to it; payments after the transition month are reflected
+in the monthly invoice ledger and do not change the migration ledger.
 
 The cycle can also be run manually with `python manage.py run_billing_cycle`.
 

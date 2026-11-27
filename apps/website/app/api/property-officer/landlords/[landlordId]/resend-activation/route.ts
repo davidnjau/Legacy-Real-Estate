@@ -13,6 +13,6 @@ export async function POST(request: Request, context: RouteContext) {
       { method: 'POST' },
     );
   } catch (error) {
-    return djangoProxyFailure(error, 'Unable to resend the landlord activation email.');
+    return djangoProxyFailure(error, 'Unable to resend the landlord activation SMS.');
   }
 }

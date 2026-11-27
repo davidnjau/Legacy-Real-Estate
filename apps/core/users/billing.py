@@ -4,7 +4,9 @@ from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace
 
 from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 
+from users.arrears import is_migration_opening_balance_invoice
 from users.audit import record_audit_event
 from users.models import (
     ArrearsWaiver,
@@ -112,7 +114,8 @@ def _water_line(unit, period_start):
     )
 
 
-def _carried_balance(tenancy, period_start):
+def _carried_balance(tenancy, period_start, *, as_of=None):
+    as_of = as_of or period_start
     previous_invoices = Invoice.objects.filter(
         tenancy=tenancy,
         status=Invoice.STATUS_ISSUED,
@@ -127,8 +130,8 @@ def _carried_balance(tenancy, period_start):
     allocated = (
         PaymentAllocation.objects.filter(
             invoice__in=previous_invoices,
-            created_at__date__lte=period_start,
-            payment__received_at__date__lte=period_start,
+            created_at__date__lte=as_of,
+            payment__received_at__date__lte=as_of,
         )
         .exclude(
             payment__instrument_status__in=(
@@ -139,11 +142,17 @@ def _carried_balance(tenancy, period_start):
         .aggregate(total=models.Sum("amount"))["total"]
         or Decimal("0.00")
     )
+    migration_invoice_ids = InvoiceLine.objects.filter(
+        invoice__in=previous_invoices,
+        metadata__migration_opening_balance=True,
+    ).values("invoice_id")
     waived = (
         ArrearsWaiver.objects.filter(
             invoice__in=previous_invoices,
-            approved_at__date__lte=period_start,
-        ).aggregate(total=models.Sum("amount"))["total"]
+            approved_at__date__lte=as_of,
+        )
+        .exclude(invoice_id__in=migration_invoice_ids)
+        .aggregate(total=models.Sum("amount"))["total"]
         or Decimal("0.00")
     )
     amount = max(charges - allocated - waived, Decimal("0.00"))
@@ -157,7 +166,84 @@ def _carried_balance(tenancy, period_start):
     )
 
 
+def refresh_draft_invoice_balance(invoice, *, as_of=None):
+    if invoice.status != Invoice.STATUS_DRAFT or _is_notice_month(
+        invoice.tenancy, invoice.period_start
+    ):
+        return
+    as_of = as_of or timezone.localdate()
+    balance_line = _carried_balance(
+        invoice.tenancy,
+        invoice.period_start,
+        as_of=as_of,
+    )
+    existing_balance_line = invoice.lines.filter(charge_type="balance").first()
+    if balance_line is None:
+        if existing_balance_line:
+            existing_balance_line.delete()
+    elif existing_balance_line:
+        existing_balance_line.description = balance_line.description
+        existing_balance_line.amount = balance_line.amount
+        existing_balance_line.metadata = balance_line.metadata
+        existing_balance_line.save(
+            update_fields=["description", "amount", "metadata"]
+        )
+    else:
+        balance_line.invoice = invoice
+        balance_line.save()
+
+    new_total = (
+        InvoiceLine.objects.filter(invoice=invoice).aggregate(
+            total=models.Sum("amount")
+        )["total"]
+        or Decimal("0.00")
+    )
+    if new_total == invoice.total:
+        return
+    old_total = invoice.total
+    invoice.total = new_total
+    invoice.save(update_fields=["total", "updated_at"])
+    record_audit_event(
+        SimpleNamespace(META={}, user=None),
+        "invoice.draft_balance_refreshed",
+        "Invoice",
+        old_values={"invoice_id": invoice.pk, "total": str(old_total)},
+        new_values={
+            "invoice_id": invoice.pk,
+            "total": str(new_total),
+            "as_of": as_of.isoformat(),
+        },
+    )
+
+
+def refresh_draft_balance_lines_for_tenancy(tenancy_id, *, as_of=None):
+    as_of = as_of or timezone.localdate()
+    invoice_ids = list(
+        Invoice.objects.filter(
+            tenancy_id=tenancy_id,
+            invoice_type=Invoice.TYPE_STANDARD,
+            status=Invoice.STATUS_DRAFT,
+        ).values_list("pk", flat=True)
+    )
+    for invoice_id in invoice_ids:
+        with transaction.atomic():
+            invoice = (
+                Invoice.objects.select_for_update()
+                .filter(
+                    pk=invoice_id,
+                    invoice_type=Invoice.TYPE_STANDARD,
+                    status=Invoice.STATUS_DRAFT,
+                )
+                .select_related("tenancy")
+                .first()
+            )
+            if invoice:
+                refresh_draft_invoice_balance(invoice, as_of=as_of)
+
+
 def _link_invoice_waiver_requests(invoice):
+    if is_migration_opening_balance_invoice(invoice):
+        return
     requests = list(
         InvoiceWaiverRequest.objects.select_for_update()
         .filter(
@@ -227,6 +313,11 @@ def generate_monthly_invoice(tenancy, period_start, *, status=Invoice.STATUS_ISS
                     water_line.save()
                     invoice.total = water_line.amount
                 invoice.save(update_fields=["total", "status", "updated_at"])
+            elif invoice.status == Invoice.STATUS_DRAFT:
+                refresh_draft_invoice_balance(
+                    invoice,
+                    as_of=timezone.localdate(),
+                )
             _link_invoice_waiver_requests(invoice)
         return invoice, False
 
@@ -245,7 +336,11 @@ def generate_monthly_invoice(tenancy, period_start, *, status=Invoice.STATUS_ISS
         ]
         if water_line:
             lines.append(water_line)
-        balance_line = _carried_balance(tenancy, period_start)
+        balance_line = _carried_balance(
+            tenancy,
+            period_start,
+            as_of=timezone.localdate(),
+        )
         if balance_line:
             lines.append(balance_line)
     if not lines:

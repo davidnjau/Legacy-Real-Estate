@@ -23,7 +23,7 @@ type LedgerRow = {
   arrears_as_of: string;
   opening_arrears: string;
   paid_to_arrears: string;
-  waived_amount: string;
+  overpayment_credit: string;
   outstanding: string;
   status: 'unpaid' | 'partial' | 'cleared';
 };
@@ -32,7 +32,7 @@ type LedgerSummary = {
   records: number;
   opening_arrears: string;
   paid_to_arrears: string;
-  waived_amount: string;
+  overpayment_credit: string;
   outstanding: string;
   cleared: number;
   partial: number;
@@ -134,7 +134,7 @@ export default function MigrationLedger() {
   const cards = summary ? [
     { label: 'Opening arrears', amount: summary.opening_arrears, detail: `${summary.records} migration balances` },
     { label: 'Paid toward arrears', amount: summary.paid_to_arrears, detail: 'Confirmed allocations' },
-    { label: 'Waived', amount: summary.waived_amount, detail: 'Approved arrears waivers' },
+    { label: 'Available overpayment credit', amount: summary.overpayment_credit, detail: 'Unapplied tenant account credit' },
     { label: 'Outstanding', amount: summary.outstanding, detail: `${summary.unpaid} unpaid · ${summary.partial} partial · ${summary.cleared} cleared` },
   ] : [];
 
@@ -145,7 +145,7 @@ export default function MigrationLedger() {
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency?.name || 'Agency'}</p>
           <h1 className="mt-1 text-2xl font-bold text-slate-950">Migration ledger</h1>
           <p className="mt-1 max-w-3xl text-sm text-slate-500">
-            Track opening arrears imported during the transition. Confirmed payments and approved waivers update each balance automatically.
+            Track opening arrears imported during the transition. Confirmed payments update each balance automatically; any overpayment remains as tenant account credit.
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
@@ -206,7 +206,7 @@ export default function MigrationLedger() {
             <table className="w-full min-w-[1050px] text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  {['Property / unit', 'Tenant', 'Arrears as of', 'Opening arrears', 'Paid', 'Waived', 'Outstanding', 'Status'].map((label) => (
+                  {['Property / unit', 'Tenant', 'Arrears as of', 'Opening arrears', 'Paid', 'Credit', 'Outstanding', 'Status'].map((label) => (
                     <th key={label} className="px-4 py-3 font-semibold">{label}</th>
                   ))}
                 </tr>
@@ -225,7 +225,7 @@ export default function MigrationLedger() {
                     <td className="px-4 py-3 text-slate-600">{row.arrears_as_of}</td>
                     <td className="px-4 py-3 font-medium">{currency.format(Number(row.opening_arrears))}</td>
                     <td className="px-4 py-3 text-emerald-700">{currency.format(Number(row.paid_to_arrears))}</td>
-                    <td className="px-4 py-3 text-slate-600">{currency.format(Number(row.waived_amount))}</td>
+                    <td className="px-4 py-3 text-sky-700">{currency.format(Number(row.overpayment_credit))}</td>
                     <td className="px-4 py-3 font-semibold text-slate-900">{currency.format(Number(row.outstanding))}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
@@ -245,7 +245,7 @@ export default function MigrationLedger() {
           </div>
         )}
       </section>
-      <p className="text-xs text-slate-500">Balances reflect confirmed allocations and approved waivers as of today. Payments posted to the opening-arrears invoice appear here automatically.</p>
+      <p className="text-xs text-slate-500">Balances reflect confirmed payments as of today. Payments posted to the opening-arrears invoice appear here automatically, and overpayments are held as tenant account credit.</p>
     </main>
   );
 }

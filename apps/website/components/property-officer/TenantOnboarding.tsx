@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { RefreshCw, UserPlus } from 'lucide-react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import ExistingAccountPicker, {
+  type ExistingAccount,
+} from './ExistingAccountPicker';
 
 type PropertyRecord = {
   id: number;
@@ -62,8 +65,7 @@ type TenantPayload = {
     start_date: string;
   };
   quote?: MoveInQuote;
-  activation_email_sent?: boolean;
-  activation_email_error?: string | null;
+  existing_account_link?: boolean;
   activation_sms_queued?: boolean;
   activation_sms_error?: string | null;
   move_in_caretaker_sms_queued?: boolean | null;
@@ -107,6 +109,7 @@ export default function TenantOnboarding() {
   const [reloadKey, setReloadKey] = useState(0);
 
   const [tenantType, setTenantType] = useState<'individual' | 'company'>('individual');
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -135,8 +138,6 @@ export default function TenantOnboarding() {
 
   const [createdTenant, setCreatedTenant] = useState<TenantRecord | null>(null);
   const [createdTenancy, setCreatedTenancy] = useState<TenantPayload['tenancy'] | null>(null);
-  const [activationEmailSent, setActivationEmailSent] = useState(false);
-  const [activationEmailError, setActivationEmailError] = useState<string | null>(null);
   const [activationSmsQueued, setActivationSmsQueued] = useState(false);
   const [activationSmsError, setActivationSmsError] = useState<string | null>(null);
   const [moveInCaretakerSmsQueued, setMoveInCaretakerSmsQueued] = useState<boolean | null>(null);
@@ -284,6 +285,7 @@ export default function TenantOnboarding() {
         tenancy_type: endDate ? 'fixed_term' : 'month_to_month',
         due_day: dueDay,
         tenant_type: tenantType,
+        existing_user_id: selectedAccountId ?? '',
         name,
         email,
         phone,
@@ -321,8 +323,6 @@ export default function TenantOnboarding() {
       setCreatedTenancy(tenancy);
       setUploadedDocuments(tenant.documents ?? []);
       setIdentityDocumentFile(null);
-      setActivationEmailSent(Boolean(result.activation_email_sent));
-      setActivationEmailError(result.activation_email_error ?? null);
       setActivationSmsQueued(Boolean(result.activation_sms_queued));
       setActivationSmsError(result.activation_sms_error ?? null);
       setMoveInCaretakerSmsQueued(result.move_in_caretaker_sms_queued ?? null);
@@ -332,8 +332,10 @@ export default function TenantOnboarding() {
         ...current.filter((record) => record.id !== tenant.id),
       ]);
       setNotice(
-        result.activation_email_sent && result.activation_sms_queued
-          ? 'Payment confirmation, tenant onboarding, and activation messages are complete.'
+        result.existing_account_link
+          ? 'Existing agency account linked to the tenancy.'
+          : result.activation_sms_queued
+          ? 'Payment confirmation and tenant onboarding are complete. The activation code was sent by SMS.'
           : 'Tenant onboarding is complete, but one or more activation messages need to be retried.',
       );
       setReloadKey((value) => value + 1);
@@ -352,13 +354,12 @@ export default function TenantOnboarding() {
     setUploadedDocuments([]);
     setDocumentFile(null);
     setIdentityDocumentFile(null);
-    setActivationEmailSent(false);
-    setActivationEmailError(null);
     setActivationSmsQueued(false);
     setActivationSmsError(null);
     setMoveInCaretakerSmsQueued(null);
     setMoveInCaretakerSmsError(null);
     setTenantType('individual');
+    setSelectedAccountId(null);
     setName('');
     setEmail('');
     setPhone('');
@@ -456,18 +457,40 @@ export default function TenantOnboarding() {
 
           <fieldset disabled={Boolean(createdTenancy) || saving} className="space-y-4 disabled:opacity-70">
             <label className="block text-sm font-semibold">Tenant type
-              <select value={tenantType} onChange={(event) => setTenantType(event.target.value as 'individual' | 'company')}
+              <select value={tenantType} onChange={(event) => {
+                setTenantType(event.target.value as 'individual' | 'company');
+                setSelectedAccountId(null);
+              }}
                 className={fieldClass}>
                 <option value="individual">Individual</option>
                 <option value="company">Company</option>
               </select>
             </label>
+            {agency && (
+              <ExistingAccountPicker
+                agencyId={agency.id}
+                selectedId={selectedAccountId}
+                onSelect={(account: ExistingAccount | null) => {
+                  setSelectedAccountId(account?.id ?? null);
+                  if (account) {
+                    if (tenantType === 'company') setContactPerson(account.name);
+                    else setName(account.name);
+                    setEmail(account.email);
+                    setPhone(account.phone);
+                  }
+                }}
+              />
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block text-sm font-semibold">Full name / company name
-                <input required value={name} onChange={(event) => setName(event.target.value)} className={fieldClass} />
+                <input required value={name} onChange={(event) => setName(event.target.value)}
+                  readOnly={selectedAccountId !== null && tenantType === 'individual'}
+                  className={fieldClass} />
               </label>
               <label className="block text-sm font-semibold">Email
-                <input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} className={fieldClass} />
+                <input required type="email" autoComplete="email" value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  readOnly={selectedAccountId !== null} className={fieldClass} />
               </label>
             </div>
             <label className="block text-sm font-semibold">Move-in inspection caretaker
@@ -487,7 +510,9 @@ export default function TenantOnboarding() {
             </label>
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block text-sm font-semibold">Phone
-                <input required type="tel" autoComplete="tel" placeholder="07XX XXX XXX" value={phone} onChange={(event) => setPhone(event.target.value)} className={fieldClass} />
+                <input required type="tel" autoComplete="tel" placeholder="07XX XXX XXX" value={phone}
+                  onChange={(event) => setPhone(event.target.value)}
+                  readOnly={selectedAccountId !== null} className={fieldClass} />
               </label>
               <label className="block text-sm font-semibold">
                 {tenantType === 'individual' ? 'National ID or passport number' : "Contact person's national ID or passport number"}
@@ -500,7 +525,8 @@ export default function TenantOnboarding() {
                   <input required value={companyRegistrationNumber} onChange={(event) => setCompanyRegistrationNumber(event.target.value)} className={fieldClass} />
                 </label>
                 <label className="block text-sm font-semibold">Contact person
-                  <input required value={contactPerson} onChange={(event) => setContactPerson(event.target.value)} className={fieldClass} />
+                  <input required value={contactPerson} onChange={(event) => setContactPerson(event.target.value)}
+                    readOnly={selectedAccountId !== null} className={fieldClass} />
                 </label>
               </div>
             )}
@@ -659,13 +685,10 @@ export default function TenantOnboarding() {
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="font-bold">Activation delivery</h2>
             <p className="mt-2 text-sm text-slate-600">
-              After the payment details are recorded, the activation link is sent by email and the verification code by SMS.
+              After the full move-in balance is paid, the tenant receives a passwordless activation code by SMS.
             </p>
             {createdTenancy && (
               <div className="mt-4 space-y-2 text-sm">
-                <p className={activationEmailSent ? 'text-emerald-800' : 'text-red-700'}>
-                  Email: {activationEmailSent ? 'sent' : `not sent${activationEmailError ? ` — ${activationEmailError}` : ''}`}
-                </p>
                 <p className={activationSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
                   SMS: {activationSmsQueued ? 'queued for delivery' : `not queued${activationSmsError ? ` — ${activationSmsError}` : ''}`}
                 </p>

@@ -6,14 +6,10 @@ export async function POST(request: Request) {
     return await forwardDjangoRequest(request, '/tenant-activation/complete', {
       method: 'POST',
       body: {
-        token: body.token,
         code: body.code,
         unit_code: body.unitCode,
-        full_name: body.fullName,
-        email: body.email,
         phone: body.phone,
         national_id_or_passport: body.nationalIdOrPassport,
-        password: body.password,
       },
     });
   } catch (error) {

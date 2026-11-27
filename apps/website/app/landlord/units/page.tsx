@@ -53,8 +53,8 @@ interface MoveInSettlement {
   outstanding_balance: number;
   status: string;
   utility_charges?: { name: string; amount: number }[];
-  activation_email_sent_at?: string | null;
-  activation_email_error?: string | null;
+  activation_sms_queued_at?: string | null;
+  activation_sms_error?: string | null;
   expected_move_in_date?: string | null;
   units?: { unit_code: string };
 }
@@ -346,8 +346,8 @@ export default function UnitsAndTenants() {
       const data = await response.json();
       if (!response.ok) { window.alert(data.error || 'Unable to record payment.'); return; }
       setPaymentForm({ amount: '', reference: '' }); await fetchSettlements();
-      if (data.bookingConfirmed && !data.activationReady) window.alert('Deposit received. The unit is now booked; collect the remaining move-in balance before sending the tenant activation email.');
-      if (data.activationReady) window.alert('Move-in balance cleared. You can now email the tenant their activation link.');
+      if (data.bookingConfirmed && !data.activationReady) window.alert('Deposit received. The unit is now booked; collect the remaining move-in balance before sending the tenant activation code.');
+      if (data.activationReady) window.alert('Move-in balance cleared. The tenant activation code can now be sent by SMS.');
     } finally {
       setIsRecordingSettlementPayment(false);
     }
@@ -369,20 +369,20 @@ export default function UnitsAndTenants() {
     }
   };
 
-  const sendActivationEmail = async (settlement: MoveInSettlement) => {
+  const sendActivationSMS = async (settlement: MoveInSettlement) => {
     setSendingActivationFor(settlement.id);
     try {
       const response = await fetch('/api/units/move-in-settlement', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settlementId: settlement.id, sendActivationEmail: true }),
+        body: JSON.stringify({ settlementId: settlement.id, sendActivationSMS: true }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to send the tenant activation email.');
-      window.alert(data.message || 'Tenant activation email sent.');
+      if (!response.ok) throw new Error(data.error || 'Unable to send the tenant activation SMS.');
+      window.alert(data.message || 'Tenant activation SMS queued.');
       await fetchSettlements();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Unable to send the tenant activation email.');
+      window.alert(error instanceof Error ? error.message : 'Unable to send the tenant activation SMS.');
     } finally {
       setSendingActivationFor(null);
     }
@@ -592,7 +592,7 @@ export default function UnitsAndTenants() {
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="p-5 border-b border-slate-200 bg-emerald-50">
           <h2 className="font-bold text-slate-900">Move-In Settlements</h2>
-          <p className="text-sm text-slate-600 mt-1">Deposits book the unit. Collect the remaining move-in balance before emailing the tenant an activation link.</p>
+          <p className="text-sm text-slate-600 mt-1">Deposits book the unit. Collect the remaining move-in balance before sending the tenant an activation code by SMS.</p>
         </div>
         {settlements.length === 0 ? <p className="p-5 text-sm text-slate-500">No move-in settlements started.</p> : <div className="divide-y divide-slate-100">
           {currentSettlements.map((settlement) => <div key={settlement.id} className="p-5 flex flex-wrap items-center gap-5">
@@ -601,9 +601,9 @@ export default function UnitsAndTenants() {
             <div className="text-sm"><span className="text-slate-500">Paid</span><strong className="block text-emerald-700">{currency.format(Number(settlement.total_paid))}</strong></div>
             <div className="text-sm"><span className="text-slate-500">Balance</span><strong className="block text-red-600">{currency.format(Number(settlement.outstanding_balance))}</strong></div>
             <span className="px-2.5 py-1 rounded-full text-xs font-bold uppercase bg-slate-100 text-slate-600">{settlement.status}</span>
-            {Number(settlement.outstanding_balance) <= 0 && <button onClick={() => sendActivationEmail(settlement)} disabled={sendingActivationFor === settlement.id} className="ml-auto bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-lg px-3 py-1.5 text-sm font-bold transition-colors">{sendingActivationFor === settlement.id ? 'Sending...' : settlement.activation_email_sent_at ? 'Resend Activation Email' : 'Send Activation Email'}</button>}
-            {settlement.activation_email_error && <p className="w-full text-sm text-red-700">Last email attempt failed: {settlement.activation_email_error}</p>}
-            {settlement.activation_email_sent_at && <p className="w-full text-sm text-emerald-700">Activation link sent to {settlement.tenant_email} on {new Date(settlement.activation_email_sent_at).toLocaleString('en-KE')}.</p>}
+            {Number(settlement.outstanding_balance) <= 0 && <button onClick={() => sendActivationSMS(settlement)} disabled={sendingActivationFor === settlement.id} className="ml-auto bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-lg px-3 py-1.5 text-sm font-bold transition-colors">{sendingActivationFor === settlement.id ? 'Sending...' : settlement.activation_sms_queued_at ? 'Resend Activation SMS' : 'Send Activation SMS'}</button>}
+            {settlement.activation_sms_error && <p className="w-full text-sm text-red-700">Last SMS attempt failed: {settlement.activation_sms_error}</p>}
+            {settlement.activation_sms_queued_at && <p className="w-full text-sm text-emerald-700">Activation SMS queued on {new Date(settlement.activation_sms_queued_at).toLocaleString('en-KE')}.</p>}
             {settlement.status !== 'paid' && <div className="flex gap-2 ml-auto flex-wrap">
               <button onClick={() => initiateSettlementStk(settlement)} disabled={isInitiatingStk} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg px-3 py-1.5 text-sm font-bold transition-colors">{isInitiatingStk ? 'Sending...' : 'STK Push'}</button>
               <input type="number" placeholder="Amount" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} className="w-28 border rounded-lg px-2 py-1.5 text-sm" />

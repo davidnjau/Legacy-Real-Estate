@@ -29,6 +29,7 @@ type DashboardInvoice = {
   id: number;
   number: string;
   invoice_type: 'standard' | 'move_out_utility';
+  is_opening_balance: boolean;
   period_start: string;
   period_end: string;
   due_date: string;
@@ -72,6 +73,7 @@ type TenantDashboard = {
   };
   summary: {
     balance_due: string;
+    opening_balance_due: string;
     credit_balance: string;
     net_balance_due: string;
     next_due_date: string | null;
@@ -626,6 +628,14 @@ export default function TenantDashboardPage() {
               Balance after credit:{" "}
               <strong className="text-slate-800">{currency.format(netBalance)}</strong>
             </p>
+            {Number(data.summary.opening_balance_due) > 0 && (
+              <p className="mt-1 text-xs text-slate-600">
+                Outstanding opening balance:{" "}
+                <strong className="text-slate-800">
+                  {currency.format(Number(data.summary.opening_balance_due))}
+                </strong>
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col sm:items-end gap-2">
@@ -754,6 +764,9 @@ export default function TenantDashboardPage() {
                     <td className="px-5 py-4 text-xs text-slate-500">
                       {inv.invoice_type === 'move_out_utility' && (
                         <span className="mb-1 block font-semibold text-amber-800">Final utility invoice</span>
+                      )}
+                      {inv.is_opening_balance && (
+                        <span className="mb-1 block font-semibold text-emerald-800">Opening balance at migration</span>
                       )}
                       {inv.lines.map((l) => l.description).join(', ')}
                     </td>

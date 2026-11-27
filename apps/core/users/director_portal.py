@@ -76,6 +76,116 @@ def _director_membership(request, agency_id):
     return membership, None
 
 
+@require_http_methods(["GET", "POST"])
+def director_branches(request):
+    if request.method == "GET":
+        agency_id = request.GET.get("agency_id")
+        body = None
+    else:
+        try:
+            body = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+        if not isinstance(body, dict):
+            return _problem(400, "Invalid request", "A JSON object is required.", "invalid-request")
+        agency_id = body.get("agency_id")
+
+    membership, error = _director_membership(request, agency_id)
+    if error:
+        return error
+
+    branches = Branch.objects.filter(agency=membership.agency).order_by("name", "id")
+    if request.method == "GET":
+            return JsonResponse(
+                {
+                    "branches": [
+                        {"id": branch.pk, "name": branch.name, "town": branch.town}
+                        for branch in branches
+                    ]
+                }
+            )
+
+    if set(body) - {"agency_id", "name", "town"}:
+            return _problem(
+                400,
+                "Invalid branch",
+                "The request contains unsupported fields.",
+                "invalid-branch",
+            )
+    name = body.get("name")
+    town = body.get("town")
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or len(name.strip()) > 100
+        or not isinstance(town, str)
+        or not town.strip()
+        or len(town.strip()) > 100
+    ):
+        return _problem(
+            400,
+            "Invalid branch",
+            "Branch name and town are required and must be at most 100 characters.",
+            "invalid-branch",
+        )
+
+    name = name.strip()
+    town = town.strip()
+    if branches.filter(name=name).exists():
+        return _problem(
+            409,
+            "Branch already exists",
+            "A branch with this name already exists in the agency.",
+            "branch-conflict",
+        )
+
+    try:
+        with transaction.atomic():
+            branch = Branch(agency=membership.agency, name=name, town=town)
+            branch.full_clean()
+            branch.save()
+            settings_record, _ = AgencySettings.objects.get_or_create(
+                agency=membership.agency
+            )
+            ArrearsPolicy.objects.get_or_create(
+                branch=branch,
+                defaults={
+                    "grace_days": settings_record.grace_period_days,
+                    "penalty_type": settings_record.penalty_type,
+                    "penalty_rate": settings_record.penalty_rate,
+                    "penalty_flat_fee": settings_record.penalty_flat_fee,
+                },
+            )
+            branch_payload = {
+                "id": branch.pk,
+                "name": branch.name,
+                "town": branch.town,
+            }
+            record_audit_event(
+                request,
+                "branch.created",
+                "Branch",
+                new_values={
+                    "id": branch.pk,
+                    "agency_id": membership.agency_id,
+                    "name": branch.name,
+                    "town": branch.town,
+                },
+                agency=membership.agency,
+            )
+    except IntegrityError:
+        return _problem(
+            409,
+            "Branch already exists",
+            "A branch with this name already exists in the agency.",
+            "branch-conflict",
+        )
+    except ValidationError as error:
+        return _problem(400, "Invalid branch", str(error), "invalid-branch")
+
+    return JsonResponse({"branch": branch_payload}, status=201)
+
+
 def _branch_scope(request, membership):
     branches = Branch.objects.filter(agency=membership.agency)
     raw_branch_id = request.GET.get("branch_id")

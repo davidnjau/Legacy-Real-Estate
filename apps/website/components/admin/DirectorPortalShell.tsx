@@ -9,11 +9,13 @@ import {
   ClipboardList,
   LayoutDashboard,
   LockKeyhole,
+  MapPin,
   Receipt,
   Settings,
   Users,
 } from 'lucide-react';
 import type { DjangoUser } from '../../lib/django-auth';
+import { getDjangoWorkspaceOptions } from '../../lib/django-routing';
 import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
@@ -36,6 +38,7 @@ export function useDirectorPortal() {
 const NAV_ITEMS = [
   { href: '/admin/dashboard', label: 'Executive overview', icon: LayoutDashboard },
   { href: '/admin/staff', label: 'Staff & access', icon: Users },
+  { href: '/admin/branches', label: 'Branches', icon: MapPin },
   { href: '/admin/properties', label: 'Properties', icon: Building2 },
   { href: '/admin/financials', label: 'Financials', icon: Receipt },
   { href: '/admin/audit', label: 'Audit trail', icon: ClipboardList },
@@ -76,6 +79,7 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
   );
   const agency = agencies.find((item) => item.id === agencyId) ?? null;
   const branches = agency?.branches ?? [];
+  const canSwitchWorkspaces = getDjangoWorkspaceOptions(user?.roles ?? []).length > 1;
 
   return (
     <DirectorPortalContext.Provider value={{ agency, branchId, userName: user?.name || 'Director' }}>
@@ -114,6 +118,14 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
               </select>
             )}
             {branches.length === 1 && <span className="rounded-xl border border-[#dfe5df] bg-[#f8faf7] px-3 py-2.5 text-xs font-semibold text-[#45604f]">{branches[0].name}</span>}
+            {canSwitchWorkspaces && (
+              <Link
+                href="/workspace"
+                className="rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-xs font-semibold text-[#385343] hover:bg-[#f5f8f3]"
+              >
+                Switch workspace
+              </Link>
+            )}
             <SignOutButton />
           </div>
         </header>

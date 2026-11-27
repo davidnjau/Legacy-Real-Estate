@@ -5,7 +5,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     return await forwardDjangoRequest(request, '/tenant-activation/verify', {
       method: 'POST',
-      body: { unit_code: body.unitCode, code: body.code },
+      body: { phone: body.phone, unit_code: body.unitCode, code: body.code },
     });
   } catch (error) {
     return djangoProxyFailure(error, 'Unable to verify this tenant activation code.');

@@ -5,6 +5,14 @@ from django.db.models import Sum
 from users.models import Invoice, Payment, PaymentAllocation
 
 
+def is_migration_opening_balance_invoice(invoice):
+    return any(
+        isinstance(line.metadata, dict)
+        and line.metadata.get("migration_opening_balance") is True
+        for line in invoice.lines.all()
+    )
+
+
 def ageing_bucket(days_overdue):
     if days_overdue <= 0:
         return "current"
@@ -34,7 +42,9 @@ def invoice_arrears(invoice, as_of, *, allocated_amount=None, waiver_amount=None
             .aggregate(total=Sum("amount"))["total"]
             or Decimal("0.00")
         )
-    if waiver_amount is None:
+    if is_migration_opening_balance_invoice(invoice):
+        waiver_amount = Decimal("0.00")
+    elif waiver_amount is None:
         waiver_amount = (
             invoice.arrears_waivers.filter(approved_at__date__lte=as_of)
             .aggregate(total=Sum("amount"))["total"]
@@ -64,6 +74,6 @@ def arrears_for_accessible_invoices(invoices, as_of):
     return [
         invoice_arrears(invoice, as_of)
         for invoice in invoices.select_related("branch", "tenancy__tenant", "tenancy__unit")
-        .prefetch_related("arrears_waivers")
+        .prefetch_related("arrears_waivers", "lines")
         .filter(status=Invoice.STATUS_ISSUED)
     ]

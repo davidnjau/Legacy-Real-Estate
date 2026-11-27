@@ -55,9 +55,89 @@ export interface paths {
         put?: never;
         /**
          * Start a session
-         * @description Requires the CSRF cookie and X-CSRFToken header. Finance-role users receive a challenge while their verification code is queued for SMS delivery; a session is established only after successful verification.
+         * @description Requires the CSRF cookie and X-CSRFToken header. Staff use email and password. Director and finance-role users must verify their authenticator before a staff session is established.
          */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/phone-otp/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a tenant or landlord sign-in code
+         * @description Queues an SMS code for an active linked tenant or landlord account. The response does not reveal whether the phone number belongs to an account. Codes expire after five minutes, allow five attempts, and can be requested once every 60 seconds.
+         */
+        post: operations["requestPhoneLoginOtp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/phone-otp/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify a tenant or landlord sign-in code
+         * @description Establishes a 12-hour same-device session restricted to tenant and landlord APIs. Accounts with staff roles must complete a fresh staff sign-in before accessing staff workspaces.
+         */
+        post: operations["verifyPhoneLoginOtp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/landlord/activate/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve a landlord activation challenge
+         * @description Returns whether the SMS challenge activates a new account or links an existing account.
+         */
+        get: operations["getLandlordActivationContext"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/landlord/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate or link a landlord account
+         * @description Verifies the SMS activation code. Existing-account links additionally require the ID or registration number already recorded for the landlord. New accounts are activated without a password and must sign in with phone OTP.
+         */
+        post: operations["activateLandlord"];
         delete?: never;
         options?: never;
         head?: never;
@@ -424,6 +504,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/director/branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List branches for a Director's agency
+         * @description Lists branches in the agency where the authenticated user has an active Director membership.
+         */
+        get: operations["listAgencyBranches"];
+        put?: never;
+        /**
+         * Create an agency branch
+         * @description Creates a branch for an agency where the authenticated user has an active Director membership.
+         */
+        post: operations["createAgencyBranch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/landlord/dashboard": {
         parameters: {
             query?: never;
@@ -556,14 +660,14 @@ export interface paths {
         post: operations["createLandlordMoveInSettlement"];
         /**
          * Cancel an unactivated move-in reservation
-         * @description Cancels a reservation only if it has no linked tenant account or activation email.
+         * @description Cancels a reservation only if it has no linked tenant account or tenant activation challenge.
          */
         delete: operations["cancelLandlordMoveInSettlement"];
         options?: never;
         head?: never;
         /**
          * Record payment or send tenant activation
-         * @description Records a manual settlement payment or issues a tenant activation link after the settlement is fully paid.
+         * @description Records a manual settlement payment or queues a tenant activation SMS after the settlement is fully paid.
          */
         patch: operations["updateLandlordMoveInSettlement"];
         trace?: never;
@@ -2352,8 +2456,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Issue a tenant activation link
-         * @description Creates a single-use, expiring activation token for an active tenancy.
+         * Issue a tenant activation SMS
+         * @description Queues a single-use SMS activation code to the registered phone for an active tenancy.
          */
         post: operations["issueTenantActivation"];
         delete?: never;
@@ -2372,8 +2476,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Issue a tenant activation link or code for an active tenancy
-         * @description Issues a one-time activation token and code only when the caller can access the unit's active tenancy.
+         * Issue a tenant activation SMS for an active tenancy
+         * @description Queues a one-time SMS activation code only when the caller can access the unit's active tenancy.
          */
         post: operations["issueUnitTenantActivation"];
         delete?: never;
@@ -2410,8 +2514,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Resolve a tenant activation link
-         * @description Validates an unexpired token and returns the tenant and unit context without consuming the token.
+         * Resolve a legacy tenant activation token
+         * @description Legacy compatibility endpoint. New tenant activations use the registered phone and SMS code through the verify endpoint.
          */
         get: operations["getTenantActivationContext"];
         put?: never;
@@ -2433,7 +2537,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a tenant activation code
-         * @description Validates an unexpired code and optional unit code without consuming the activation challenge.
+         * @description Validates the registered phone, unexpired SMS code, and optional unit code without consuming the activation challenge.
          */
         post: operations["verifyTenantActivationCode"];
         delete?: never;
@@ -2453,7 +2557,7 @@ export interface paths {
         put?: never;
         /**
          * Complete tenant activation
-         * @description Consumes an activation token and sets the tenant portal password.
+         * @description Consumes a valid SMS activation code, activates or links the tenant account without setting a password, and does not create a sign-in session.
          */
         post: operations["activateTenant"];
         delete?: never;
@@ -3422,6 +3526,9 @@ export interface components {
             /** Format: date-time */
             activation_email_sent_at: string | null;
             activation_email_error: string | null;
+            /** Format: date-time */
+            activation_sms_queued_at: string | null;
+            activation_sms_error: string | null;
             cancellation_reason: string | null;
             /** Format: date-time */
             booked_at: string | null;
@@ -3461,6 +3568,9 @@ export interface components {
             unit_code: string;
             property_name: string;
             identity_required: boolean;
+            identity_confirmation_required?: boolean;
+            existing_account?: boolean;
+            phone_verification_required?: boolean;
             /** Format: date-time */
             expires_at: string;
         };
@@ -3758,6 +3868,7 @@ export interface components {
             summary: components["schemas"]["TenantDashboardSummary"];
             invoices: components["schemas"]["TenantDashboardInvoice"][];
             payments: components["schemas"]["TenantDashboardPayment"][];
+            deposit: components["schemas"]["TenantDashboardDeposit"] | null;
         };
         TenantDashboardProfile: {
             id: number;
@@ -3766,19 +3877,38 @@ export interface components {
             phone: string;
             unit_code: string | null;
             property_name: string | null;
-            paybill_number?: string | null;
+            paybill_number: string | null;
             /** Format: date */
             move_in_date: string | null;
         };
         TenantDashboardSummary: {
             /** @description Sum of outstanding issued invoices and applicable overdue penalties after valid allocations and approved waivers. */
             balance_due: string;
+            /** @description Outstanding amount on imported migration opening-balance invoices. */
+            opening_balance_due: string;
+            credit_balance: string;
+            net_balance_due: string;
             /** Format: date */
             next_due_date: string | null;
+        };
+        TenantDashboardDeposit: {
+            balance: string;
+            target_amount: string;
+            entries: {
+                id: number;
+                entry_type: string;
+                amount: string;
+                reference: string;
+                description: string;
+                /** Format: date-time */
+                created_at: string;
+            }[];
         };
         TenantDashboardInvoice: {
             id: number;
             number: string;
+            invoice_type: string;
+            is_opening_balance: boolean;
             /** Format: date */
             period_start: string;
             /** Format: date */
@@ -4235,6 +4365,8 @@ export interface components {
             email: string | null;
             phone: string | null;
             roles: string[];
+            staff_step_up_required?: boolean;
+            staff_step_up_roles?: string[];
             branches: {
                 id: number;
                 name: string;
@@ -4417,7 +4549,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description SMS verification is required */
+            /** @description Authenticator verification is required */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -4430,9 +4562,149 @@ export interface operations {
                     };
                 };
             };
+        };
+    };
+    requestPhoneLoginOtp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Kenyan phone number in local or international format. */
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Request accepted without disclosing account existence */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        challenge_id: number;
+                        /** @constant */
+                        expires_in_seconds: 300;
+                        /** @constant */
+                        resend_after_seconds: 60;
+                        message: string;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            /** @description Resend cooldown has not elapsed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        error: "otp-resend-cooldown";
+                        retry_after_seconds: number;
+                    };
+                };
+            };
+            503: components["responses"]["Problem"];
+        };
+    };
+    verifyPhoneLoginOtp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: number;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Code verified and residential session established */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        user: components["schemas"]["AuthUser"];
+                        /** @constant */
+                        session_expires_in_seconds: 43200;
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+        };
+    };
+    getLandlordActivationContext: {
+        parameters: {
+            query: {
+                challenge_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Landlord activation context */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        existing_account: boolean;
+                        identity_confirmation_required: boolean;
+                    };
+                };
+            };
+            404: components["responses"]["Problem"];
+        };
+    };
+    activateLandlord: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: string;
+                    code: string;
+                    /** @description Required when the challenge context indicates an existing account. */
+                    id_or_registration_number?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Landlord account activated or linked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "activated";
+                    };
+                };
+            };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
         };
     };
     requestPasswordReset: {
@@ -5026,6 +5298,67 @@ export interface operations {
             404: components["responses"]["Problem"];
         };
     };
+    listAgencyBranches: {
+        parameters: {
+            query: {
+                agency_id: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agency branches */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        branches: components["schemas"]["Branch"][];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createAgencyBranch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    agency_id: number;
+                    name: string;
+                    town: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Branch created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        branch: components["schemas"]["Branch"];
+                    };
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+        };
+    };
     getLandlordDashboard: {
         parameters: {
             query?: never;
@@ -5365,12 +5698,12 @@ export interface operations {
                 } | {
                     settlementId: number;
                     /** @constant */
-                    sendActivationEmail: true;
+                    sendActivationSMS: true;
                 };
             };
         };
         responses: {
-            /** @description Payment recorded or activation email sent */
+            /** @description Payment recorded or activation SMS queued */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5386,8 +5719,8 @@ export interface operations {
                         settlement: {
                             id: number;
                             /** Format: date-time */
-                            activation_email_sent_at: string;
-                            activation_email_error: null;
+                            activation_sms_queued_at: string | null;
+                            activation_sms_error: string | null;
                         };
                     };
                 };
@@ -8012,7 +8345,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description One-time activation token and code returned */
+            /** @description Activation SMS queued */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8076,6 +8409,8 @@ export interface operations {
             content: {
                 "application/json": {
                     code: string;
+                    /** @description Kenyan phone number used during onboarding. */
+                    phone: string;
                     unit_code?: string;
                 };
             };
@@ -8103,17 +8438,16 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    token?: string;
-                    code?: string;
+                    code: string;
+                    /** @description Kenyan phone number used during onboarding. */
+                    phone: string;
                     unit_code?: string;
                     full_name?: string;
                     /** Format: email */
                     email?: string;
-                    phone?: string;
-                    /** @description Required when the activation context marks a new move-in tenant as identity_required. */
+                    /** @description Required for provisional move-in tenants and existing-account links. */
                     national_id_or_passport?: string;
-                    password: string;
-                } | unknown | unknown;
+                };
             };
         };
         responses: {

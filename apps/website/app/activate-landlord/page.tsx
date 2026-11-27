@@ -3,13 +3,10 @@
 import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Building2 } from 'lucide-react';
-import ActivationPasswordFields, { isActivationPasswordStrong } from '../../components/auth/ActivationPasswordFields';
 
 export default function ActivateLandlordPage() {
   const [challengeId, setChallengeId] = useState('');
   const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmation, setConfirmation] = useState('');
   const [identity, setIdentity] = useState('');
   const [existingAccount, setExistingAccount] = useState(false);
   const [contextLoading, setContextLoading] = useState(true);
@@ -41,17 +38,6 @@ export default function ActivateLandlordPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
-    if (!existingAccount) {
-      if (password !== confirmation) {
-        setError('The passwords do not match.');
-        return;
-      }
-      if (!isActivationPasswordStrong(password)) {
-        setError('Choose a password that meets all the strength requirements.');
-        return;
-      }
-    }
-
     setLoading(true);
     try {
       const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
@@ -68,7 +54,6 @@ export default function ActivateLandlordPage() {
         body: JSON.stringify({
           challenge_id: challengeId,
           code,
-          password: existingAccount ? undefined : password,
           id_or_registration_number: existingAccount ? identity : undefined,
         }),
       });
@@ -96,13 +81,13 @@ export default function ActivateLandlordPage() {
         <h1 className="text-2xl font-bold">Activate your landlord account</h1>
         <p className="mt-2 text-sm text-slate-600">
           {existingAccount
-            ? 'Enter the one-time code and confirm the ID or registration number already recorded for your landlord account.'
-            : 'Enter the one-time code sent to your email and create a password for your landlord portal.'}
+            ? 'Enter the one-time code sent by SMS and confirm the ID or registration number already recorded for your landlord account.'
+            : 'Enter the one-time code sent by SMS. The code expires after 48 hours.'}
         </p>
         {success ? (
           <div role="status" className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
             <p className="font-semibold text-emerald-900">Your landlord account is activated.</p>
-            <p className="mt-1 text-sm text-emerald-800">Sign in when you’re ready.</p>
+            <p className="mt-1 text-sm text-emerald-800">Sign in with your phone number and a new SMS code.</p>
             <Link href="/login?activated=1" className="mt-4 inline-flex rounded-xl bg-emerald-800 px-5 py-3 font-semibold text-white">
               Continue to sign in
             </Link>
@@ -112,7 +97,7 @@ export default function ActivateLandlordPage() {
             {error && <p role="alert" className="mt-5 rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}
             <form onSubmit={submit} className="mt-6 space-y-4">
           <label className="block text-sm font-semibold">
-            Email activation code
+            SMS activation code
             <input
               required
               inputMode="numeric"
@@ -124,7 +109,7 @@ export default function ActivateLandlordPage() {
               className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-3 font-mono tracking-widest"
             />
           </label>
-          {existingAccount ? (
+          {existingAccount && (
             <label className="block text-sm font-semibold">
               Confirm ID or registration number
               <input
@@ -135,13 +120,6 @@ export default function ActivateLandlordPage() {
                 className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-3"
               />
             </label>
-          ) : (
-            <ActivationPasswordFields
-              password={password}
-              confirmation={confirmation}
-              onPasswordChange={setPassword}
-              onConfirmationChange={setConfirmation}
-            />
           )}
           <button
             type="submit"
@@ -149,9 +127,7 @@ export default function ActivateLandlordPage() {
               loading
               || contextLoading
               || !challengeId
-              || (existingAccount
-                ? !identity.trim()
-                : !isActivationPasswordStrong(password) || password !== confirmation)
+              || (existingAccount && !identity.trim())
             }
             className="w-full rounded-xl bg-emerald-800 py-3.5 font-bold text-white disabled:opacity-50"
           >

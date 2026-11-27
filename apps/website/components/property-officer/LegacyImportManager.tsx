@@ -12,7 +12,7 @@ type ImportReport = {
     prepared: number;
     sent: number;
     sms_queued?: number;
-    failed: { unit_code: string; email: string; message: string }[];
+    failed: { unit_code: string; phone?: string; email?: string; message: string }[];
   };
 };
 
@@ -40,12 +40,14 @@ export default function LegacyImportManager() {
   const { agency, branchIds } = usePropertyOfficerPortal();
   const [properties, setProperties] = useState<PropertyOption[]>([]);
   const [propertyId, setPropertyId] = useState('');
-  const [files, setFiles] = useState<File[]>([]);
+  const [unitsFile, setUnitsFile] = useState<File | null>(null);
+  const [tenanciesFile, setTenanciesFile] = useState<File | null>(null);
   const [report, setReport] = useState<ImportReport | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loadingProperties, setLoadingProperties] = useState(true);
   const selectedProperty = properties.find((property) => String(property.id) === propertyId);
+  const previewReady = report?.mode === 'preview' && report.errors.length === 0;
   const hasWaterUtility = selectedProperty?.has_water_utility ?? (
     selectedProperty?.unit_types?.some((unitType) =>
       unitType.utilities?.some((utility) => utility.utility_type === 'water'),
@@ -57,7 +59,7 @@ export default function LegacyImportManager() {
         ? 'Required for this property: water_meter_no, water_current_reading.'
         : 'Do not include water meter or reading columns for this property.'
     }`,
-    'Tenancies: unit_code, tenant_name, tenant_phone, tenant_email, tenancy_start_date; optional expected_move_out_date (only for Notice Given units), tenant_id_number, tenant_kra_pin, tenant_type, company_registration_number, contact_person, tenancy_end_date, tenancy_type, due_day, opening_arrears, arrears_as_of.',
+    'Tenancies: unit_code, tenant_name, tenant_phone, tenancy_start_date; optional tenant_email, expected_move_out_date (only for Notice Given units), tenant_id_number, tenant_kra_pin, tenant_type, company_registration_number, contact_person, tenancy_end_date, tenancy_type, due_day, opening_arrears, arrears_as_of.',
   ];
 
   useEffect(() => {
@@ -86,8 +88,8 @@ export default function LegacyImportManager() {
   }, [branchIds]);
 
   async function submit(commit: boolean) {
-    if (!propertyId || !files.length) {
-      setError('Select a property and at least one CSV or XLSX file.');
+    if (!propertyId || !unitsFile || !tenanciesFile) {
+      setError('Select a property, then upload both the Units and Tenancies CSV files.');
       return;
     }
     setBusy(true);
@@ -95,7 +97,8 @@ export default function LegacyImportManager() {
     const formData = new FormData();
     formData.set('property_id', propertyId);
     formData.set('commit', String(commit));
-    for (const file of files) formData.append('files', file);
+    formData.append('files', unitsFile);
+    formData.append('files', tenanciesFile);
     try {
       const response = await fetch('/api/property-officer/imports', {
         method: 'POST',
@@ -130,7 +133,7 @@ export default function LegacyImportManager() {
           <li>Use only the Units and Tenancies sheets. Property details and unit-type definitions are selected from the saved property.</li>
           <li>Existing unit and tenancy records are reported and skipped, never overwritten.</li>
           <li>Opening arrears are recorded as a migration balance; historical payments are not imported. Payments made through the platform are recorded by its payment flow.</li>
-          <li>Occupied imported tenants need an email address. A pending tenant portal account is provisioned and receives a unique activation link and code after a successful commit.</li>
+          <li>Occupied imported tenants need a phone number. A passwordless tenant account is provisioned and receives a unique activation code by SMS after a successful commit.</li>
           <li>Imported tenancies are active, including units marked Notice Given. Include their tenant on the Tenancies sheet; expected_move_out_date is optional and only applies to Notice Given units.</li>
           <li>Preview does not create accounts, challenges, or send messages.</li>
         </ul>
@@ -167,22 +170,33 @@ export default function LegacyImportManager() {
               : 'No default handover items are configured for this property, so newly imported tenants will not be assigned handover items automatically.'}
           </p>
         )}
-        <label className="mt-4 block text-sm font-semibold text-slate-700">CSV files or one XLSX workbook
+        <label className="mt-4 block text-sm font-semibold text-slate-700">1. Upload the Units CSV
           <input
             type="file"
-            accept=".csv,.xlsx"
-            multiple
+            accept=".csv"
             onChange={(event) => {
-              setFiles(Array.from(event.target.files ?? []));
+              setUnitsFile(event.target.files?.[0] ?? null);
               setReport(null);
             }}
             className="mt-1 block w-full rounded-lg border border-slate-300 p-2 text-sm"
           />
         </label>
-        {files.length > 0 && <p className="mt-2 text-xs text-slate-500">{files.map((file) => file.name).join(', ')}</p>}
+        {unitsFile && <p className="mt-1 text-xs text-slate-500">{unitsFile.name}</p>}
+        <label className="mt-4 block text-sm font-semibold text-slate-700">2. Then upload the Tenancies CSV
+          <input
+            type="file"
+            accept=".csv"
+            onChange={(event) => {
+              setTenanciesFile(event.target.files?.[0] ?? null);
+              setReport(null);
+            }}
+            className="mt-1 block w-full rounded-lg border border-slate-300 p-2 text-sm"
+          />
+        </label>
+        {tenanciesFile && <p className="mt-1 text-xs text-slate-500">{tenanciesFile.name}</p>}
         <div className="mt-4 flex gap-3">
-          <button type="button" disabled={busy || !propertyId || !files.length} onClick={() => void submit(false)} className="rounded-lg border border-emerald-800 px-4 py-2 text-sm font-bold text-emerald-900 disabled:opacity-50">{busy ? 'Processing…' : 'Preview import'}</button>
-          <button type="button" disabled={busy || !report || report.mode !== 'preview' || report.errors.length > 0} onClick={() => void submit(true)} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Commit import</button>
+          <button type="button" disabled={busy || !propertyId || !unitsFile || !tenanciesFile} onClick={() => void submit(false)} className="rounded-lg border border-emerald-800 px-4 py-2 text-sm font-bold text-emerald-900 disabled:opacity-50">{busy ? 'Processing…' : 'Preview import'}</button>
+          <button type="button" disabled={busy || !previewReady} onClick={() => void submit(true)} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Commit import</button>
         </div>
       </div>
 
@@ -190,6 +204,13 @@ export default function LegacyImportManager() {
       {report && (
         <section aria-label="Import preview" className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="font-bold text-slate-900">Import report</h2>
+          {report.mode === 'preview' && (
+            <p role="status" className={`mt-2 rounded-lg p-3 text-sm font-medium ${previewReady ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-950'}`}>
+              {previewReady
+                ? 'Ready to import. All validation checks passed; commit is available.'
+                : 'Not ready to import. Correct the validation errors below and preview again.'}
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap gap-3">
             {Object.entries(report.created).map(([sheet, count]) => <span key={sheet} className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-900">{sheet.replaceAll('_', ' ')}: {count} {report.mode === 'preview' ? 'ready' : 'created'}</span>)}
           </div>
@@ -200,12 +221,12 @@ export default function LegacyImportManager() {
               <h3 className="font-bold">Tenant account activation</h3>
               <p className="mt-1">
                 {report.mode === 'preview'
-                  ? `${report.activation.prepared} occupied tenant account${report.activation.prepared === 1 ? '' : 's'} will be provisioned and sent a welcome email and SMS after commit.`
-                  : `${report.activation.sent} of ${report.activation.prepared} welcome email${report.activation.prepared === 1 ? '' : 's'} sent; ${report.activation.sms_queued ?? 0} SMS message${report.activation.sms_queued === 1 ? '' : 's'} queued.`}
+                  ? `${report.activation.prepared} occupied tenant account${report.activation.prepared === 1 ? '' : 's'} will be provisioned and sent an activation code by SMS after commit.`
+                  : `${report.activation.sms_queued ?? 0} of ${report.activation.prepared} activation SMS message${report.activation.sms_queued === 1 ? '' : 's'} queued.`}
               </p>
               {report.activation.failed.length > 0 && (
                 <ul className="mt-2 list-inside list-disc">
-                  {report.activation.failed.map((item, index) => <li key={`${item.unit_code}-${item.email}-${index}`}>{item.unit_code} ({item.email}): {item.message}</li>)}
+                  {report.activation.failed.map((item, index) => <li key={`${item.unit_code}-${item.phone ?? item.email ?? ''}-${index}`}>{item.unit_code} ({item.phone ?? item.email ?? 'tenant'}): {item.message}</li>)}
                 </ul>
               )}
             </div>
@@ -214,10 +235,10 @@ export default function LegacyImportManager() {
       )}
 
       <details className="rounded-2xl border border-slate-200 bg-white p-5">
-        <summary className="cursor-pointer font-bold text-slate-900">Workbook sheets and CSV filenames</summary>
-        <p className="mt-2 text-sm text-slate-600">Use these two sheet names in an XLSX workbook. For CSV, use <code>units.csv</code> and <code>tenancies.csv</code>. Occupied and Notice Given units must have a matching unit_code row in Tenancies; Vacant units must not. expected_move_out_date is optional and is only accepted for a Notice Given unit. The unit_type value must match a type saved on the selected property.</p>
+        <summary className="cursor-pointer font-bold text-slate-900">CSV filenames and required columns</summary>
+        <p className="mt-2 text-sm text-slate-600">Upload <code>units.csv</code> first, then <code>tenancies.csv</code>. Occupied and Notice Given units must have a matching unit_code row in Tenancies; Vacant units must not. expected_move_out_date is optional and is only accepted for a Notice Given unit. The unit_type value must match a type saved on the selected property.</p>
         <ul className="mt-3 space-y-2 text-xs text-slate-700">{templates.map((template) => <li key={template}>{template}</li>)}</ul>
-        <p className="mt-3 text-xs text-slate-500">Dates use YYYY-MM-DD. Water readings are imported as meter baselines, so no reading period or previous-reading column is needed. Opening arrears require an arrears_as_of date. Historical payments and deposits are not imported.</p>
+        <p className="mt-3 text-xs text-slate-500">Enter dates as DD/MM/YYYY. Water readings are imported as meter baselines, so no reading period or previous-reading column is needed. Opening arrears require an arrears_as_of date. Historical payments and deposits are not imported.</p>
       </details>
     </section>
   );

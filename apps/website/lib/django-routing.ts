@@ -3,6 +3,51 @@ export function isPropertyOfficerRole(role: string) {
   return normalizedRole === 'property officer / agent' || normalizedRole === 'property officer';
 }
 
+export function getDjangoWorkspaceOptions(roles: string[]) {
+  const normalizedRoles = new Set(roles.map((role) => role.trim().toLowerCase()));
+  const options = [
+    {
+      label: 'Director',
+      path: '/admin/dashboard',
+      roles: ['super admin (director)', 'super admin', 'director'],
+    },
+    { label: 'Branch Manager', path: '/branch-manager/dashboard', roles: ['branch manager'] },
+    { label: 'Accountant', path: '/accountant/dashboard', roles: ['accountant'] },
+    {
+      label: 'Property Officer',
+      path: '/property-officer/dashboard',
+      roles: ['property officer / agent', 'property officer'],
+    },
+    {
+      label: 'Land Sales Agent',
+      path: '/land-sales/dashboard',
+      roles: ['land sales agent', 'land sales'],
+    },
+    { label: 'Caretaker', path: '/caretaker/dashboard', roles: ['caretaker'] },
+    {
+      label: 'Landlord',
+      path: '/landlord/dashboard',
+      roles: ['landlord (portal)', 'landlord'],
+    },
+    { label: 'Tenant', path: '/tenant/dashboard', roles: ['tenant (portal)', 'tenant'] },
+    {
+      label: 'Land Buyer',
+      path: '/buyer/dashboard',
+      roles: ['land buyer (portal)', 'land buyer', 'buyer'],
+    },
+  ].filter((option) => option.roles.some((role) => normalizedRoles.has(role)));
+
+  if (
+    options.length === 0
+    && ['staff', 'agent', 'manager'].some((role) =>
+      [...normalizedRoles].some((item) => item.includes(role)),
+    )
+  ) {
+    options.push({ label: 'Staff', path: '/staff/dashboard', roles: ['staff'] });
+  }
+  return options.map(({ label, path }) => ({ label, path }));
+}
+
 export function getDjangoHomePath(roles: string[]): string {
   const normalizedRoles = new Set(roles.map((role) => role.trim().toLowerCase()));
 

@@ -1,9 +1,8 @@
 """Conversational WhatsApp flows (Phase 2).
 
-Routes inbound webhook messages: ID-number verification links a WhatsApp
-number to saved records, then role-scoped menus serve tenant self-service,
-landlord approvals, and caretaker maintenance, move-in handover, and inspection
-workflows.
+Routes inbound webhook messages: ID and SMS verification link a WhatsApp
+number to tenant or caretaker records, then role-scoped menus serve their
+approved self-service workflows.
 
 Session replies here are free-form interactive messages, allowed because an
 inbound customer message always opens Meta's 24-hour service window. Outbound
@@ -21,6 +20,7 @@ from urllib.request import Request, urlopen
 
 from botocore.exceptions import BotoCoreError
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import DatabaseError, transaction
 from django.db.models import Q
@@ -44,6 +44,7 @@ from users.models import (
     MoveOutNotice,
     Payment,
     PaymentAllocation,
+    PhoneOTPChallenge,
     Property,
     PropertyInspection,
     Receipt,
@@ -63,6 +64,7 @@ from users.payment_allocations import (
     lock_tenant_invoice,
 )
 from users.roles import CARETAKER_ROLE, has_role
+from users.sms import queue_template_sms
 from users.water_readings import (
     WaterReadingError,
     attach_caretaker_water_reading_photo,
@@ -87,11 +89,9 @@ ALLOWED_PHOTO_TYPES = {"image/jpeg": "jpg", "image/png": "png"}
 SESSION_TTL_MINUTES = 5
 
 ROLE_TENANT = "tenant"
-ROLE_LANDLORD = "landlord"
 ROLE_CARETAKER = "caretaker"
 ROLE_LABELS = {
     ROLE_TENANT: "Tenant",
-    ROLE_LANDLORD: "Landlord",
     ROLE_CARETAKER: "Caretaker",
 }
 
@@ -243,9 +243,7 @@ def _normalise_id_number(value: str) -> str:
 
 
 def _match_identities(id_number: str):
-    """Match an ID to the roles allowed on WhatsApp: tenant, landlord,
-    caretaker. Other staff (directors, accountants, officers) are
-    deliberately not matched — the channel is gated to these three."""
+    """Match an ID to the tenant and caretaker identities allowed on WhatsApp."""
     from django.db.models import Q
 
     from users.models import UserProfile
@@ -265,18 +263,22 @@ def _match_identities(id_number: str):
         return query
 
     tenant = Tenant.objects.filter(
-        _match("national_id_or_passport")
-    ).order_by("-created_at").first()
-    landlord = Landlord.objects.filter(
-        _match("id_or_registration_number")
-    ).order_by("-created_at").first()
+        _match("national_id_or_passport"),
+        portal_user__is_active=True,
+        tenancies__status=Tenancy.STATUS_ACTIVE,
+    ).distinct().order_by("-created_at").first()
+    landlord = None
     caretaker_user = None
     profile = (
         UserProfile.objects.filter(_match("id_or_registration_number"))
         .select_related("user")
         .first()
     )
-    if profile is not None and has_role(profile.user, CARETAKER_ROLE):
+    if (
+        profile is not None
+        and profile.user.is_active
+        and has_role(profile.user, CARETAKER_ROLE)
+    ):
         caretaker_user = profile.user
     return tenant, landlord, caretaker_user
 
@@ -285,8 +287,6 @@ def _roles(contact: WhatsAppContact) -> list[str]:
     roles = []
     if contact.tenant_id:
         roles.append(ROLE_TENANT)
-    if contact.user_id and Landlord.objects.filter(portal_user_id=contact.user_id).exists():
-        roles.append(ROLE_LANDLORD)
     if contact.user_id and has_role(contact.user, CARETAKER_ROLE):
         roles.append(ROLE_CARETAKER)
     return roles
@@ -312,8 +312,8 @@ def _prompt_for_id(contact: WhatsAppContact, state: ConversationState) -> None:
     send_text(
         contact.wa_id,
         "Welcome to Legacy Real Estate! 🔐 To link this WhatsApp number to "
-        "your account, please reply with your national ID number (or company "
-        "registration number).",
+        "your tenant or caretaker account, reply with the National ID or "
+        "passport number recorded with the agency.",
     )
 
 
@@ -337,12 +337,11 @@ def _handle_verification_reply(contact, state, text):
     ):
         send_text(
             contact.wa_id,
-            "Please reply with just your national ID number (or company "
-            "registration number) to verify your account.",
+            "Reply with the National ID or passport number recorded with the agency.",
         )
         return
-    tenant, landlord, caretaker_user = _match_identities(candidate)
-    if tenant is None and landlord is None and caretaker_user is None:
+    tenant, _, caretaker_user = _match_identities(candidate)
+    if tenant is None and caretaker_user is None:
         contact.failed_verifications += 1
         if contact.failed_verifications >= MAX_VERIFICATION_ATTEMPTS:
             contact.locked_until = now + timedelta(hours=VERIFICATION_LOCK_HOURS)
@@ -360,22 +359,148 @@ def _handle_verification_reply(contact, state, text):
         send_text(contact.wa_id, message)
         return
 
-    contact.tenant = tenant
-    contact.user = (
-        (tenant.portal_user if tenant else None)
-        or (landlord.portal_user if landlord else None)
-        or caretaker_user
+    user = tenant.portal_user if tenant else caretaker_user
+    phone = tenant.phone if tenant else getattr(
+        getattr(user, "profile", None), "phone", ""
     )
-    # Whichever ID was used, surface every identity on the same portal user —
-    # a landlord who is also a tenant gets both roles from one verification.
-    if contact.tenant is None and contact.user is not None:
-        contact.tenant = (
-            Tenant.objects.filter(portal_user=contact.user)
-            .order_by("-created_at")
-            .first()
+    if not phone:
+        send_text(
+            contact.wa_id,
+            "We could not find a registered mobile number for this account. Contact the office to update your details.",
         )
-    contact.id_number_hash = hashlib.sha256(candidate.lower().encode("utf-8")).hexdigest()
-    contact.verified_at = now
+        return
+    from users.views import _normalize_ke_phone
+
+    try:
+        phone = _normalize_ke_phone(phone)
+    except ValueError:
+        send_text(
+            contact.wa_id,
+            "We could not verify the registered mobile number. Contact the office to update your details.",
+        )
+        return
+    recent_challenge = PhoneOTPChallenge.objects.filter(
+        phone=phone,
+        purpose=PhoneOTPChallenge.PURPOSE_WHATSAPP_VERIFICATION,
+        created_at__gte=now - timedelta(
+            seconds=settings.AUTH_SMS_RESEND_COOLDOWN_SECONDS
+        ),
+        consumed_at__isnull=True,
+    ).exists()
+    if recent_challenge:
+        send_text(
+            contact.wa_id,
+            "A verification code was recently sent to your registered mobile number. Enter that code here.",
+        )
+        return
+
+    from secrets import randbelow
+
+    code = f"{randbelow(1_000_000):06d}"
+    challenge = PhoneOTPChallenge.objects.create(
+        phone=phone,
+        purpose=PhoneOTPChallenge.PURPOSE_WHATSAPP_VERIFICATION,
+        user=user,
+        tenant=tenant,
+        code_hash=make_password(code),
+        expires_at=now + timedelta(seconds=settings.AUTH_SMS_CODE_LIFETIME_SECONDS),
+    )
+    state.state = {
+        "flow": "verify",
+        "step": "awaiting_otp",
+        "tenant_id": tenant.pk if tenant else None,
+        "user_id": user.pk,
+        "challenge_id": challenge.pk,
+        "id_number_hash": hashlib.sha256(candidate.lower().encode("utf-8")).hexdigest(),
+    }
+    _save_state(state)
+    try:
+        queue_template_sms(
+            phone,
+            "whatsapp_verification_code",
+            {"code": code},
+            expires_at=challenge.expires_at,
+        )
+    except (
+        ImproperlyConfigured,
+        RuntimeError,
+        ValueError,
+        OSError,
+    ):
+        challenge.consumed_at = timezone.now()
+        challenge.save(update_fields=["consumed_at"])
+        state.state = {"flow": "verify", "step": "awaiting_id"}
+        _save_state(state)
+        logger.exception("Could not queue a WhatsApp identity verification SMS.")
+        send_text(
+            contact.wa_id,
+            "We could not send a verification code right now. Please try again later.",
+        )
+        return
+    send_text(
+        contact.wa_id,
+        f"We sent a six-digit verification code to the registered mobile number ending in {phone[-4:]}. Reply here with that code. It expires in five minutes.",
+    )
+
+
+def _handle_verification_otp(contact, state, text):
+    if not text.isascii() or not text.isdigit() or len(text) != 6:
+        send_text(contact.wa_id, "Reply with the six-digit SMS code.")
+        return
+    challenge_id = state.state.get("challenge_id")
+    try:
+        challenge = PhoneOTPChallenge.objects.select_for_update().get(
+            pk=challenge_id,
+            purpose=PhoneOTPChallenge.PURPOSE_WHATSAPP_VERIFICATION,
+            consumed_at__isnull=True,
+        )
+    except (PhoneOTPChallenge.DoesNotExist, ValueError):
+        state.state = {}
+        _save_state(state)
+        send_text(contact.wa_id, "This verification code is no longer available. Send your ID number to start again.")
+        return
+    if not challenge.is_usable or challenge.attempts >= settings.AUTH_SMS_MAX_ATTEMPTS:
+        challenge.consumed_at = timezone.now()
+        challenge.save(update_fields=["consumed_at"])
+        state.state = {"flow": "verify", "step": "awaiting_id"}
+        _save_state(state)
+        send_text(contact.wa_id, "This verification code has expired. Send your ID number to start again.")
+        return
+    if not check_password(text, challenge.code_hash):
+        challenge.attempts += 1
+        if challenge.attempts >= settings.AUTH_SMS_MAX_ATTEMPTS:
+            challenge.consumed_at = timezone.now()
+            challenge.save(update_fields=["attempts", "consumed_at"])
+            state.state = {"flow": "verify", "step": "awaiting_id"}
+            _save_state(state)
+            send_text(contact.wa_id, "Too many incorrect codes. Send your ID number to start again.")
+        else:
+            challenge.save(update_fields=["attempts"])
+            send_text(contact.wa_id, "That code is incorrect. Please try again.")
+        return
+
+    tenant = challenge.tenant
+    user = challenge.user
+    if (
+        user is None
+        or not user.is_active
+        or (tenant is not None and tenant.portal_user_id != user.pk)
+    ):
+        challenge.consumed_at = timezone.now()
+        challenge.save(update_fields=["consumed_at"])
+        state.state = {}
+        _save_state(state)
+        send_text(contact.wa_id, "This account is unavailable for WhatsApp. Contact the office for help.")
+        return
+    if tenant is None:
+        tenant = Tenant.objects.filter(
+            portal_user=user,
+            tenancies__status=Tenancy.STATUS_ACTIVE,
+        ).distinct().order_by("-created_at").first()
+    contact.tenant = tenant
+    contact.user = user
+    contact.id_number_hash = state.state.get("id_number_hash", "")
+    contact.verified_at = timezone.now()
     contact.failed_verifications = 0
     contact.locked_until = None
     contact.save(update_fields=[
@@ -387,20 +512,17 @@ def _handle_verification_reply(contact, state, text):
         "locked_until",
         "updated_at",
     ])
+    challenge.consumed_at = timezone.now()
+    challenge.save(update_fields=["consumed_at"])
     _audit("whatsapp.contact_verified", {
         "contact_id": contact.pk,
         "tenant_id": tenant.pk if tenant else None,
-        "landlord_id": landlord.pk if landlord else None,
-        "caretaker_user_id": caretaker_user.pk if caretaker_user else None,
+        "user_id": user.pk,
     })
-    if tenant:
-        full_name = tenant.name
-    elif landlord:
-        full_name = landlord.name
-    else:
-        full_name = caretaker_user.profile.name
-    name = full_name.split()[0]
-    send_text(contact.wa_id, f"✅ Thank you {name}, your number is now verified.")
+    state.state = {}
+    state.active_role = ""
+    _save_state(state)
+    send_text(contact.wa_id, "✅ Your WhatsApp number is now verified.")
     _show_entry(contact, state)
 
 
@@ -427,20 +549,6 @@ def _show_menu(contact, state):
     state.state = {"flow": "menu"}
     _save_state(state)
     multi_role = len(_roles(contact)) > 1
-    if state.active_role == ROLE_LANDLORD:
-        rows = [
-            ("l_summary", "Portfolio summary", "Properties, units and occupancy"),
-            ("l_approvals", "Pending approvals", "Maintenance quotations awaiting you"),
-        ]
-        if multi_role:
-            rows.append(SWITCH_ROW)
-        send_list(
-            contact.wa_id,
-            "🏠 Welcome to your landlord services. What would you like to see?",
-            "Landlord services",
-            rows,
-        )
-        return
     if state.active_role == ROLE_CARETAKER:
         property_obj = _caretaker_active_property(contact, state)
         if property_obj is None:
@@ -837,6 +945,9 @@ def _complete_rent_payment(stk_request, receipt_number, paid_amount):
         stk_request.save(update_fields=[
             "status", "result_code", "payment", "processed_at", "updated_at",
         ])
+    from users.billing import refresh_draft_balance_lines_for_tenancy
+
+    refresh_draft_balance_lines_for_tenancy(invoice.tenancy_id)
     # Receipt record + WhatsApp template fan-out (Phase 1 wiring)
     _ensure_payment_receipt(payment)
     if tenant.phone and sms_backend_is_configured():
@@ -4444,44 +4555,6 @@ def handle_inbound_message(message: dict) -> None:
         _route_message(contact, state, message)
 
 
-def _auto_link_phone_verified_tenant(contact) -> bool:
-    phone = str(contact.wa_id or "").lstrip("+")
-    if not phone.isdigit():
-        return False
-    candidates = list(
-        Tenant.objects.filter(
-            phone=phone,
-            phone_verified_at__isnull=False,
-            portal_user__is_active=True,
-            tenancies__status=Tenancy.STATUS_ACTIVE,
-        )
-        .distinct()
-        .select_related("portal_user")
-        .order_by("id")[:2]
-    )
-    if len(candidates) != 1:
-        return False
-    tenant = candidates[0]
-    contact.tenant = tenant
-    contact.user = tenant.portal_user
-    contact.verified_at = timezone.now()
-    contact.failed_verifications = 0
-    contact.locked_until = None
-    contact.save(update_fields=[
-        "tenant",
-        "user",
-        "verified_at",
-        "failed_verifications",
-        "locked_until",
-        "updated_at",
-    ])
-    _audit("whatsapp.contact_phone_verified", {
-        "contact_id": contact.pk,
-        "tenant_id": tenant.pk,
-    })
-    return True
-
-
 def _route_message(contact, state, message: dict) -> None:
     message_id = message.get("id", "")
     if message_id and state.last_message_id == message_id:
@@ -4500,8 +4573,10 @@ def _route_message(contact, state, message: dict) -> None:
     flow = state.state.get("flow", "")
     step = state.state.get("step", "")
 
-    if not contact.verified_at and not _auto_link_phone_verified_tenant(contact):
-        if flow == "verify" and step == "awaiting_id" and text:
+    if not contact.verified_at:
+        if flow == "verify" and step == "awaiting_otp" and text:
+            _handle_verification_otp(contact, state, text)
+        elif flow == "verify" and step == "awaiting_id" and text:
             _handle_verification_reply(contact, state, text)
         else:
             _prompt_for_id(contact, state)
@@ -4526,6 +4601,8 @@ def _route_message(contact, state, message: dict) -> None:
     if choice == "switch_role" or (text and text.lower().strip() == "switch"):
         _show_entry(contact, state)
         return
+    if state.active_role and state.active_role not in _roles(contact):
+        state.active_role = ""
     if not state.active_role:
         _show_entry(contact, state)
         return
@@ -4575,12 +4652,6 @@ def _route_message(contact, state, message: dict) -> None:
             return
     if choice == "pay_cancel":
         _show_menu(contact, state)
-        return
-    if choice == "l_summary":
-        _landlord_summary(contact)
-        return
-    if choice == "l_approvals":
-        _landlord_approvals(contact, state)
         return
     if choice.startswith("q_app_"):
         _decide_quotation(contact, state, int(choice.removeprefix("q_app_")), True)

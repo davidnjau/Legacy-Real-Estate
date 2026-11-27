@@ -9,6 +9,9 @@ import {
   UserPlus,
   UserRoundX,
 } from 'lucide-react';
+import ExistingAccountPicker, {
+  type ExistingAccount,
+} from '../property-officer/ExistingAccountPicker';
 
 type Branch = {
   id: number;
@@ -36,6 +39,13 @@ type StaffResponse = {
   roles: string[];
   staff: StaffMember[];
 };
+
+function branchDisplayName(branch: Branch) {
+  const searchText = `${branch.name} ${branch.town}`;
+  if (/\bnairobi\b/i.test(searchText)) return 'Nairobi';
+  if (/\bnakuru\b/i.test(searchText)) return 'Nakuru';
+  return branch.name || branch.town;
+}
 
 const EMPTY_FORM = {
   name: '',
@@ -69,6 +79,7 @@ export default function StaffManagement({
   const [busy, setBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
   const [editBranchIds, setEditBranchIds] = useState<number[]>([]);
@@ -77,6 +88,8 @@ export default function StaffManagement({
 
   useEffect(() => {
     setAgencyId(selectedAgencyId === null ? '' : String(selectedAgencyId));
+    setSelectedAccountId(null);
+    setForm(EMPTY_FORM);
   }, [selectedAgencyId]);
 
   async function loadStaff(selectedAgencyId: string) {
@@ -138,6 +151,7 @@ export default function StaffManagement({
           email: form.email,
           phone: form.phone,
           id_or_registration_number: form.idOrRegistrationNumber,
+          existing_user_id: selectedAccountId,
           roles: form.roles,
           branch_ids: form.branchIds,
         }),
@@ -155,12 +169,13 @@ export default function StaffManagement({
       }
       setNotice(
         payload.existing_account_link
-          ? 'A one-time code was sent. The selected staff role will be added after identity confirmation.'
+          ? 'Existing agency account linked. The selected staff roles are active immediately.'
           : payload.activation_email_sent
             ? 'Staff account created. An activation code was sent by email.'
             : 'Existing account added to this agency.',
       );
       setForm({ ...EMPTY_FORM, roles: roles[0] ? [roles[0]] : [] });
+      setSelectedAccountId(null);
       setShowCreate(false);
       await loadStaff(agencyId);
     } catch (cause) {
@@ -269,18 +284,37 @@ export default function StaffManagement({
       {showCreate && (
         <form onSubmit={createStaff} className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4">
           <h3 className="font-bold text-slate-900">Invite staff member</h3>
+          {agencyId && (
+            <div className="mt-4">
+              <ExistingAccountPicker
+                agencyId={Number(agencyId)}
+                selectedId={selectedAccountId}
+                onSelect={(account: ExistingAccount | null) => {
+                  setSelectedAccountId(account?.id ?? null);
+                  if (account) {
+                    setForm((current) => ({
+                      ...current,
+                      name: account.name,
+                      email: account.email,
+                      phone: account.phone,
+                    }));
+                  }
+                }}
+              />
+            </div>
+          )}
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label className="text-xs font-bold text-slate-700">
               Full name
-              <input required maxLength={255} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
+              <input required maxLength={255} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} readOnly={selectedAccountId !== null} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
             </label>
             <label className="text-xs font-bold text-slate-700">
               Email
-              <input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
+              <input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} readOnly={selectedAccountId !== null} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
             </label>
             <label className="text-xs font-bold text-slate-700">
               Kenyan phone number
-              <input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="2547XXXXXXXX" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
+              <input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="2547XXXXXXXX" readOnly={selectedAccountId !== null} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
             </label>
             <label className="text-xs font-bold text-slate-700">
               National ID / passport
@@ -320,9 +354,14 @@ export default function StaffManagement({
                       branchIds: toggleBranch(current.branchIds, branch.id),
                     }))}
                   />
-                  {branch.name}
+                  {branchDisplayName(branch)}
                 </label>
               ))}
+              {branches.length === 0 && (
+                <p className="text-xs text-slate-500">
+                  {loading ? 'Loading agency branches…' : 'No branches are available for this agency.'}
+                </p>
+              )}
             </div>
           </fieldset>
           <div className="mt-4 flex gap-2">
@@ -352,10 +391,10 @@ export default function StaffManagement({
               const pendingRoleLabel = member.pending_roles?.length
                 ? `${member.pending_roles.join(', ')} (confirmation pending)`
                 : null;
-              const branchLabel = member.branches.map((branch) => branch.name).join(', ');
+              const branchLabel = member.branches.map(branchDisplayName).join(', ');
               const pendingBranchLabel = branches
                 .filter((branch) => member.pending_branch_ids?.includes(branch.id))
-                .map((branch) => branch.name)
+                .map(branchDisplayName)
                 .join(', ');
               const editingThis = editing === member.membership_id;
               const requiresMfa = [...member.roles, ...(member.pending_roles || [])]
@@ -393,7 +432,7 @@ export default function StaffManagement({
                         {branches.map((branch) => (
                           <label key={branch.id} className="flex items-center gap-2 text-xs">
                             <input type="checkbox" checked={editBranchIds.includes(branch.id)} onChange={() => setEditBranchIds((current) => toggleBranch(current, branch.id))} />
-                            {branch.name}
+                            {branchDisplayName(branch)}
                           </label>
                         ))}
                       </div>

@@ -22,7 +22,10 @@ import {
   WalletCards,
 } from 'lucide-react';
 import type { DjangoUser } from '../../lib/django-auth';
-import { isPropertyOfficerRole } from '../../lib/django-routing';
+import {
+  getDjangoWorkspaceOptions,
+  isPropertyOfficerRole,
+} from '../../lib/django-routing';
 import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
@@ -127,6 +130,7 @@ export function PropertyOfficerPortalShell({ children }: { children: React.React
     () => new Set(branches.filter((branch) => branchIds.has(branch.id)).map(townKey)),
     [branches, branchIds],
   );
+  const canSwitchWorkspaces = getDjangoWorkspaceOptions(user?.roles ?? []).length > 1;
 
   function changeAgency(agencyId: number) {
     setSelectedAgencyId(agencyId);
@@ -177,6 +181,14 @@ export function PropertyOfficerPortalShell({ children }: { children: React.React
             )}
             {branches.length === 1 && (
               <span className="rounded-xl border border-[#dfe5df] bg-[#f8faf7] px-3 py-2.5 text-xs font-semibold text-[#45604f]">{branches[0].name}</span>
+            )}
+            {canSwitchWorkspaces && (
+              <Link
+                href="/workspace"
+                className="rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-xs font-semibold text-[#385343] hover:bg-[#f5f8f3]"
+              >
+                Switch workspace
+              </Link>
             )}
             <SignOutButton />
           </div>

@@ -3609,6 +3609,64 @@ class SMSLoginChallenge(models.Model):
         return timezone.now() >= self.expires_at
 
 
+class PhoneOTPChallenge(models.Model):
+    PURPOSE_LOGIN = "login"
+    PURPOSE_TENANT_ACTIVATION = "tenant_activation"
+    PURPOSE_LANDLORD_ACTIVATION = "landlord_activation"
+    PURPOSE_WHATSAPP_VERIFICATION = "whatsapp_verification"
+    PURPOSE_CHOICES = (
+        (PURPOSE_LOGIN, "Portal login"),
+        (PURPOSE_TENANT_ACTIVATION, "Tenant activation"),
+        (PURPOSE_LANDLORD_ACTIVATION, "Landlord activation"),
+        (PURPOSE_WHATSAPP_VERIFICATION, "WhatsApp verification"),
+    )
+
+    phone = models.CharField(max_length=12)
+    purpose = models.CharField(max_length=32, choices=PURPOSE_CHOICES)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="phone_otp_challenges",
+        blank=True,
+        null=True,
+    )
+    tenant = models.ForeignKey(
+        "users.Tenant",
+        on_delete=models.CASCADE,
+        related_name="phone_otp_challenges",
+        blank=True,
+        null=True,
+    )
+    landlord = models.ForeignKey(
+        "users.Landlord",
+        on_delete=models.CASCADE,
+        related_name="phone_otp_challenges",
+        blank=True,
+        null=True,
+    )
+    code_hash = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["phone", "purpose", "created_at"],
+                name="users_phoneotp_phone_purpose",
+            ),
+            models.Index(
+                fields=["user", "purpose", "expires_at"],
+                name="users_phoneotp_user_purpose",
+            ),
+        ]
+
+    @property
+    def is_usable(self):
+        return self.consumed_at is None and self.expires_at > timezone.now()
+
+
 class SMSDelivery(models.Model):
     STATUS_QUEUED = "queued"
     STATUS_SENDING = "sending"

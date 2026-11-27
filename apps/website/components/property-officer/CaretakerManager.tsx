@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Mail, RefreshCw, UserPlus, UserRoundX } from 'lucide-react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import ExistingAccountPicker, {
+  type ExistingAccount,
+} from './ExistingAccountPicker';
 
 type PropertyRecord = {
   id: number;
@@ -37,6 +40,7 @@ type ApiPayload = {
   invites?: Invitation[];
   caretakers?: Caretaker[];
   invitation?: Invitation;
+  existing_account_link?: boolean;
   error?: string;
   detail?: string;
 };
@@ -61,7 +65,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export default function CaretakerManager() {
-  const { branchIds } = usePropertyOfficerPortal();
+  const { agency, branchIds } = usePropertyOfficerPortal();
   const [properties, setProperties] = useState<PropertyRecord[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [caretakers, setCaretakers] = useState<Caretaker[]>([]);
@@ -71,6 +75,7 @@ export default function CaretakerManager() {
   const [phone, setPhone] = useState('');
   const [identity, setIdentity] = useState('');
   const [kraPin, setKraPin] = useState('');
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -136,6 +141,7 @@ export default function CaretakerManager() {
         method: 'POST',
         body: JSON.stringify({
           property_ids: selectedPropertyIds,
+          existing_user_id: selectedAccountId,
           full_name: fullName,
           email,
           phone,
@@ -144,12 +150,17 @@ export default function CaretakerManager() {
         }),
       });
       if (!payload.invitation) throw new Error('The server did not return the invitation.');
-      setNotice(`Invitation created. An activation link and one-time code were emailed to ${email}.`);
+      setNotice(
+        payload.existing_account_link
+          ? 'Existing agency account linked to the selected properties.'
+          : `Invitation created. An activation link and one-time code were emailed to ${email}.`,
+      );
       setFullName('');
       setEmail('');
       setPhone('');
       setIdentity('');
       setKraPin('');
+      setSelectedAccountId(null);
       setReloadKey((value) => value + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to create the caretaker invitation.');
@@ -239,6 +250,20 @@ export default function CaretakerManager() {
               <p className="text-xs text-slate-500">A secure activation link and one-time code are emailed to the caretaker.</p>
             </div>
           </div>
+          {agency && (
+            <ExistingAccountPicker
+              agencyId={agency.id}
+              selectedId={selectedAccountId}
+              onSelect={(account: ExistingAccount | null) => {
+                setSelectedAccountId(account?.id ?? null);
+                if (account) {
+                  setFullName(account.name);
+                  setEmail(account.email);
+                  setPhone(account.phone);
+                }
+              }}
+            />
+          )}
           <fieldset className="space-y-2">
             <legend className="text-sm font-semibold">Properties</legend>
             <p className="text-xs text-slate-500">Select every property this caretaker will be responsible for.</p>
@@ -267,15 +292,15 @@ export default function CaretakerManager() {
           </fieldset>
           <label className="block text-sm font-semibold">Caretaker email
             <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)}
-              autoComplete="email" className={fieldClass} />
+              autoComplete="email" readOnly={selectedAccountId !== null} className={fieldClass} />
           </label>
           <label className="block text-sm font-semibold">Full name
             <input required maxLength={255} value={fullName} onChange={(event) => setFullName(event.target.value)}
-              autoComplete="name" className={fieldClass} />
+              autoComplete="name" readOnly={selectedAccountId !== null} className={fieldClass} />
           </label>
           <label className="block text-sm font-semibold">Phone
             <input required type="tel" value={phone} onChange={(event) => setPhone(event.target.value)}
-              placeholder="07XX XXX XXX" autoComplete="tel" className={fieldClass} />
+              placeholder="07XX XXX XXX" autoComplete="tel" readOnly={selectedAccountId !== null} className={fieldClass} />
           </label>
           <label className="block text-sm font-semibold">ID or registration number
             <input required maxLength={100} value={identity} onChange={(event) => setIdentity(event.target.value)}

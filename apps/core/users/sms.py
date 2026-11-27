@@ -27,16 +27,26 @@ class SMSBackend(Protocol):
 
 SMS_TEMPLATES = {
     "login_verification_code": (
-        "Your Legacy Real Estate sign-in code is {code}. It expires shortly."
+        "Your Legacy Real Estate sign-in code is {code}. It expires in five minutes. "
+        "Do not share this code with anyone."
+    ),
+    "whatsapp_verification_code": (
+        "Your Legacy Real Estate WhatsApp verification code is {code}. "
+        "It expires in five minutes. Do not share this code with anyone."
     ),
     "payment_receipt": (
         "Payment {reference} of KES {amount} has been received. "
         "Thank you, {agency_name}."
     ),
     "tenant_activation": (
-        "Hi {tenant_name}, welcome to Legacy Real Estate! Your tenant account "
-        "has been successfully onboarded. Create your password at {activation_url} "
-        "using OTP {code}. This link expires in 48 hours."
+        "Hi {tenant_name}, welcome to Legacy Real Estate. Activate your tenant account "
+        "at {activation_url} using code {code}. The code expires in 48 hours. "
+        "Do not share this code with anyone."
+    ),
+    "landlord_activation": (
+        "Hi {landlord_name}, activate your Legacy Real Estate landlord account "
+        "at {activation_url} using code {code}. The code expires in 48 hours. "
+        "Do not share this code with anyone."
     ),
     "invoice_reminder": (
         "Your rent account has an outstanding balance of KES {amount}. "
