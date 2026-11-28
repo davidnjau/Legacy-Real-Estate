@@ -17,6 +17,7 @@ import {
 import type { DjangoUser } from '../../lib/django-auth';
 import { getDjangoWorkspaceOptions } from '../../lib/django-routing';
 import SignOutButton from '../auth/SignOutButton';
+import { PortalLoading, PortalSectionBanner } from '../property-officer/PortalUI';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
 
 type Agency = NonNullable<DjangoUser['agencies']>[number];
@@ -45,12 +46,40 @@ const NAV_ITEMS = [
   { href: '/admin/settings', label: 'Policy & settings', icon: Settings },
 ];
 
+const SECTION_COPY: Record<string, { title: string; description: string }> = {
+  '/admin/staff': {
+    title: 'Staff & access',
+    description: 'Manage agency memberships, branch assignments, roles, and account activation.',
+  },
+  '/admin/branches': {
+    title: 'Agency branches',
+    description: 'Manage branch locations and keep staff assignments aligned with where your agency operates.',
+  },
+  '/admin/properties': {
+    title: 'Agency properties',
+    description: 'Review property inventory, unit occupancy, landlord relationships, and agreement details.',
+  },
+  '/admin/financials': {
+    title: 'Agency financials',
+    description: 'Review collections and remittances, and decide pending waiver and payout requests.',
+  },
+  '/admin/audit': {
+    title: 'Agency audit trail',
+    description: 'Explore agency-attributed actions and compare recorded changes over time.',
+  },
+  '/admin/settings': {
+    title: 'Agency policy & settings',
+    description: 'Configure tax, VAT, arrears, branch payment numbers, and agency SMS templates.',
+  },
+};
+
 export function DirectorPortalShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [user, setUser] = useState<DjangoUser | null>(null);
   const [agencyId, setAgencyId] = useState<number | null>(null);
   const [branchId, setBranchId] = useState<number | 'all'>('all');
   const [error, setError] = useState('');
+  const [userLoading, setUserLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -68,6 +97,9 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
       })
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Unable to load your account.');
+      })
+      .finally(() => {
+        if (active) setUserLoading(false);
       });
     return () => {
       active = false;
@@ -80,6 +112,13 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
   const agency = agencies.find((item) => item.id === agencyId) ?? null;
   const branches = agency?.branches ?? [];
   const canSwitchWorkspaces = getDjangoWorkspaceOptions(user?.roles ?? []).length > 1;
+  const sectionCopy = SECTION_COPY[pathname]
+    ?? (pathname.startsWith('/admin/properties/')
+      ? {
+          title: 'Property overview',
+          description: 'Review monthly property finances, unit charges, occupancy, tenancy records, and tenant payment status.',
+        }
+      : null);
 
   return (
     <DirectorPortalContext.Provider value={{ agency, branchId, userName: user?.name || 'Director' }}>
@@ -141,7 +180,9 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
             </div>
             <nav className="flex-1 space-y-1.5 overflow-y-auto">
               {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-                const active = pathname === href || (href === '/admin/dashboard' && pathname === '/admin');
+                const active = pathname === href
+                  || (href === '/admin/properties' && pathname.startsWith('/admin/properties/'))
+                  || (href === '/admin/dashboard' && pathname === '/admin');
                 return <Link key={href} href={href} aria-current={active ? 'page' : undefined}
                   className={`group flex items-center gap-3 rounded-xl border px-3 py-3 text-[13px] transition ${active ? 'border-[#e1ebd8] bg-[#f1f6ed] font-bold text-[#234630] shadow-[0_2px_8px_rgba(30,60,40,0.04)]' : 'border-transparent font-medium text-[#68776d] hover:bg-[#f7f9f6] hover:text-[#234630]'}`}>
                   <Icon size={17} strokeWidth={active ? 2.2 : 1.8} className={active ? 'text-[#668a4c]' : 'text-[#91a095] transition group-hover:text-[#668a4c]'} />
@@ -159,7 +200,20 @@ export function DirectorPortalShell({ children }: { children: React.ReactNode })
             </div>
           </ResponsivePortalSidebar>
           <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-            {error ? <div role="alert" className="m-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div> : children}
+            <div className="director-portal min-h-full">
+              {sectionCopy && (
+                <PortalSectionBanner
+                  eyebrow={`${agency?.name || 'Director workspace'} · Agency administration`}
+                  title={sectionCopy.title}
+                  description={sectionCopy.description}
+                />
+              )}
+              {error
+                ? <div role="alert" className="m-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>
+                : userLoading
+                  ? <div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8"><PortalLoading label="Loading director workspace..." /></div>
+                  : children}
+            </div>
           </div>
         </div>
       </div>

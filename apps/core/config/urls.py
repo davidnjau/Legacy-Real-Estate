@@ -10,6 +10,7 @@ from users.director_portal import (
     director_financials,
     director_overview,
     director_properties,
+    director_property_detail,
     director_remittance_decision,
     director_settings,
 )
@@ -253,6 +254,11 @@ urlpatterns = [
     path("api/v1/director/branches", director_branches, name="director-branches"),
     path("api/v1/director/overview", director_overview, name="director-overview"),
     path("api/v1/director/properties", director_properties, name="director-properties"),
+    path(
+        "api/v1/director/properties/<int:property_id>",
+        director_property_detail,
+        name="director-property-detail",
+    ),
     path("api/v1/director/financials", director_financials, name="director-financials"),
     path("api/v1/director/audit-logs", director_audit_logs, name="director-audit-logs"),
     path("api/v1/director/settings", director_settings, name="director-settings"),

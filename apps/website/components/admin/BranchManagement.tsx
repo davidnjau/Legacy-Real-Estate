@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { MapPin, Plus, RefreshCw } from 'lucide-react';
 import { useDirectorPortal } from './DirectorPortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from '../property-officer/PortalUI';
 
 type Branch = {
   id: number;
@@ -36,6 +37,7 @@ export default function BranchManagement() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [search, setSearch] = useState('');
 
   const loadBranches = useCallback(async (selectedAgencyId: number) => {
     setLoading(true);
@@ -66,6 +68,14 @@ export default function BranchManagement() {
     }
     void loadBranches(agencyId);
   }, [agencyId, loadBranches]);
+
+  const filteredBranches = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return branches.filter((branch) =>
+      !query || `${branch.name} ${branch.town}`.toLowerCase().includes(query),
+    );
+  }, [branches, search]);
+  const pagination = usePortalPagination(filteredBranches);
 
   async function csrfToken() {
     const response = await fetch('/api/auth/csrf', { cache: 'no-store' });
@@ -106,18 +116,7 @@ export default function BranchManagement() {
 
   return (
     <main className="mx-auto max-w-[1440px] space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4 pb-1">
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#728779]">
-            Director workspace
-          </p>
-          <h1 className="mt-1.5 text-2xl font-bold tracking-tight text-[#1d3528] sm:text-[28px]">
-            Agency branches
-          </h1>
-          <p className="mt-1.5 max-w-3xl text-sm leading-relaxed text-[#748178]">
-            Manage the branch locations for {agency?.name || 'this agency'}. New branches are available for staff assignments.
-          </p>
-        </div>
+      <div className="flex justify-end">
         <button
           type="button"
           onClick={() => agencyId !== null && void loadBranches(agencyId)}
@@ -127,7 +126,7 @@ export default function BranchManagement() {
           <RefreshCw size={14} strokeWidth={1.9} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
           Refresh branches
         </button>
-      </header>
+      </div>
 
       {error && (
         <p role="alert" className="rounded-xl border border-[#f0d9d4] bg-[#fcf2ef] px-4 py-3 text-sm text-[#9b5147]">
@@ -192,12 +191,25 @@ export default function BranchManagement() {
           </div>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f3f6f1] px-3 py-1.5 text-[11px] font-semibold text-[#617565]">
             <MapPin size={13} strokeWidth={1.9} aria-hidden="true" />
-            {branches.length} {branches.length === 1 ? 'branch' : 'branches'}
+            {filteredBranches.length} {filteredBranches.length === 1 ? 'branch' : 'branches'}
           </span>
         </div>
         {loading ? (
-          <p role="status" className="px-5 py-8 text-center text-sm text-[#89948c]">Loading agency branches...</p>
+          <div className="p-5"><PortalLoading label="Loading agency branches..." rows={3} /></div>
         ) : branches.length > 0 ? (
+          <>
+          <div className="border-b border-[#edf0eb] p-4 sm:px-5">
+            <label className="block max-w-md text-xs font-semibold text-[#607267]">
+              Search branches
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Branch name or town"
+                className="mt-1.5 block w-full rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-sm font-normal text-[#243b2c] outline-none transition placeholder:text-[#9aa59d] focus:border-[#89a66b] focus:ring-4 focus:ring-[#eaf1e4]"
+              />
+            </label>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[420px] text-left text-sm">
               <thead className="bg-[#f8faf7] text-[10px] font-bold uppercase tracking-[0.12em] text-[#87938a]">
@@ -207,7 +219,7 @@ export default function BranchManagement() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#f0f2ef]">
-                {branches.map((branch) => (
+                {pagination.pageRecords.map((branch) => (
                   <tr key={branch.id} className="transition-colors hover:bg-[#fbfcfa]">
                     <td className="px-5 py-4 font-semibold text-[#2b4333]">{branch.name}</td>
                     <td className="px-5 py-4 text-[#617067]">{branch.town}</td>
@@ -216,6 +228,10 @@ export default function BranchManagement() {
               </tbody>
             </table>
           </div>
+          {filteredBranches.length === 0
+            ? <p className="px-5 py-8 text-center text-sm text-[#89948c]">No branches match that search.</p>
+            : <PortalPagination {...pagination} total={filteredBranches.length} onPageChange={pagination.setPage} onPageSizeChange={pagination.setPageSize} />}
+          </>
         ) : (
           <div className="flex flex-col items-center px-5 py-10 text-center">
             <span className="grid h-11 w-11 place-items-center rounded-2xl bg-[#f3f6f1] text-[#78916d]">

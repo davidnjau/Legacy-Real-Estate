@@ -5,55 +5,76 @@
 @layer components {
   .property-officer-portal input:not([type='checkbox']):not([type='radio']),
   .property-officer-portal select,
-  .property-officer-portal textarea {
+  .property-officer-portal textarea,
+  .director-portal input:not([type='checkbox']):not([type='radio']),
+  .director-portal select,
+  .director-portal textarea {
     transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
   }
 
   .property-officer-portal input:not([type='checkbox']):not([type='radio']):hover,
   .property-officer-portal select:hover,
-  .property-officer-portal textarea:hover {
+  .property-officer-portal textarea:hover,
+  .director-portal input:not([type='checkbox']):not([type='radio']):hover,
+  .director-portal select:hover,
+  .director-portal textarea:hover {
     border-color: #b7cda9;
   }
 
   .property-officer-portal input:not([type='checkbox']):not([type='radio']):focus,
   .property-officer-portal select:focus,
-  .property-officer-portal textarea:focus {
+  .property-officer-portal textarea:focus,
+  .director-portal input:not([type='checkbox']):not([type='radio']):focus,
+  .director-portal select:focus,
+  .director-portal textarea:focus {
     border-color: #83a95d;
     outline: none;
     box-shadow: 0 0 0 4px rgb(131 169 93 / 16%);
   }
 
   .property-officer-portal input[type='checkbox'],
-  .property-officer-portal input[type='radio'] {
+  .property-officer-portal input[type='radio'],
+  .director-portal input[type='checkbox'],
+  .director-portal input[type='radio'] {
     accent-color: #668a4c;
   }
 
   .property-officer-portal form,
   .property-officer-portal [data-portal-card],
-  .property-officer-portal article {
+  .property-officer-portal article,
+  .director-portal form,
+  .director-portal [data-portal-card],
+  .director-portal article {
     transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
   }
 
   .property-officer-portal form:hover,
   .property-officer-portal [data-portal-card]:hover,
-  .property-officer-portal article:hover {
+  .property-officer-portal article:hover,
+  .director-portal form:hover,
+  .director-portal [data-portal-card]:hover,
+  .director-portal article:hover {
     border-color: #d3e2c9;
     box-shadow: 0 10px 28px rgb(45 86 48 / 9%), 0 0 0 2px rgb(131 169 93 / 8%);
   }
 
-  .property-officer-portal button:not(:disabled) {
+  .property-officer-portal button:not(:disabled),
+  .director-portal button:not(:disabled) {
     transition: box-shadow 180ms ease, transform 180ms ease, background-color 180ms ease;
   }
 
-  .property-officer-portal button:not(:disabled):hover {
+  .property-officer-portal button:not(:disabled):hover,
+  .director-portal button:not(:disabled):hover {
     box-shadow: 0 0 0 3px rgb(131 169 93 / 12%);
   }
 
-  .property-officer-portal tbody tr {
+  .property-officer-portal tbody tr,
+  .director-portal tbody tr {
     transition: background-color 160ms ease;
   }
 
-  .property-officer-portal tbody tr:hover {
+  .property-officer-portal tbody tr:hover,
+  .director-portal tbody tr:hover {
     background-color: #f8faf7;
   }
 
@@ -77,7 +98,10 @@
 
   .property-officer-portal *,
   .property-officer-portal *::before,
-  .property-officer-portal *::after {
+  .property-officer-portal *::after,
+  .director-portal *,
+  .director-portal *::before,
+  .director-portal *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }

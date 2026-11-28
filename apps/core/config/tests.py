@@ -1087,6 +1087,178 @@ class UserAccessTests(TestCase):
         self.assertEqual(other_branch_response.json()["waiver_requests"], [])
         self.assertEqual(other_branch_response.json()["pending_waiver_count"], 0)
 
+    def test_director_monthly_reports_follow_invoice_period_and_property_scope(self):
+        director = self.create_user(email="director-period-report@example.com")
+        membership, _ = AgencyMembership.objects.get_or_create(
+            profile=director.profile,
+            agency=self.nairobi.agency,
+        )
+        membership.roles.add(Group.objects.get(name=SUPER_ADMIN_ROLE))
+        today = timezone.localdate()
+        period_start = today.replace(day=1)
+        period_end = date(
+            period_start.year,
+            period_start.month,
+            calendar.monthrange(period_start.year, period_start.month)[1],
+        )
+        issued_previous_month = period_start - timedelta(days=1)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Period Report Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        other_property = Property.objects.create(
+            branch=self.nairobi,
+            name="Other Period Report Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        tenant = Tenant.objects.create(
+            branch=self.nairobi,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Period Report Tenant",
+            national_id_or_passport="ID-PERIOD-REPORT-1",
+            phone="254712349810",
+        )
+        unit = Unit.objects.create(
+            property=property_obj,
+            code="PR-001",
+            unit_type="One bedroom",
+            status=Unit.STATUS_OCCUPIED,
+        )
+        tenancy = Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=period_start,
+            due_day=5,
+        )
+        UnitCharge.objects.create(
+            unit=unit,
+            charge_type=UnitCharge.CHARGE_RENT,
+            name="Monthly rent",
+            amount=Decimal("1200.00"),
+            effective_from=period_start,
+        )
+        UnitCharge.objects.create(
+            unit=unit,
+            charge_type=UnitCharge.CHARGE_RECURRING,
+            name="Fixed water",
+            amount=Decimal("100.00"),
+            effective_from=period_start,
+        )
+        invoice = Invoice.objects.create(
+            branch=self.nairobi,
+            tenancy=tenancy,
+            number="DIRECTOR-PERIOD-MOVE-IN",
+            period_start=period_start,
+            period_end=period_end,
+            due_date=period_start,
+            total=Decimal("1000.00"),
+        )
+        Invoice.objects.filter(pk=invoice.pk).update(
+            issued_at=timezone.make_aware(datetime.combine(issued_previous_month, datetime.min.time()))
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice,
+            charge_type=UnitCharge.CHARGE_RENT,
+            description="Move-in rent",
+            amount=Decimal("1000.00"),
+            metadata={"move_in_charge_id": 1},
+        )
+        payment = Payment.objects.create(
+            tenant=tenant,
+            amount=Decimal("500.00"),
+            reference="DIRECTOR-PERIOD-PAYMENT",
+            source=Payment.SOURCE_MANUAL,
+            received_at=timezone.now(),
+            status=Payment.STATUS_ALLOCATED,
+            allocated_amount=Decimal("500.00"),
+        )
+        PaymentAllocation.objects.create(
+            payment=payment,
+            invoice=invoice,
+            amount=Decimal("500.00"),
+        )
+        ArrearsWaiver.objects.create(
+            tenancy=tenancy,
+            invoice=invoice,
+            amount=Decimal("100.00"),
+            reason="Approved period-report test waiver",
+            approved_by=director,
+        )
+        other_tenant = Tenant.objects.create(
+            branch=self.nairobi,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Other Period Report Tenant",
+            national_id_or_passport="ID-PERIOD-REPORT-2",
+            phone="254712349811",
+        )
+        other_unit = Unit.objects.create(
+            property=other_property,
+            code="PR-002",
+            unit_type="Studio",
+        )
+        other_tenancy = Tenancy.objects.create(
+            unit=other_unit,
+            tenant=other_tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=period_start,
+            due_day=5,
+        )
+        Invoice.objects.create(
+            branch=self.nairobi,
+            tenancy=other_tenancy,
+            number="DIRECTOR-PERIOD-OTHER",
+            period_start=period_start,
+            period_end=period_end,
+            due_date=period_start,
+            total=Decimal("600.00"),
+        )
+        self.client.force_login(director)
+
+        financials = self.client.get(
+            f"/api/v1/director/financials?agency_id={self.nairobi.agency_id}"
+            f"&month={period_start:%Y-%m}"
+        )
+        self.assertEqual(financials.status_code, 200, financials.content)
+        summary = financials.json()["summary"]
+        self.assertEqual(summary["billed_rent"], "1600.00")
+        self.assertEqual(summary["move_in_invoiced"], "1000.00")
+        self.assertEqual(summary["paid_against_invoices"], "500.00")
+        self.assertEqual(summary["waived_amount"], "100.00")
+        self.assertEqual(summary["invoice_balance"], "1000.00")
+        self.assertEqual(len(financials.json()["property_options"]), 2)
+
+        filtered = self.client.get(
+            f"/api/v1/director/financials?agency_id={self.nairobi.agency_id}"
+            f"&month={period_start:%Y-%m}&property_id={property_obj.pk}"
+        )
+        self.assertEqual(filtered.status_code, 200, filtered.content)
+        self.assertEqual(filtered.json()["summary"]["billed_rent"], "1000.00")
+
+        previous_month = self.client.get(
+            f"/api/v1/director/financials?agency_id={self.nairobi.agency_id}"
+            f"&month={issued_previous_month:%Y-%m}"
+        )
+        self.assertEqual(previous_month.status_code, 200, previous_month.content)
+        self.assertEqual(previous_month.json()["summary"]["billed_rent"], "0.00")
+
+        detail = self.client.get(
+            f"/api/v1/director/properties/{property_obj.pk}"
+            f"?agency_id={self.nairobi.agency_id}&month={period_start:%Y-%m}"
+        )
+        self.assertEqual(detail.status_code, 200, detail.content)
+        payload = detail.json()
+        self.assertEqual(payload["summary"]["move_in_invoiced"], "1000.00")
+        self.assertEqual(payload["summary"]["paid"], "500.00")
+        self.assertEqual(payload["summary"]["waived"], "100.00")
+        self.assertEqual(payload["summary"]["balance"], "400.00")
+        self.assertEqual(payload["units"][0]["monthly_rent"], "1200.00")
+        self.assertEqual(payload["units"][0]["fixed_utilities"], "100.00")
+        self.assertEqual(payload["units"][0]["tenancies"][0]["payment_status"], "partially_paid")
+
     def test_director_sees_officer_saved_property_and_units_with_branch_isolation(self):
         director = self.create_user(
             email="director-officer-flow@example.com",
@@ -8020,6 +8192,59 @@ class UserAccessTests(TestCase):
         invoice.refresh_from_db()
         self.assertFalse(invoice.lines.filter(charge_type="balance").exists())
         self.assertEqual(invoice.total, Decimal("200.00"))
+
+    def test_monthly_invoice_does_not_duplicate_a_partially_overlapping_move_in_invoice(self):
+        from users.billing import generate_monthly_invoice
+
+        period_start = timezone.localdate().replace(day=1)
+        period_end = date(
+            period_start.year,
+            period_start.month,
+            calendar.monthrange(period_start.year, period_start.month)[1],
+        )
+        move_in_date = min(period_start + timedelta(days=14), period_end)
+        property_obj = Property.objects.create(
+            branch=self.nairobi,
+            name="Move-in Overlap Billing Property",
+            property_type="Apartment",
+            location="Nairobi",
+        )
+        unit = Unit.objects.create(property=property_obj, code="MO-001", unit_type="Studio")
+        tenant = Tenant.objects.create(
+            branch=self.nairobi,
+            tenant_type=Tenant.INDIVIDUAL,
+            name="Move-in Overlap Tenant",
+            national_id_or_passport="ID-MOVE-IN-OVERLAP-1",
+            phone="254712349812",
+        )
+        tenancy = Tenancy.objects.create(
+            unit=unit,
+            tenant=tenant,
+            tenancy_type=Tenancy.TYPE_MONTH_TO_MONTH,
+            start_date=move_in_date,
+            due_day=5,
+        )
+        move_in_invoice = Invoice.objects.create(
+            branch=self.nairobi,
+            tenancy=tenancy,
+            number="MOVE-IN-OVERLAP-INVOICE",
+            period_start=move_in_date,
+            period_end=period_end,
+            due_date=move_in_date,
+            total=Decimal("500.00"),
+        )
+        InvoiceLine.objects.create(
+            invoice=move_in_invoice,
+            charge_type=UnitCharge.CHARGE_RENT,
+            description="Move-in rent",
+            amount=Decimal("500.00"),
+            metadata={"move_in_charge_id": 1},
+        )
+
+        with self.assertRaisesRegex(ValueError, "already covers part of"):
+            generate_monthly_invoice(tenancy, period_start)
+
+        self.assertEqual(Invoice.objects.filter(tenancy=tenancy).count(), 1)
 
     def test_notice_month_draft_invoice_is_reduced_to_metered_water_only(self):
         from users.billing import generate_monthly_invoice
@@ -16790,7 +17015,7 @@ class WhatsAppBotTests(TestCase):
         )
 
         wa_id = "254700009999"
-        with patch.object(whatsapp_bot, "_post_message") as post:
+        with patch.object(whatsapp_bot, "_post_message"):
             whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
             whatsapp_bot.handle_inbound_message(self._message(wa_id, text="ID-WA-ACTIVATE-99"))
             whatsapp_bot.handle_inbound_message(self._message(wa_id, text=code))

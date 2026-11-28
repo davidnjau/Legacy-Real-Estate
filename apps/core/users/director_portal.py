@@ -25,7 +25,9 @@ from users.models import (
     Payment,
     PaymentAllocation,
     Property,
+    Tenancy,
     Unit,
+    UnitCharge,
 )
 from users.roles import SUPER_ADMIN_ROLE
 
@@ -229,7 +231,7 @@ def _month_invoice_totals(branches, start, end):
     invoices = Invoice.objects.filter(
         branch__in=branches,
         status=Invoice.STATUS_ISSUED,
-        issued_at__date__range=(start, end),
+        period_start__range=(start, end),
     )
     billed = invoices.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
     allocations = PaymentAllocation.objects.filter(
@@ -243,6 +245,117 @@ def _month_invoice_totals(branches, start, end):
     )
     collected = allocations.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
     return billed, collected
+
+
+def _invoice_period_report(invoices):
+    invoices = list(
+        invoices.select_related("tenancy__tenant", "tenancy__unit")
+        .prefetch_related("lines")
+        .order_by("period_start", "id")
+    )
+    invoice_ids = [invoice.pk for invoice in invoices]
+    paid_by_invoice = {
+        row["invoice_id"]: row["total"] or Decimal("0.00")
+        for row in PaymentAllocation.objects.filter(invoice_id__in=invoice_ids)
+        .exclude(
+            payment__instrument_status__in=(
+                Payment.INSTRUMENT_PENDING,
+                Payment.INSTRUMENT_BOUNCED,
+            )
+        )
+        .values("invoice_id")
+        .annotate(total=Sum("amount"))
+    }
+    waived_by_invoice = {
+        row["invoice_id"]: row["total"] or Decimal("0.00")
+        for row in ArrearsWaiver.objects.filter(invoice_id__in=invoice_ids)
+        .values("invoice_id")
+        .annotate(total=Sum("amount"))
+    }
+    summary = {
+        "invoice_count": 0,
+        "invoiced": Decimal("0.00"),
+        "move_in_invoiced": Decimal("0.00"),
+        "monthly_invoiced": Decimal("0.00"),
+        "other_invoiced": Decimal("0.00"),
+        "paid": Decimal("0.00"),
+        "waived": Decimal("0.00"),
+        "balance": Decimal("0.00"),
+    }
+    records = []
+    for invoice in invoices:
+        move_in = any(
+            isinstance(line.metadata, dict) and "move_in_charge_id" in line.metadata
+            for line in invoice.lines.all()
+        )
+        paid = paid_by_invoice.get(invoice.pk, Decimal("0.00"))
+        waived = waived_by_invoice.get(invoice.pk, Decimal("0.00"))
+        balance = max(invoice.total - paid - waived, Decimal("0.00"))
+        payment_status = (
+            "cleared"
+            if balance == 0
+            else "partially_paid"
+            if paid > 0 or waived > 0
+            else "unpaid"
+        )
+        summary["invoice_count"] += 1
+        summary["invoiced"] += invoice.total
+        if move_in:
+            summary["move_in_invoiced"] += invoice.total
+        elif invoice.invoice_type == Invoice.TYPE_STANDARD:
+            summary["monthly_invoiced"] += invoice.total
+        else:
+            summary["other_invoiced"] += invoice.total
+        summary["paid"] += paid
+        summary["waived"] += waived
+        summary["balance"] += balance
+        records.append(
+            {
+                "id": invoice.pk,
+                "number": invoice.number,
+                "tenancy_id": invoice.tenancy_id,
+                "unit_id": invoice.tenancy.unit_id,
+                "period_start": invoice.period_start.isoformat(),
+                "period_end": invoice.period_end.isoformat(),
+                "invoice_type": invoice.invoice_type,
+                "is_move_in": move_in,
+                "total": str(invoice.total),
+                "paid": str(paid),
+                "waived": str(waived),
+                "balance": str(balance),
+                "payment_status": payment_status,
+            }
+        )
+    return summary, records
+
+
+def _property_filter(request, branches):
+    raw_property_id = request.GET.get("property_id", "").strip()
+    if not raw_property_id:
+        return None, None
+    try:
+        property_id = int(raw_property_id)
+        if property_id <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return None, _problem(
+            400,
+            "Invalid property",
+            "property_id must be a positive integer.",
+            "invalid-property",
+        )
+    property_obj = Property.objects.filter(
+        pk=property_id,
+        branch__in=branches,
+    ).first()
+    if property_obj is None:
+        return None, _problem(
+            404,
+            "Property not found",
+            "The property is not part of this agency and branch scope.",
+            "property-not-found",
+        )
+    return property_obj, None
 
 
 def _branch_metrics(branches, start, end):
@@ -438,6 +551,197 @@ def director_properties(request):
     )
 
 
+@require_GET
+def director_property_detail(request, property_id):
+    membership, error = _director_membership(request, request.GET.get("agency_id"))
+    if error:
+        return error
+    branches, error = _branch_scope(request, membership)
+    if error:
+        return error
+    start, end, error = _month_parameter(request)
+    if error:
+        return error
+    property_obj = (
+        Property.objects.filter(pk=property_id, branch__in=branches)
+        .select_related("branch", "landlord")
+        .first()
+    )
+    if property_obj is None:
+        return _problem(
+            404,
+            "Property not found",
+            "The property is not part of this agency and branch scope.",
+            "property-not-found",
+        )
+
+    units = list(
+        Unit.objects.filter(property=property_obj)
+        .select_related("unit_type_definition")
+        .prefetch_related("tenancies__tenant")
+        .order_by("code", "id")
+    )
+    unit_ids = [unit.pk for unit in units]
+    tenancies = [
+        tenancy
+        for unit in units
+        for tenancy in unit.tenancies.all()
+        if tenancy.status != Tenancy.STATUS_CANCELLED
+        and tenancy.start_date <= end
+        and (tenancy.end_date is None or tenancy.end_date >= start)
+    ]
+    tenancy_ids = {tenancy.pk for tenancy in tenancies}
+    invoices = Invoice.objects.filter(
+        tenancy_id__in=[tenancy.pk for tenancy in tenancies],
+        status=Invoice.STATUS_ISSUED,
+        period_start__range=(start, end),
+    )
+    summary, invoice_records = _invoice_period_report(invoices)
+    invoices_by_tenancy = {}
+    for invoice in invoice_records:
+        invoices_by_tenancy.setdefault(invoice["tenancy_id"], []).append(invoice)
+
+    charges_by_unit = {}
+    for charge in UnitCharge.objects.filter(
+        unit_id__in=unit_ids,
+        charge_type__in=(UnitCharge.CHARGE_RENT, UnitCharge.CHARGE_RECURRING),
+        effective_from__lte=start,
+    ).filter(
+        Q(effective_to__isnull=True) | Q(effective_to__gte=start)
+    ).order_by("unit_id", "charge_type", "charge_code", "effective_from", "id"):
+        charges_by_unit.setdefault(charge.unit_id, []).append(charge)
+
+    unit_records = []
+    for unit in units:
+        active_charges = charges_by_unit.get(unit.pk, [])
+        rent_candidates = [
+            charge
+            for charge in active_charges
+            if charge.charge_type == UnitCharge.CHARGE_RENT
+        ]
+        rent_charge = next(
+            (
+                charge
+                for charge in reversed(rent_candidates)
+                if charge.effective_from <= start
+                and (charge.effective_to is None or charge.effective_to >= start)
+            ),
+            rent_candidates[-1] if rent_candidates else None,
+        )
+        recurring_charges = [
+            charge
+            for charge in active_charges
+            if charge.charge_type == UnitCharge.CHARGE_RECURRING
+        ]
+        tenancy_records = []
+        for tenancy in unit.tenancies.all():
+            if tenancy.pk not in tenancy_ids:
+                continue
+            tenancy_invoices = invoices_by_tenancy.get(tenancy.pk, [])
+            invoiced = sum(
+                (Decimal(item["total"]) for item in tenancy_invoices),
+                Decimal("0.00"),
+            )
+            paid = sum(
+                (Decimal(item["paid"]) for item in tenancy_invoices),
+                Decimal("0.00"),
+            )
+            waived = sum(
+                (Decimal(item["waived"]) for item in tenancy_invoices),
+                Decimal("0.00"),
+            )
+            balance = sum(
+                (Decimal(item["balance"]) for item in tenancy_invoices),
+                Decimal("0.00"),
+            )
+            tenancy_records.append(
+                {
+                    "id": tenancy.pk,
+                    "tenant_name": tenancy.tenant.name,
+                    "start_date": tenancy.start_date.isoformat(),
+                    "end_date": tenancy.end_date.isoformat() if tenancy.end_date else None,
+                    "status": tenancy.status,
+                    "invoiced": str(invoiced),
+                    "paid": str(paid),
+                    "waived": str(waived),
+                    "balance": str(balance),
+                    "payment_status": (
+                        "not_invoiced"
+                        if not tenancy_invoices
+                        else "cleared"
+                        if balance == 0
+                        else "partially_paid"
+                        if paid > 0 or waived > 0
+                        else "unpaid"
+                    ),
+                    "invoices": tenancy_invoices,
+                }
+            )
+        unit_records.append(
+            {
+                "id": unit.pk,
+                "code": unit.code,
+                "unit_type": unit.unit_type,
+                "status": unit.status,
+                "monthly_rent": str(
+                    rent_charge.amount
+                    if rent_charge
+                    else (
+                        unit.unit_type_definition.monthly_rent
+                        if unit.unit_type_definition_id
+                        else property_obj.default_rent
+                    )
+                ),
+                "fixed_utilities": str(
+                    sum(
+                        (charge.amount for charge in recurring_charges),
+                        Decimal("0.00"),
+                    )
+                ),
+                "fixed_utility_items": [
+                    {"name": charge.name, "amount": str(charge.amount)}
+                    for charge in recurring_charges
+                ],
+                "tenancies": tenancy_records,
+            }
+        )
+
+    return JsonResponse(
+        {
+            "agency": {"id": membership.agency_id, "name": membership.agency.name},
+            "period": {"from": start.isoformat(), "to": end.isoformat()},
+            "property": {
+                "id": property_obj.pk,
+                "name": property_obj.name,
+                "property_type": property_obj.property_type,
+                "location": property_obj.location,
+                "address": property_obj.address,
+                "branch": {
+                    "id": property_obj.branch_id,
+                    "name": property_obj.branch.name,
+                    "town": property_obj.branch.town,
+                },
+                "landlord": (
+                    {"id": property_obj.landlord_id, "name": property_obj.landlord.name}
+                    if property_obj.landlord_id
+                    else None
+                ),
+            },
+            "summary": {
+                "invoice_count": summary["invoice_count"],
+                "invoiced": str(summary["invoiced"]),
+                "move_in_invoiced": str(summary["move_in_invoiced"]),
+                "monthly_invoiced": str(summary["monthly_invoiced"]),
+                "other_invoiced": str(summary["other_invoiced"]),
+                "paid": str(summary["paid"]),
+                "waived": str(summary["waived"]),
+                "balance": str(summary["balance"]),
+            },
+            "units": unit_records,
+        }
+    )
+
+
 def _remittance_payload(remittance):
     return {
         "id": remittance.pk,
@@ -478,48 +782,81 @@ def director_financials(request):
     start, end, error = _month_parameter(request)
     if error:
         return error
-    billed, collected = _month_invoice_totals(branches, start, end)
-    remittances = LandlordRemittance.objects.filter(
-        landlord__branch__in=branches,
-        period_start__lte=end,
-        period_end__gte=start,
-    ).select_related("landlord__branch", "prepared_by", "reviewed_by")
-    remittance_summary = remittances.aggregate(
-        remittance_count=Count("id"),
-        pending_count=Count(
-            "id",
-            filter=Q(status=LandlordRemittance.STATUS_AWAITING_APPROVAL),
-        ),
-        pending_amount=Sum(
-            "net_payout",
-            filter=Q(status=LandlordRemittance.STATUS_AWAITING_APPROVAL),
-        ),
-        approved_count=Count(
-            "id",
-            filter=Q(status=LandlordRemittance.STATUS_APPROVED),
-        ),
-        approved_amount=Sum(
-            "net_payout",
-            filter=Q(status=LandlordRemittance.STATUS_APPROVED),
-        ),
-        paid_count=Count(
-            "id",
-            filter=Q(status=LandlordRemittance.STATUS_PAID),
-        ),
-        paid_amount=Sum(
-            "net_payout",
-            filter=Q(status=LandlordRemittance.STATUS_PAID),
-        ),
-        tax_withheld=Sum(
-            "tax_amount",
-            filter=~Q(status=LandlordRemittance.STATUS_REJECTED),
-        ),
+    property_obj, error = _property_filter(request, branches)
+    if error:
+        return error
+    invoice_queryset = Invoice.objects.filter(
+        branch__in=branches,
+        status=Invoice.STATUS_ISSUED,
+        period_start__range=(start, end),
     )
-    pending_waivers = list(
-        InvoiceWaiverRequest.objects.filter(
-            status=InvoiceWaiverRequest.STATUS_PENDING,
-            unit__property__branch__in=branches,
+    allocations = PaymentAllocation.objects.filter(
+        invoice__branch__in=branches,
+        payment__received_at__date__range=(start, end),
+    ).exclude(
+        payment__instrument_status__in=(
+            Payment.INSTRUMENT_PENDING,
+            Payment.INSTRUMENT_BOUNCED,
         )
+    )
+    waiver_requests = InvoiceWaiverRequest.objects.filter(
+        status=InvoiceWaiverRequest.STATUS_PENDING,
+        unit__property__branch__in=branches,
+        period_start__range=(start, end),
+    )
+    if property_obj:
+        invoice_queryset = invoice_queryset.filter(
+            tenancy__unit__property=property_obj
+        )
+        allocations = allocations.filter(
+            invoice__tenancy__unit__property=property_obj
+        )
+        waiver_requests = waiver_requests.filter(
+            unit__property=property_obj
+        )
+    invoice_summary, invoice_records = _invoice_period_report(invoice_queryset)
+    collected = allocations.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    remittances = list(
+        LandlordRemittance.objects.filter(
+            landlord__branch__in=branches,
+            period_start__lte=end,
+            period_end__gte=start,
+        )
+        .select_related("landlord__branch", "prepared_by", "reviewed_by")
+        .order_by("-period_end", "-revision", "-id")
+    )
+    if property_obj:
+        remittances = [
+            item
+            for item in remittances
+            if any(
+                isinstance(row, dict)
+                and str(row.get("property_id", row.get("id", ""))) == str(property_obj.pk)
+                for row in (
+                    item.statement_snapshot.get("properties") or []
+                    if isinstance(item.statement_snapshot, dict)
+                    else []
+                )
+            )
+        ]
+    not_rejected = [
+        item for item in remittances
+        if item.status != LandlordRemittance.STATUS_REJECTED
+    ]
+    pending = [
+        item for item in remittances
+        if item.status == LandlordRemittance.STATUS_AWAITING_APPROVAL
+    ]
+    approved = [
+        item for item in remittances
+        if item.status == LandlordRemittance.STATUS_APPROVED
+    ]
+    paid = [
+        item for item in remittances
+        if item.status == LandlordRemittance.STATUS_PAID
+    ]
+    pending_waivers = list(
+        waiver_requests
         .select_related(
             "invoice__tenancy__tenant",
             "invoice__tenancy__unit__property",
@@ -529,38 +866,65 @@ def director_financials(request):
         .prefetch_related("unit__tenancies__tenant")
         .order_by("created_at", "id")[:200]
     )
-    pending_waiver_count = InvoiceWaiverRequest.objects.filter(
-        status=InvoiceWaiverRequest.STATUS_PENDING,
-        unit__property__branch__in=branches,
-    ).count()
+    pending_waiver_count = waiver_requests.count()
     approved_waivers = {
         row["invoice_id"]: row["total"] or Decimal("0.00")
         for row in ArrearsWaiver.objects.filter(
-            invoice_id__in=[item.invoice_id for item in pending_waivers if item.invoice_id]
+            invoice_id__in=[item["id"] for item in invoice_records]
         )
         .values("invoice_id")
         .annotate(total=Sum("amount"))
     }
-    remittance_records = list(
-        remittances.order_by("-period_end", "-revision", "-id")[:200]
-    )
+    remittance_records = remittances[:200]
+    properties = Property.objects.filter(branch__in=branches).select_related(
+        "branch"
+    ).order_by("branch__name", "name", "id")
     return JsonResponse(
         {
             "agency": {"id": membership.agency_id, "name": membership.agency.name},
             "period": {"from": start.isoformat(), "to": end.isoformat()},
+            "selected_property_id": property_obj.pk if property_obj else None,
             "summary": {
-                "billed_rent": str(billed),
+                "billed_rent": str(invoice_summary["invoiced"]),
                 "collected_rent": str(collected),
-                "remittance_count": remittance_summary["remittance_count"] or 0,
-                "pending_approval_count": remittance_summary["pending_count"] or 0,
-                "pending_approval": str(remittance_summary["pending_amount"] or Decimal("0.00")),
-                "approved_payout_count": remittance_summary["approved_count"] or 0,
-                "approved_payouts": str(remittance_summary["approved_amount"] or Decimal("0.00")),
-                "paid_payout_count": remittance_summary["paid_count"] or 0,
-                "paid_payouts": str(remittance_summary["paid_amount"] or Decimal("0.00")),
-                "tax_withheld": str(remittance_summary["tax_withheld"] or Decimal("0.00")),
+                "move_in_invoiced": str(invoice_summary["move_in_invoiced"]),
+                "monthly_invoiced": str(invoice_summary["monthly_invoiced"]),
+                "other_invoiced": str(invoice_summary["other_invoiced"]),
+                "paid_against_invoices": str(invoice_summary["paid"]),
+                "waived_amount": str(invoice_summary["waived"]),
+                "invoice_balance": str(invoice_summary["balance"]),
+                "remittance_total": str(
+                    sum((item.net_payout for item in not_rejected), Decimal("0.00"))
+                ),
+                "remittance_count": len(remittances),
+                "pending_approval_count": len(pending),
+                "pending_approval": str(
+                    sum((item.net_payout for item in pending), Decimal("0.00"))
+                ),
+                "approved_payout_count": len(approved),
+                "approved_payouts": str(
+                    sum((item.net_payout for item in approved), Decimal("0.00"))
+                ),
+                "paid_payout_count": len(paid),
+                "paid_payouts": str(
+                    sum((item.net_payout for item in paid), Decimal("0.00"))
+                ),
+                "tax_withheld": str(
+                    sum(
+                        (item.tax_amount or Decimal("0.00") for item in not_rejected),
+                        Decimal("0.00"),
+                    )
+                ),
             },
             "remittances": [_remittance_payload(item) for item in remittance_records],
+            "property_options": [
+                {
+                    "id": item.pk,
+                    "name": item.name,
+                    "branch_name": item.branch.name,
+                }
+                for item in properties
+            ],
             "pending_waiver_count": pending_waiver_count,
             "waiver_requests": [
                 {

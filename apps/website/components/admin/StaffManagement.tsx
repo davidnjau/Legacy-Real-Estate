@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   Pencil,
   RefreshCw,
@@ -12,6 +12,7 @@ import {
 import ExistingAccountPicker, {
   type ExistingAccount,
 } from '../property-officer/ExistingAccountPicker';
+import { PortalLoading, PortalPagination, usePortalPagination } from '../property-officer/PortalUI';
 
 type Branch = {
   id: number;
@@ -85,6 +86,10 @@ export default function StaffManagement({
   const [editBranchIds, setEditBranchIds] = useState<number[]>([]);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [branchFilter, setBranchFilter] = useState('all');
 
   useEffect(() => {
     setAgencyId(selectedAgencyId === null ? '' : String(selectedAgencyId));
@@ -119,7 +124,14 @@ export default function StaffManagement({
   }
 
   useEffect(() => {
-    if (agencyId) void loadStaff(agencyId);
+    if (agencyId) {
+      void loadStaff(agencyId);
+    } else {
+      setLoading(false);
+      setStaff([]);
+      setBranches([]);
+      setRoles([]);
+    }
   }, [agencyId]);
 
   async function csrfToken() {
@@ -263,6 +275,28 @@ export default function StaffManagement({
     setEditBranchIds(member.branches.map((branch) => branch.id));
   }
 
+  const filteredStaff = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return staff.filter((member) => {
+      const matchesSearch = !query || [
+        member.name,
+        member.email,
+        member.phone || '',
+        member.roles.join(' '),
+        member.branches.map(branchDisplayName).join(' '),
+      ].join(' ').toLowerCase().includes(query);
+      const matchesStatus = statusFilter === 'all' || member.status === statusFilter;
+      const matchesRole = roleFilter === 'all'
+        || member.roles.includes(roleFilter)
+        || (member.pending_roles ?? []).includes(roleFilter);
+      const matchesBranch = branchFilter === 'all'
+        || member.branches.some((branch) => String(branch.id) === branchFilter)
+        || (member.pending_branch_ids ?? []).some((id) => String(id) === branchFilter);
+      return matchesSearch && matchesStatus && matchesRole && matchesBranch;
+    });
+  }, [branchFilter, roleFilter, search, staff, statusFilter]);
+  const pagination = usePortalPagination(filteredStaff);
+
   return (
     <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -380,6 +414,33 @@ export default function StaffManagement({
         </form>
       )}
 
+      <div className="mt-5 grid gap-3 rounded-2xl border border-[#e7ebe5] bg-[#f8faf7] p-4 sm:grid-cols-2 xl:grid-cols-4">
+        <label className="text-xs font-semibold text-slate-600">Search staff
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, email, phone, role, branch" className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal" />
+        </label>
+        <label className="text-xs font-semibold text-slate-600">Status
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal">
+            <option value="all">All statuses</option>
+            <option value="active">Active</option>
+            <option value="pending_activation">Pending activation</option>
+            <option value="suspended">Suspended</option>
+          </select>
+        </label>
+        <label className="text-xs font-semibold text-slate-600">Role
+          <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal">
+            <option value="all">All roles</option>
+            {roles.map((role) => <option key={role} value={role}>{role}</option>)}
+          </select>
+        </label>
+        <label className="text-xs font-semibold text-slate-600">Branch
+          <select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal">
+            <option value="all">All branches</option>
+            {branches.map((branch) => <option key={branch.id} value={branch.id}>{branchDisplayName(branch)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      {loading ? <div className="mt-5"><PortalLoading label="Loading agency staff..." rows={5} /></div> : (
       <div className="mt-5 overflow-x-auto">
         <table className="w-full min-w-[880px] text-left text-sm text-slate-700">
           <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -393,7 +454,7 @@ export default function StaffManagement({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {staff.map((member) => {
+            {pagination.pageRecords.map((member) => {
               const roleLabel = member.roles.length ? member.roles.join(', ') : 'Unassigned';
               const pendingRoleLabel = member.pending_roles?.length
                 ? `${member.pending_roles.join(', ')} (confirmation pending)`
@@ -489,7 +550,7 @@ export default function StaffManagement({
                               <Pencil size={12} /> Edit
                             </button>
                           )}
-                          {((!member.account_active && member.active) || member.pending_roles?.length) && (
+                          {((!member.account_active && member.active) || Boolean(member.pending_roles?.length)) && (
                             <button type="button" disabled={busy} onClick={() => void resendActivation(member)} className="inline-flex items-center gap-1 rounded-md border border-amber-300 px-2.5 py-1.5 text-xs font-semibold text-amber-900 disabled:opacity-50">
                               <RefreshCw size={12} /> Resend
                             </button>
@@ -519,13 +580,14 @@ export default function StaffManagement({
                 </tr>
               );
             })}
-            {!loading && staff.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-10 text-center text-sm text-slate-500">No staff accounts for this agency yet.</td></tr>
+            {filteredStaff.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-10 text-center text-sm text-slate-500">{staff.length === 0 ? 'No staff accounts for this agency yet.' : 'No staff accounts match these filters.'}</td></tr>
             )}
           </tbody>
         </table>
-        {loading && <p className="py-6 text-center text-sm text-slate-500">Loading agency staff…</p>}
+        <PortalPagination page={pagination.page} pageCount={pagination.pageCount} pageSize={pagination.pageSize} total={filteredStaff.length} onPageChange={pagination.setPage} onPageSizeChange={pagination.setPageSize} />
       </div>
+      )}
     </section>
   );
 }

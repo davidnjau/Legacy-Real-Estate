@@ -321,6 +321,29 @@ def generate_monthly_invoice(tenancy, period_start, *, status=Invoice.STATUS_ISS
             _link_invoice_waiver_requests(invoice)
         return invoice, False
 
+    overlapping_invoice = Invoice.objects.filter(
+        tenancy=tenancy,
+        invoice_type=Invoice.TYPE_STANDARD,
+        status__in=(Invoice.STATUS_DRAFT, Invoice.STATUS_ISSUED),
+        period_start__lte=period_end,
+        period_end__gte=period_start,
+    ).first()
+    if overlapping_invoice:
+        if (
+            overlapping_invoice.period_start <= period_start
+            and overlapping_invoice.period_end >= period_end
+        ):
+            with transaction.atomic():
+                invoice = Invoice.objects.select_for_update().get(
+                    pk=overlapping_invoice.pk
+                )
+                _link_invoice_waiver_requests(invoice)
+            return invoice, False
+        raise ValueError(
+            f"Invoice {overlapping_invoice.number} already covers part of "
+            f"the {period_start:%B %Y} billing period."
+        )
+
     water_line = _water_line(tenancy.unit, period_start)
     if notice_month:
         lines = [water_line] if water_line else []

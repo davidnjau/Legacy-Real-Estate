@@ -4087,36 +4087,153 @@ def _move_out_settlement_balances_changed(settlement):
 
 def _move_out_settlement_pdf(settlement):
     tenancy = settlement.tenancy
-    lines = [
-        "FINAL MOVE-OUT SETTLEMENT STATEMENT",
-        f"Tenant: {tenancy.tenant.name}",
-        f"Property: {tenancy.unit.property.name}",
-        f"Unit: {tenancy.unit.code}",
-        f"Move-out date: {settlement.actual_move_out_date.isoformat()}",
-        f"Statement status: {settlement.status.replace('_', ' ').title()}",
-        "",
-        "SETTLEMENT",
-        f"Security deposit held: KES {settlement.deposit_balance}",
-        f"Rent and other arrears: KES {settlement.arrears_amount}",
-        f"Final metered utilities deducted from deposit: KES {settlement.utility_amount}",
-    ]
-    for reading in settlement.final_readings:
-        lines.append(
-            f"{reading['name']}: {reading['usage']} units x KES "
-            f"{reading['rate_per_unit']} = KES {reading['amount']}"
+    property_obj, branch, agency_name = _property_document_context(tenancy)
+    currency = property_obj.currency_code
+    reference = f"MOS-{settlement.pk}"
+    pages = []
+
+    def add_page(*, continued=False):
+        commands = []
+        _pdf_header(
+            commands,
+            "MOVE-OUT SETTLEMENT",
+            reference,
+            agency_name,
+            continued=continued,
         )
-    lines.extend([
-        f"Damage deductions: KES {settlement.damages_amount}",
-        f"Total deposit deduction: KES {settlement.deduction_from_deposit}",
-        f"Refund due: KES {settlement.refund_amount}",
-        f"Tenant shortfall: KES {settlement.shortfall_amount}",
-        f"Payment reference: {settlement.payout_reference or 'Not recorded'}",
-        f"Payout date: {settlement.payout_date.isoformat() if settlement.payout_date else 'Not recorded'}",
-        "",
-        "This statement is retained in the tenant portal. Contact property management",
+        _pdf_footer(commands, reference, agency_name)
+        pages.append(commands)
+        return commands
+
+    commands = add_page()
+    _pdf_rect(commands, 40, 662, 532, 25, _PDF_PALE)
+    _pdf_rect(commands, 40, 662, 4, 25, _PDF_GREEN)
+    _pdf_text(
+        commands,
+        54,
+        671,
+        f"STATUS  {settlement.status.replace('_', ' ').upper()}",
+        size=8,
+        bold=True,
+        color=_PDF_GREEN,
+    )
+    _pdf_card(
+        commands,
+        40,
+        520,
+        258,
+        120,
+        "Tenant & tenancy",
+        [
+            ("Tenant", tenancy.tenant.name),
+            ("Unit", tenancy.unit.code),
+            ("Move-out date", settlement.actual_move_out_date.isoformat()),
+            ("Prepared by", settlement.prepared_by.get_full_name()),
+        ],
+    )
+    _pdf_card(
+        commands,
+        314,
+        520,
+        258,
+        120,
+        "Property",
+        [
+            ("Property", property_obj.name),
+            ("Branch", f"{branch.name}, {branch.town}"),
+            ("Address", property_obj.address or property_obj.location),
+            ("Maintenance required", "Yes" if settlement.maintenance_required else "No"),
+        ],
+    )
+    y = 500
+
+    def ensure_space(height):
+        nonlocal commands, y
+        if y - height < 72:
+            commands = add_page(continued=True)
+            y = 674
+
+    def add_heading(title):
+        nonlocal y
+        ensure_space(52)
+        _pdf_text(commands, 40, y, title.upper(), size=8, bold=True, color=_PDF_GREEN)
+        _pdf_line(commands, 40, y - 7, 572, y - 7)
+        y -= 22
+
+    def add_row(label, value, *, bold=False):
+        nonlocal y
+        lines = textwrap.wrap(str(label), width=66, break_long_words=True) or [""]
+        height = max(22, len(lines) * 11 + 8)
+        ensure_space(height)
+        if int(y) % 2:
+            _pdf_rect(commands, 40, y - height + 4, 532, height, _PDF_PALE)
+        for index, line in enumerate(lines):
+            _pdf_text(
+                commands,
+                52,
+                y - 12 - (index * 11),
+                line,
+                size=8,
+                bold=bold,
+                color=_PDF_INK,
+            )
+        _pdf_right_text(
+            commands,
+            560,
+            y - 12,
+            value,
+            size=8,
+            bold=True,
+            color=_PDF_DARK if bold else _PDF_INK,
+        )
+        y -= height
+
+    def amount(value):
+        return f"{currency} {value:,.2f}"
+
+    add_heading("Settlement summary")
+    add_row("Security deposit held", amount(settlement.deposit_balance))
+    add_row("Rent and other arrears", amount(settlement.arrears_amount))
+    add_row("Final metered utilities", amount(settlement.utility_amount))
+    add_row("Damage deductions", amount(settlement.damages_amount))
+    add_row("Total deduction from deposit", amount(settlement.deduction_from_deposit), bold=True)
+    add_row("Refund due to tenant", amount(settlement.refund_amount), bold=True)
+    add_row("Tenant shortfall", amount(settlement.shortfall_amount), bold=True)
+
+    add_heading("Final meter readings")
+    if settlement.final_readings:
+        for reading in settlement.final_readings:
+            label = (
+                f"{reading.get('name') or reading.get('utility_type') or 'Utility'}: "
+                f"{reading.get('usage', 'Not recorded')} units x "
+                f"{currency} {reading.get('rate_per_unit', '0')} per unit"
+            )
+            add_row(label, amount(Decimal(str(reading.get("amount", "0")))))
+    else:
+        add_row("No final meter readings recorded", "Not recorded")
+
+    add_heading("Damage deductions")
+    if settlement.damage_items:
+        for item in settlement.damage_items:
+            add_row(item.get("description") or "Damage item", amount(Decimal(str(item.get("amount", "0")))))
+    else:
+        add_row("No damage deductions recorded", "Not recorded")
+
+    add_heading("Payout details")
+    add_row("Payment reference", settlement.payout_reference or "Not recorded")
+    add_row(
+        "Payout date",
+        settlement.payout_date.isoformat() if settlement.payout_date else "Not recorded",
+    )
+    if settlement.rejection_reason:
+        add_row(f"Review note: {settlement.rejection_reason}", "")
+    add_heading("Important")
+    add_row(
+        "This statement is retained in the tenant portal. Contact property management "
         "if any settlement amount or final meter reading requires clarification.",
-    ])
-    return _simple_pdf(lines)
+        "",
+    )
+    return _branded_pdf(pages)
 
 
 def _require_move_out_recalculation(settlement, request, reason):
