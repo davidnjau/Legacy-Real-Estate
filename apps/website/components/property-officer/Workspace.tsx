@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
   FileText,
   Map as MapIcon,
+  Search,
   TrendingUp,
   Users,
   WalletCards,
@@ -25,6 +26,7 @@ import LeadViewingManager from './LeadViewingManager';
 import LegacyImportManager from './LegacyImportManager';
 import MigrationLedger from './MigrationLedger';
 import MonthlyPropertyLedger from './MonthlyPropertyLedger';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type PropertyRecord = {
   id: number;
@@ -88,6 +90,9 @@ function TenancyRegister() {
   const [units, setUnits] = useState<UnitRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [propertyFilter, setPropertyFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
     if (!agency) return;
@@ -128,27 +133,62 @@ function TenancyRegister() {
     },
     [records, units, visiblePropertyIds],
   );
-  const propertyById = useMemo(
-    () => new Map(visibleProperties.map((property) => [property.id, property])),
-    [visibleProperties],
+  const propertyByUnitId = useMemo(
+    () => new Map(units.map((unit) => [unit.id, unit.property_id])),
+    [units],
   );
+  const statusOptions = useMemo(
+    () => [...new Set(visibleRecords.map((record) => record.status))].sort(),
+    [visibleRecords],
+  );
+  const filteredRecords = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return visibleRecords.filter((record) => {
+      const propertyId = propertyByUnitId.get(record.unit_id);
+      const matchesProperty = propertyFilter === 'all' || String(propertyId) === propertyFilter;
+      const matchesStatus = statusFilter === 'all' || record.status === statusFilter;
+      const matchesSearch = !query || [
+        record.tenant_name,
+        record.property_name,
+        record.unit_code,
+        record.status,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesProperty && matchesStatus && matchesSearch;
+    });
+  }, [propertyByUnitId, propertyFilter, search, statusFilter, visibleRecords]);
+  const tenancyPagination = usePortalPagination(filteredRecords);
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header>
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency?.name || 'Agency'}</p>
-        <h1 className="mt-1 text-2xl font-bold text-slate-950">Tenancy register</h1>
-        <p className="mt-1 text-sm text-slate-500">Saved tenancy and tenant assignments in your branch scope.</p>
-      </header>
       {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</p>}
-      {loading ? <p role="status" className="text-sm text-slate-500">Loading tenancy records…</p> : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+      {loading ? <PortalLoading label="Loading tenancy records…" rows={4} /> : (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="grid gap-3 border-b border-slate-100 p-4 sm:grid-cols-3">
+            <label className="relative text-xs font-semibold text-slate-600 sm:col-span-1">
+              <span className="sr-only">Search tenancies</span>
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tenant, property, or unit" className="w-full rounded-xl border border-slate-300 py-2.5 pl-9 pr-3 text-sm" />
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Property
+              <select value={propertyFilter} onChange={(event) => setPropertyFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+                <option value="all">All properties</option>
+                {visibleProperties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Tenancy status
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+                <option value="all">All statuses</option>
+                {statusOptions.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>{['Tenant', 'Property', 'Unit', 'Start date', 'End date', 'Status'].map((label) => <th key={label} className="px-4 py-3">{label}</th>)}</tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {visibleRecords.map((tenancy) => (
+              {tenancyPagination.pageRecords.map((tenancy) => (
                 <tr key={tenancy.id}>
                   <td className="px-4 py-3 font-semibold">{tenancy.tenant_name}</td>
                   <td className="px-4 py-3">{tenancy.property_name}</td>
@@ -158,11 +198,13 @@ function TenancyRegister() {
                   <td className="px-4 py-3">{tenancy.status}</td>
                 </tr>
               ))}
-              {!visibleRecords.length && (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">No tenancies have been recorded for the selected branches yet.</td></tr>
+              {!filteredRecords.length && (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">{visibleRecords.length ? 'No tenancies match the selected filters.' : 'No tenancies have been recorded for the selected branches yet.'}</td></tr>
               )}
             </tbody>
           </table>
+          </div>
+          <PortalPagination {...tenancyPagination} total={filteredRecords.length} onPageChange={tenancyPagination.setPage} onPageSizeChange={tenancyPagination.setPageSize} />
         </div>
       )}
     </main>
@@ -321,10 +363,7 @@ function PropertyOfficerOverview() {
       </section>
       {error && <p role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</p>}
       {loading ? (
-        <div role="status" className="flex items-center gap-3 rounded-2xl border border-[#e7ebe5] bg-white p-5 text-sm text-[#718078] shadow-[0_6px_18px_rgba(27,48,34,0.025)]">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#dbe5d6] border-t-[#638256]" />
-          Loading saved agency records…
-        </div>
+        <PortalLoading label="Loading your branch operations…" rows={5} />
       ) : data && (
         <>
           <section aria-label="Operational metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

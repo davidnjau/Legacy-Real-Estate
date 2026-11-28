@@ -120,7 +120,95 @@ from users.sms import (
     send_sms,
 )
 from users.totp import _code_for_counter, encrypt_secret, verify_code
-from users.views import _has_role
+from users.views import (
+    _agreement_pdf,
+    _has_role,
+    _payment_receipt_pdf,
+    _queue_tenant_account_link_notification,
+)
+
+
+class MoveInDocumentRenderingTests(SimpleTestCase):
+    def setUp(self):
+        agency = SimpleNamespace(name="Legacy Real Estate")
+        branch = SimpleNamespace(name="Nakuru", town="Nakuru", agency=agency)
+        property_obj = SimpleNamespace(
+            name="Acacia Court",
+            address="12 Kenyatta Avenue",
+            location="Nakuru",
+            currency_code="KES",
+            branch=branch,
+        )
+        unit = SimpleNamespace(code="A-01", property=property_obj)
+        tenant = SimpleNamespace(
+            name="Amina Njeri",
+            phone="254712345678",
+            email="amina@example.test",
+            contact_person="",
+            tenant_type=Tenant.INDIVIDUAL,
+            get_tenant_type_display=lambda: "Individual",
+        )
+        self.tenancy = SimpleNamespace(
+            tenant=tenant,
+            unit=unit,
+            start_date=date(2026, 12, 1),
+            end_date=None,
+            due_day=5,
+            notice_period_days=30,
+        )
+        charges = [
+            SimpleNamespace(
+                description=f"Move-in charge {index:02d}",
+                amount=Decimal("1250.00"),
+            )
+            for index in range(1, 18)
+        ]
+        self.package = SimpleNamespace(
+            agreement_reference="MIA-20261128-AB12CD34",
+            charges=SimpleNamespace(all=lambda: charges),
+        )
+        self.invoice = SimpleNamespace(
+            number="INV-NAK-2026-000001",
+            period_start=date(2026, 12, 1),
+            period_end=date(2026, 12, 31),
+        )
+        self.payment = SimpleNamespace(
+            account_reference="TXN-REF-200",
+            reference="ONB-PAYMENT-200",
+            get_source_display=lambda: "M-Pesa",
+            received_at=timezone.now(),
+        )
+        self.receipt = SimpleNamespace(
+            number="RCP-NAK-2026-000001",
+            amount=Decimal("25000.00"),
+            balance_after=Decimal("0.00"),
+        )
+
+    def test_agreement_is_branded_and_paginates_long_charge_schedules(self):
+        pdf = _agreement_pdf(self.tenancy, self.package)
+
+        self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        self.assertIn(b"/Count 2", pdf)
+        self.assertIn(b"LEGACY", pdf)
+        self.assertIn(b"TENANCY TERMS", pdf)
+        self.assertIn(b"MOVE-IN CHARGES \\(CONTINUED\\)", pdf)
+        self.assertIn(b"Move-in charge 17", pdf)
+        self.assertIn(b"TOTAL MOVE-IN CHARGES", pdf)
+
+    def test_payment_receipt_has_branded_payment_and_balance_details(self):
+        pdf = _payment_receipt_pdf(
+            self.tenancy,
+            self.invoice,
+            self.payment,
+            self.receipt,
+        )
+
+        self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        self.assertIn(b"PAYMENT RECEIPT", pdf)
+        self.assertIn(b"AMOUNT RECEIVED", pdf)
+        self.assertIn(b"TXN-REF-200", pdf)
+        self.assertIn(b"Balance after payment", pdf)
+        self.assertIn(b"KES 25,000.00", pdf)
 
 
 class DarajaClientTests(SimpleTestCase):
@@ -755,6 +843,40 @@ class UserAccessTests(TestCase):
         self.assertEqual(staff_login.status_code, 200)
         self.assertIn("Property Officer / Agent", staff_login.json()["user"]["roles"])
 
+    def test_existing_staff_role_activation_requires_and_sets_new_password(self):
+        account = self.create_user(email="existing-role-activation@example.com")
+        membership, _ = AgencyMembership.objects.get_or_create(
+            profile=account.profile,
+            agency=self.nairobi.agency,
+        )
+        challenge_code = "481526"
+        challenge = StaffActivationChallenge.objects.create(
+            membership=membership,
+            existing_user=account,
+            pending_roles=["Accountant"],
+            pending_branch_ids=[self.nairobi.pk],
+            code_hash=make_password(challenge_code),
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        activated = self.client.post(
+            "/api/v1/auth/staff/activate",
+            data={
+                "challenge_id": str(challenge.pk),
+                "code": challenge_code,
+                "password": "New-Existing-Staff-Passphrase-71!",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(activated.status_code, 200, activated.content)
+        account.refresh_from_db()
+        membership.refresh_from_db()
+        self.assertTrue(account.check_password("New-Existing-Staff-Passphrase-71!"))
+        self.assertTrue(membership.roles.filter(name="Accountant").exists())
+        self.assertTrue(membership.branches.filter(pk=self.nairobi.pk).exists())
+        self.assertFalse(StaffActivationChallenge.objects.filter(pk=challenge.pk).exists())
+
     def test_director_staff_list_is_limited_to_director_agency(self):
         director = self.create_user(email="scoped-director@example.com")
         director_membership, _ = AgencyMembership.objects.get_or_create(
@@ -1258,8 +1380,15 @@ class UserAccessTests(TestCase):
             ).exists()
         )
 
+    @patch("users.views._send_landlord_activation_email")
+    @patch("users.views.email_delivery_is_configured", return_value=True)
     @patch("users.views.queue_template_sms")
-    def test_property_officer_invites_and_activates_landlord(self, queue_sms):
+    def test_property_officer_invites_and_activates_landlord(
+        self,
+        queue_sms,
+        email_is_configured,
+        send_activation_email,
+    ):
         officer = self.create_user(email="landlord-onboarding-officer@example.com")
         membership, _ = AgencyMembership.objects.get_or_create(
             profile=officer.profile,
@@ -1283,6 +1412,7 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(invited.status_code, 201, invited.content)
         self.assertTrue(invited.json()["activation_sms_queued"])
+        self.assertTrue(invited.json()["activation_email_sent"])
         landlord = Landlord.objects.get(id_or_registration_number="LANDLORD-ONBOARD-1")
         user = self.user_model.objects.get(email="new-landlord@example.com")
         self.assertFalse(user.is_active)
@@ -1294,11 +1424,23 @@ class UserAccessTests(TestCase):
         challenge_id = challenge.pk
         self.assertEqual(str(challenge.pk), str(challenge_id))
         self.assertNotEqual(challenge.code_hash, code)
+        send_activation_email.assert_called_once_with(
+            user,
+            challenge.pk,
+            code,
+            link_existing_account=False,
+        )
+        activation_context = self.client.get(
+            "/api/v1/auth/landlord/activate/context",
+            {"challenge_id": challenge.pk},
+        )
+        self.assertEqual(activation_context.status_code, 200)
+        self.assertFalse(activation_context.json()["existing_account"])
 
         activated = self.client.post(
             "/api/v1/auth/landlord/activate",
             data={
-                "challenge_id": str(challenge.pk),
+                "phone": landlord.phone,
                 "code": code,
             },
             content_type="application/json",
@@ -1309,24 +1451,13 @@ class UserAccessTests(TestCase):
         self.assertFalse(user.has_usable_password())
         self.assertTrue(user.groups.filter(name=LANDLORD_PORTAL_ROLE).exists())
         self.assertFalse(LandlordActivationChallenge.objects.filter(landlord=landlord).exists())
-
-        challenge_response = self.client.post(
-            "/api/v1/auth/phone-otp/request",
-            data={"phone": user.profile.phone},
-            content_type="application/json",
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            user.pk,
         )
-        self.assertEqual(challenge_response.status_code, 202)
-        login_code = queue_sms.call_args.args[2]["code"]
-        login = self.client.post(
-            "/api/v1/auth/phone-otp/verify",
-            data={
-                "challenge_id": challenge_response.json()["challenge_id"],
-                "code": login_code,
-            },
-            content_type="application/json",
-        )
-        self.assertEqual(login.status_code, 200)
-        self.assertIn(LANDLORD_PORTAL_ROLE, login.json()["user"]["roles"])
+        self.assertEqual(self.client.session["auth_scope"], "residential")
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 43190)
+        self.assertLessEqual(self.client.session.get_expiry_age(), 43200)
 
     @patch("users.views.queue_template_sms")
     def test_property_officer_links_existing_account_to_landlord_without_reactivation(
@@ -1385,6 +1516,15 @@ class UserAccessTests(TestCase):
         challenge = LandlordActivationChallenge.objects.get(landlord=landlord)
         self.assertEqual(challenge.existing_user_id, account.pk)
         code = queue_sms.call_args.args[2]["code"]
+        identity_required = self.client.post(
+            "/api/v1/auth/landlord/activate",
+            data={"phone": landlord.phone, "code": code},
+            content_type="application/json",
+        )
+        self.assertEqual(identity_required.status_code, 200)
+        self.assertTrue(identity_required.json()["identity_confirmation_required"])
+        challenge.refresh_from_db()
+        self.assertEqual(challenge.attempts, 0)
         linked = self.client.post(
             "/api/v1/auth/landlord/activate",
             data={
@@ -1405,6 +1545,10 @@ class UserAccessTests(TestCase):
         self.assertTrue(account.check_password(original_password))
         self.assertTrue(account.is_active)
         self.assertTrue(account.groups.filter(name=LANDLORD_PORTAL_ROLE).exists())
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            account.pk,
+        )
 
     def test_property_officer_landlord_list_is_branch_scoped_and_resend_requires_auth(self):
         officer = self.create_user(email="landlord-scope-officer@example.com")
@@ -2391,10 +2535,8 @@ class UserAccessTests(TestCase):
 
     @override_settings(PUBLIC_SITE_URL="https://legacy.example/")
     @patch("users.legacy_imports.queue_template_sms")
-    @patch("users.views.queue_template_sms")
     def test_property_scoped_import_provisions_unique_passwordless_sms_activations(
         self,
-        auth_queue_sms,
         import_queue_sms,
     ):
         manager = self.create_user(email="tenant-import-manager@example.com")
@@ -2575,25 +2717,13 @@ class UserAccessTests(TestCase):
         self.assertEqual(activated.status_code, 200, activated.content)
         activated_tenant = Tenant.objects.get(email="tenant.one@example.com")
         self.assertFalse(activated_tenant.portal_user.has_usable_password())
-        self.client.logout()
-        challenge_response = self.client.post(
-            "/api/v1/auth/phone-otp/request",
-            data={
-                "phone": phone,
-            },
-            content_type="application/json",
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            activated_tenant.portal_user_id,
         )
-        self.assertEqual(challenge_response.status_code, 202)
-        login = self.client.post(
-            "/api/v1/auth/phone-otp/verify",
-            data={
-                "challenge_id": challenge_response.json()["challenge_id"],
-                "code": auth_queue_sms.call_args.args[2]["code"],
-            },
-            content_type="application/json",
-        )
-        self.assertEqual(login.status_code, 200, login.content)
-        self.assertIn(TENANT_PORTAL_ROLE, login.json()["user"]["roles"])
+        self.assertEqual(self.client.session["auth_scope"], "residential")
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 43190)
+        self.assertLessEqual(self.client.session.get_expiry_age(), 43200)
         self.assertEqual(self.client.get("/api/v1/tenant/profile").status_code, 200)
         self.assertEqual(
             self.client.get("/api/v1/tenant/unit-status").json()["unitCode"],
@@ -3495,7 +3625,12 @@ class UserAccessTests(TestCase):
         "users.views.queue_template_sms",
         side_effect=[RuntimeError("sms unavailable"), None],
     )
-    def test_property_officer_can_retry_after_activation_sms_failure(self, queue_sms):
+    @patch("users.views.email_delivery_is_configured", return_value=False)
+    def test_property_officer_can_retry_after_activation_sms_failure(
+        self,
+        email_is_configured,
+        queue_sms,
+    ):
         officer = self.create_user(email="landlord-email-retry-officer@example.com")
         membership, _ = AgencyMembership.objects.get_or_create(
             profile=officer.profile,
@@ -3529,6 +3664,61 @@ class UserAccessTests(TestCase):
         self.assertEqual(retried.status_code, 200, retried.content)
         self.assertEqual(queue_sms.call_count, 2)
         self.assertTrue(LandlordActivationChallenge.objects.filter(landlord=landlord).exists())
+
+    @patch("users.views._send_landlord_activation_email")
+    @patch("users.views.email_delivery_is_configured", return_value=True)
+    @patch("users.views.queue_template_sms", side_effect=RuntimeError("sms unavailable"))
+    def test_landlord_can_activate_from_email_when_sms_queue_fails(
+        self,
+        queue_sms,
+        email_is_configured,
+        send_activation_email,
+    ):
+        officer = self.create_user(email="landlord-email-fallback-officer@example.com")
+        membership, _ = AgencyMembership.objects.get_or_create(
+            profile=officer.profile,
+            agency=self.nairobi.agency,
+        )
+        membership.roles.add(Group.objects.get(name="Property Officer / Agent"))
+        membership.branches.add(self.nairobi)
+        self.client.force_login(officer)
+
+        invited = self.client.post(
+            "/api/v1/property-officer/landlords",
+            data={
+                "branch_id": self.nairobi.pk,
+                "name": "Email Fallback Landlord",
+                "email": "landlord-email-fallback@example.com",
+                "phone": "254712345601",
+                "id_or_registration_number": "LANDLORD-EMAIL-FALLBACK-1",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(invited.status_code, 201, invited.content)
+        self.assertFalse(invited.json()["activation_sms_queued"])
+        self.assertTrue(invited.json()["activation_email_sent"])
+        queue_sms.assert_called_once()
+
+        user = self.user_model.objects.get(email="landlord-email-fallback@example.com")
+        challenge = LandlordActivationChallenge.objects.get(
+            landlord__id_or_registration_number="LANDLORD-EMAIL-FALLBACK-1",
+        )
+        code = send_activation_email.call_args.args[2]
+        context = self.client.get(
+            "/api/v1/auth/landlord/activate/context",
+            {"challenge_id": challenge.pk},
+        )
+        self.assertEqual(context.status_code, 200)
+        activated = self.client.post(
+            "/api/v1/auth/landlord/activate",
+            data={"challenge_id": str(challenge.pk), "code": code},
+            content_type="application/json",
+        )
+        self.assertEqual(activated.status_code, 200, activated.content)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            user.pk,
+        )
 
     @patch("users.views._send_staff_activation_email")
     def test_director_can_update_staff_scope_and_resend_activation(self, send_email):
@@ -3696,8 +3886,13 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(rejected_update.status_code, 400, rejected_update.content)
 
+    @patch("users.views.queue_template_sms")
     @patch("users.views._send_staff_activation_email")
-    def test_staff_role_for_existing_user_links_after_exact_kyc_match(self, send_email):
+    def test_staff_role_for_existing_user_links_after_exact_kyc_match(
+        self,
+        send_email,
+        queue_sms,
+    ):
         director = self.create_user(email="existing-role-director@example.com")
         director_membership, _ = AgencyMembership.objects.get_or_create(
             profile=director.profile,
@@ -3748,6 +3943,7 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(invited.status_code, 201, invited.content)
         self.assertTrue(invited.json()["existing_account_link"])
+        self.assertTrue(invited.json()["role_notification_sms_queued"])
         staff_data = invited.json()["staff"]
         staff_membership = AgencyMembership.objects.get(
             pk=staff_data["membership_id"]
@@ -3767,6 +3963,53 @@ class UserAccessTests(TestCase):
         self.assertTrue(has_role(account, TENANT_PORTAL_ROLE))
         self.assertTrue(_has_role(account, TENANT_PORTAL_ROLE))
         self.assertTrue(staff_membership.branches.filter(pk=self.nairobi.pk).exists())
+        queue_sms.assert_called_once()
+        self.assertEqual(queue_sms.call_args.args[0], account.profile.phone)
+        self.assertEqual(queue_sms.call_args.args[1], "staff_role_added")
+        self.assertEqual(queue_sms.call_args.args[2]["role_names"], "Accountant")
+        role_message = render_sms_template(
+            "staff_role_added",
+            {
+                "staff_name": account.profile.name,
+                "role_names": "Accountant",
+                "agency_name": self.nairobi.agency.name,
+            },
+        )
+        self.assertIn("existing sign-in details stay the same", role_message)
+
+        queue_sms.side_effect = ValueError("SMS backend is unavailable.")
+        with self.assertLogs("users.views", level="ERROR"):
+            failed_notification = self.client.post(
+                "/api/v1/director/staff",
+                data={
+                    "agency_id": self.nairobi.agency_id,
+                    "existing_user_id": account.pk,
+                    "name": "Existing Role User",
+                    "email": account.email,
+                    "phone": account.profile.phone,
+                    "id_or_registration_number": "EXISTING-STAFF-ID-610",
+                    "roles": ["Branch Manager"],
+                    "branch_ids": [self.nairobi.pk],
+                },
+                content_type="application/json",
+            )
+        self.assertEqual(failed_notification.status_code, 503)
+        self.assertFalse(
+            staff_membership.roles.filter(name="Branch Manager").exists()
+        )
+        queue_sms.side_effect = None
+        updated = self.client.patch(
+            f"/api/v1/director/staff/{staff_data['membership_id']}",
+            data={
+                "roles": ["Accountant", "Branch Manager"],
+                "branch_ids": [self.nairobi.pk],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(updated.status_code, 200, updated.content)
+        self.assertTrue(updated.json()["role_notification_sms_queued"])
+        self.assertEqual(queue_sms.call_count, 3)
+        self.assertEqual(queue_sms.call_args.args[2]["role_names"], "Branch Manager")
 
     @patch("users.views._send_staff_activation_email")
     def test_suspending_staff_access_does_not_disable_another_agency_membership(self, send_email):
@@ -6000,6 +6243,13 @@ class UserAccessTests(TestCase):
         finance.groups.add(Group.objects.get(name="Accountant"))
         finance.profile.branches.add(self.nairobi)
         tenant_user, tenant, tenancy = self.create_tenant_portal("96")
+        tenant_user.groups.add(Group.objects.get(name="Caretaker"))
+        tenant_user.profile.branches.add(self.nairobi)
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=tenant_user,
+            assigned_by=manager,
+        )
         PropertyCaretakerAssignment.objects.create(
             property=tenancy.unit.property,
             caretaker=caretaker,
@@ -6020,8 +6270,24 @@ class UserAccessTests(TestCase):
             Unit.STATUS_NOTICE_GIVEN,
         )
         self.client.force_login(manager)
+        workflows = self.client.get("/api/v1/move-out-workflows")
+        self.assertEqual(workflows.status_code, 200, workflows.content)
+        notice_id = notice_response.json()["notice"]["id"]
+        notice_payload = next(
+            item for item in workflows.json()["notices"] if item["id"] == notice_id
+        )
+        self.assertNotIn(
+            tenant_user.pk,
+            [item["id"] for item in notice_payload["available_caretakers"]],
+        )
+        self_assigned = self.client.post(
+            f"/api/v1/move-out-notices/{notice_id}/decision",
+            data={"action": "accept", "caretaker_id": tenant_user.pk},
+            content_type="application/json",
+        )
+        self.assertEqual(self_assigned.status_code, 400, self_assigned.content)
         accepted = self.client.post(
-            f"/api/v1/move-out-notices/{notice_response.json()['notice']['id']}/decision",
+            f"/api/v1/move-out-notices/{notice_id}/decision",
             data={
                 "action": "accept",
                 "caretaker_id": caretaker.pk,
@@ -6030,7 +6296,36 @@ class UserAccessTests(TestCase):
         )
         self.assertEqual(accepted.status_code, 200)
         inspection = PropertyInspection.objects.get(
-            move_out_notice_id=notice_response.json()["notice"]["id"]
+            move_out_notice_id=notice_id
+        )
+        self_inspection = PropertyInspection.objects.create(
+            property=tenancy.unit.property,
+            unit=tenancy.unit,
+            move_out_notice=inspection.move_out_notice,
+            title="Conflicted move-out inspection",
+            inspection_type="move_out",
+            scheduled_for=timezone.now(),
+            responsible_staff=tenant_user,
+            created_by=manager,
+            checklist=[
+                {"title": "Room condition and damage", "status": "complete"},
+                {"title": "Fixtures, keys, and access devices", "status": "complete"},
+                {"title": "Final utility meter readings", "status": "complete"},
+            ],
+        )
+        self.client.force_login(manager)
+        self_inspection_completion = self.client.post(
+            f"/api/v1/inspections/{self_inspection.pk}/complete",
+            data={
+                "checklist": self_inspection.checklist,
+                "actual_move_out_date": proposed_date.isoformat(),
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(
+            self_inspection_completion.status_code,
+            409,
+            self_inspection_completion.content,
         )
         self.client.force_login(caretaker)
         caretaker_scheduled = self.client.post(
@@ -9513,6 +9808,7 @@ class UserAccessTests(TestCase):
         self.assertTrue(
             TenantActivationChallenge.objects.get(tenant=tenant).phone_verification_required
         )
+        self.client.force_login(user)
 
         duplicate = self.client.post(
             f"/api/v1/tenancies/{tenancy.pk}/move-in-invoice",
@@ -9607,7 +9903,14 @@ class UserAccessTests(TestCase):
             tenant.portal_user.profile.id_or_registration_number,
             tenant.national_id_or_passport,
         )
-        self.assertEqual(self.client.get("/api/v1/auth/me").json()["user"]["id"], user.pk)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            tenant.portal_user_id,
+        )
+        self.assertEqual(self.client.session["auth_scope"], "residential")
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 43190)
+        self.assertLessEqual(self.client.session.get_expiry_age(), 43200)
+        self.client.logout()
         self.assertEqual(
             self.client.post(
                 "/api/v1/tenant-activation/complete",
@@ -9711,7 +10014,7 @@ class UserAccessTests(TestCase):
         self.assertTrue(has_role(account, "Accountant"))
 
     @patch("users.views.queue_template_sms")
-    def test_tenant_activation_code_requires_phone_and_matching_active_unit_without_auto_login(
+    def test_tenant_activation_code_requires_phone_and_matching_active_unit_creates_session(
         self, queue_sms
     ):
         manager = self.create_user(phone="254712345682")
@@ -9782,7 +10085,13 @@ class UserAccessTests(TestCase):
         self.assertEqual(completed.status_code, 200)
         tenant.refresh_from_db()
         self.assertFalse(tenant.portal_user.has_usable_password())
-        self.assertNotIn("_auth_user_id", self.client.session)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            tenant.portal_user_id,
+        )
+        self.assertEqual(self.client.session["auth_scope"], "residential")
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 43190)
+        self.assertLessEqual(self.client.session.get_expiry_age(), 43200)
 
     def test_tenant_api_supports_individuals_companies_and_kyc_documents(self):
         user = self.create_user(phone="254712345690")
@@ -10124,6 +10433,32 @@ class UserAccessTests(TestCase):
             self.client.get("/api/v1/director/overview").json().get("error"),
             "staff-step-up-required",
         )
+
+    def test_caretaker_activation_endpoints_allow_residential_sessions(self):
+        user = self.create_user(email="residential-activation-session@example.com")
+        self.client.force_login(user)
+        session = self.client.session
+        session["auth_scope"] = "residential"
+        session.save()
+
+        context = self.client.get(
+            "/api/v1/caretaker-invitations/verify",
+            {"token": "invalid-token"},
+        )
+        self.assertEqual(context.status_code, 400)
+        self.assertNotEqual(context.json().get("error"), "staff-step-up-required")
+
+        completion = self.client.post(
+            "/api/v1/caretaker-invitations/complete",
+            data={
+                "token": "invalid-token",
+                "code": "123456",
+                "password": "Valid-Caretaker-Passphrase-71!",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(completion.status_code, 400)
+        self.assertNotEqual(completion.json().get("error"), "staff-step-up-required")
 
     @patch("users.views.queue_template_sms")
     def test_phone_otp_login_enforces_attempt_limit_and_resend_cooldown(
@@ -13621,6 +13956,39 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         payload.update(overrides)
         return payload
 
+    def test_existing_caretaker_cannot_be_assigned_to_their_own_move_in(self):
+        self.caretaker.profile.id_or_registration_number = "ID-MOVE-IN-CARETAKER"
+        self.caretaker.profile.save(update_fields=["id_or_registration_number"])
+        quoted = self.client.get(
+            "/api/v1/property-officer/move-in-quote",
+            {
+                "unit_id": self.unit.pk,
+                "start_date": self.move_in_date.isoformat(),
+            },
+        )
+        self.assertEqual(quoted.status_code, 200, quoted.content)
+        quote = quoted.json()["quote"]
+
+        response = self.client.post(
+            "/api/v1/property-officer/tenant-onboarding",
+            data=self._onboarding_payload(
+                quote,
+                name=self.caretaker.profile.name,
+                email=self.caretaker.email,
+                phone=self.caretaker.profile.phone,
+                national_id_or_passport="ID-MOVE-IN-CARETAKER",
+                existing_user_id=self.caretaker.pk,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(
+            response.json()["type"],
+            "https://legacy.example/problems/self-inspection-assignment-denied",
+        )
+        self.assertFalse(MoveInSettlement.objects.filter(unit=self.unit).exists())
+        self.assertEqual(Unit.objects.get(pk=self.unit.pk).status, Unit.STATUS_VACANT)
+
     @override_settings(PUBLIC_SITE_URL="https://legacy.example/")
     @patch("users.views.upload_private_object")
     @patch("users.views.queue_template_sms")
@@ -13679,6 +14047,136 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
                 for call in queue_sms.call_args_list
             )
         )
+
+    @override_settings(PUBLIC_SITE_URL="https://legacy.example/")
+    @patch("users.views.upload_private_object")
+    @patch("users.views.queue_template_sms")
+    def test_move_in_links_existing_landlord_account_without_identity_mismatch(
+        self,
+        queue_sms,
+        upload_private_object,
+    ):
+        landlord_account = get_user_model().objects.create_user(
+            username="landlord-tenant@example.com",
+            email="landlord-tenant@example.com",
+            password=None,
+            is_active=True,
+        )
+        landlord_account.set_unusable_password()
+        landlord_account.save(update_fields=["password"])
+        landlord_profile = UserProfile.objects.create(
+            user=landlord_account,
+            name="Grace Wanjiku",
+            phone="254712345689",
+            id_or_registration_number="LL-889900",
+        )
+        landlord_role, _ = Group.objects.get_or_create(name=LANDLORD_PORTAL_ROLE)
+        landlord_account.groups.add(landlord_role)
+        membership = AgencyMembership.objects.create(
+            profile=landlord_profile,
+            agency=self.branch.agency,
+        )
+        membership.branches.add(self.branch)
+        membership.roles.add(landlord_role)
+        Landlord.objects.create(
+            branch=self.branch,
+            portal_user=landlord_account,
+            name="Grace Wanjiku",
+            id_or_registration_number="LL-889900",
+            phone="254712345689",
+            email="landlord-tenant@example.com",
+        )
+
+        quoted = self.client.get(
+            "/api/v1/property-officer/move-in-quote",
+            {
+                "unit_id": self.unit.pk,
+                "start_date": self.move_in_date.isoformat(),
+            },
+        )
+        self.assertEqual(quoted.status_code, 200, quoted.content)
+        quote = quoted.json()["quote"]
+        response = self.client.post(
+            "/api/v1/property-officer/tenant-onboarding",
+            data=self._onboarding_payload(
+                quote,
+                tenant_type=Tenant.COMPANY,
+                name="Wanjiku Enterprises Ltd",
+                contact_person="Grace Wanjiku",
+                company_registration_number="PVT-WANJIKU-1",
+                email="landlord-tenant@example.com",
+                phone="0712345689",
+                national_id_or_passport="DIFF-ID-8899",
+                existing_user_id=landlord_account.pk,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertTrue(response.json()["existing_account_link"])
+        self.assertTrue(response.json()["tenant_link_sms_queued"])
+        tenant = Tenant.objects.get(pk=response.json()["tenant"]["id"])
+        self.assertEqual(tenant.portal_user_id, landlord_account.pk)
+        self.assertEqual(tenant.national_id_or_passport, "DIFF-ID-8899")
+        settlement = MoveInSettlement.objects.get(tenant=tenant)
+        link_sms_calls = [
+            call
+            for call in queue_sms.call_args_list
+            if call.args[1] == "tenant_account_linked"
+        ]
+        self.assertEqual(len(link_sms_calls), 1)
+        self.assertEqual(link_sms_calls[0].args[2]["property_name"], self.property.name)
+        self.assertEqual(link_sms_calls[0].args[2]["unit_code"], self.unit.code)
+        self.assertIn(
+            "no activation code is needed",
+            render_sms_template(
+                "tenant_account_linked",
+                {
+                    "tenant_name": "Grace Wanjiku",
+                    "property_name": self.property.name,
+                    "unit_code": self.unit.code,
+                },
+            ),
+        )
+        self.assertEqual(
+            _queue_tenant_account_link_notification(settlement, None, None),
+            (True, None),
+        )
+        self.assertEqual(
+            len(
+                [
+                    call
+                    for call in queue_sms.call_args_list
+                    if call.args[1] == "tenant_account_linked"
+                ]
+            ),
+            1,
+        )
+        settlement.tenant_link_sms_queued_at = None
+        settlement.save(update_fields=["tenant_link_sms_queued_at"])
+        queue_sms.side_effect = ValueError("SMS backend is unavailable.")
+        queued, error = _queue_tenant_account_link_notification(
+            settlement,
+            None,
+            None,
+        )
+        self.assertFalse(queued)
+        self.assertEqual(error, "SMS backend is unavailable.")
+        settlement.refresh_from_db()
+        self.assertEqual(settlement.tenant_link_sms_error, error)
+        queue_sms.side_effect = None
+        self.assertEqual(
+            _queue_tenant_account_link_notification(settlement, None, None),
+            (True, None),
+        )
+        settlement.refresh_from_db()
+        self.assertIsNotNone(settlement.tenant_link_sms_queued_at)
+        self.assertEqual(settlement.tenant_link_sms_error, "")
+        landlord_profile.refresh_from_db()
+        self.assertEqual(landlord_profile.id_or_registration_number, "LL-889900")
+        self.client.force_login(landlord_account)
+        roles = self.client.get("/api/v1/auth/me").json()["user"]["roles"]
+        self.assertIn(LANDLORD_PORTAL_ROLE, roles)
+        self.assertIn(TENANT_PORTAL_ROLE, roles)
 
     @patch("users.views.upload_private_object")
     @patch("users.views.queue_template_sms")
@@ -13876,6 +14374,16 @@ class PropertyOfficerTenantOnboardingTests(TestCase):
         self.assertEqual(identity_document.metadata["content_type"], "application/pdf")
         self.assertEqual(identity_document.metadata["size_bytes"], 28)
         self.assertEqual(upload_private_object.call_count, 3)
+        agreement_pdf = upload_private_object.call_args_list[0].args[1].getvalue()
+        receipt_pdf = upload_private_object.call_args_list[1].args[1].getvalue()
+        self.assertTrue(agreement_pdf.startswith(b"%PDF-1.4"))
+        self.assertIn(b"MOVE-IN TENANCY AGREEMENT", agreement_pdf)
+        self.assertIn(b"TENANCY TERMS", agreement_pdf)
+        self.assertIn(b"TOTAL MOVE-IN CHARGES", agreement_pdf)
+        self.assertTrue(receipt_pdf.startswith(b"%PDF-1.4"))
+        self.assertIn(b"PAYMENT RECEIPT", receipt_pdf)
+        self.assertIn(b"AMOUNT RECEIVED", receipt_pdf)
+        self.assertIn(b"PAYMENT DETAILS", receipt_pdf)
         self.unit.refresh_from_db()
         self.assertEqual(self.unit.status, Unit.STATUS_BOOKED)
         self.assertTrue(
@@ -14199,28 +14707,18 @@ class MoveInSettlementTests(TestCase):
         self.assertFalse(tenant.is_provisional)
         self.assertEqual(tenant.national_id_or_passport, "ID-MOVE-IN-101")
         self.assertEqual(settlement.status, MoveInSettlement.STATUS_ACTIVE)
-        self.assertNotIn("_auth_user_id", self.client.session)
-        login_challenge = self.client.post(
-            "/api/v1/auth/phone-otp/request",
-            data={"phone": tenant.phone},
-            content_type="application/json",
+        self.assertEqual(
+            self.client.get("/api/v1/auth/me").json()["user"]["id"],
+            tenant.portal_user_id,
         )
-        self.assertEqual(login_challenge.status_code, 202)
-        login = self.client.post(
-            "/api/v1/auth/phone-otp/verify",
-            data={
-                "challenge_id": login_challenge.json()["challenge_id"],
-                "code": queue_sms.call_args.args[2]["code"],
-            },
-            content_type="application/json",
-        )
-        self.assertEqual(login.status_code, 200, login.content)
-        self.assertIn(TENANT_PORTAL_ROLE, login.json()["user"]["roles"])
+        self.assertEqual(self.client.session["auth_scope"], "residential")
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 43190)
+        self.assertLessEqual(self.client.session.get_expiry_age(), 43200)
         profile_response = self.client.get("/api/v1/tenant/profile")
         self.assertEqual(
             profile_response.status_code,
             200,
-            f"login={login.content!r}; profile={profile_response.content!r}",
+            profile_response.content,
         )
         self.assertEqual(profile_response.json()["profile"]["unitCode"], "MI-101")
         self.assertEqual(self.client.get("/api/v1/tenant/unit-status").json()["status"], "occupied")
@@ -15350,7 +15848,7 @@ class WhatsAppBotTests(TestCase):
         from users import whatsapp_bot
         from users.views import _move_in_condition_requirements
 
-        _, tenancy = self._tenant_with_tenancy("70")
+        tenant, tenancy = self._tenant_with_tenancy("70")
         manager = self.user_model.objects.create_user(
             username="wa-handover-manager@example.com",
             email="wa-handover-manager@example.com",
@@ -15388,6 +15886,19 @@ class WhatsAppBotTests(TestCase):
                 {"name": "Key fobs", "property_quantity": 3, "issued_quantity": None}
             ],
         )
+        self_caretaker = tenant.portal_user
+        self_caretaker.groups.add(Group.objects.get(name="Caretaker"))
+        PropertyCaretakerAssignment.objects.create(
+            property=tenancy.unit.property,
+            caretaker=self_caretaker,
+            assigned_by=manager,
+        )
+        self_contact = WhatsAppContact.objects.create(
+            wa_id="254700001176",
+            user=self_caretaker,
+            verified_at=timezone.now(),
+        )
+        self.assertFalse(whatsapp_bot._caretaker_move_in_handovers(self_contact).exists())
         contact = WhatsAppContact.objects.create(
             wa_id="254700001170",
             user=caretaker,
@@ -16256,6 +16767,66 @@ class WhatsAppBotTests(TestCase):
             )
         contact = WhatsAppContact.objects.get(wa_id=wa_id)
         self.assertIsNotNone(contact.verified_at)
+
+    def test_unactivated_tenant_activates_via_whatsapp_using_onboarding_challenge_otp(self):
+        import hashlib
+        from users.models import TenantActivationChallenge, WhatsAppContact
+        from users import whatsapp_bot
+
+        tenant, tenancy = self._tenant_with_tenancy("99")
+        tenant.portal_user = None
+        tenant.is_provisional = True
+        tenant.national_id_or_passport = "ID-WA-ACTIVATE-99"
+        tenant.save(update_fields=["portal_user", "is_provisional", "national_id_or_passport", "updated_at"])
+
+        code = "654321"
+        challenge = TenantActivationChallenge.objects.create(
+            tenant=tenant,
+            unit=tenancy.unit,
+            token_hash="token-hash-99",
+            code_hash=hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            phone_verification_required=True,
+            expires_at=timezone.now() + timedelta(hours=48),
+        )
+
+        wa_id = "254700009999"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="ID-WA-ACTIVATE-99"))
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text=code))
+
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNotNone(contact.verified_at)
+        tenant.refresh_from_db()
+        self.assertFalse(tenant.is_provisional)
+        self.assertIsNotNone(tenant.portal_user)
+        self.assertTrue(tenant.portal_user.is_active)
+        self.assertFalse(tenant.portal_user.has_usable_password())
+        self.assertTrue(tenant.portal_user.groups.filter(name=TENANT_PORTAL_ROLE).exists())
+        challenge.refresh_from_db()
+        self.assertIsNotNone(challenge.used_at)
+
+    def test_landlord_id_on_whatsapp_redirects_politely_to_web_portal(self):
+        from users.models import Landlord, WhatsAppContact
+        from users import whatsapp_bot
+
+        Landlord.objects.create(
+            branch=self.branch,
+            name="Mama Mboga",
+            id_or_registration_number="LL-MAMA-01",
+            phone="254700008888",
+        )
+        wa_id = "254700008888"
+        with patch.object(whatsapp_bot, "_post_message") as post:
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="hi"))
+            whatsapp_bot.handle_inbound_message(self._message(wa_id, text="LL-MAMA-01"))
+
+        contact = WhatsAppContact.objects.get(wa_id=wa_id)
+        self.assertIsNone(contact.verified_at)
+        self.assertEqual(contact.failed_verifications, 0)
+        body = post.call_args.args[0]["text"]["body"]
+        self.assertIn("WhatsApp access for landlords is coming soon", body)
+        self.assertIn("/login", body)
 
     @override_settings(
         WHATSAPP_BACKEND="users.whatsapp.ConsoleWhatsAppBackend",

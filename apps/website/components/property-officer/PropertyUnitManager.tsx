@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Building2, Plus, RefreshCw } from 'lucide-react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type Branch = NonNullable<NonNullable<ReturnType<typeof usePropertyOfficerPortal>['agency']>['branches']>[number];
 
@@ -249,8 +250,15 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
   const [address, setAddress] = useState('');
   const [branchId, setBranchId] = useState<number | ''>('');
   const [propertyBranchId, setPropertyBranchId] = useState<number | ''>('');
-  const [selectedPropertyId, setSelectedPropertyId] = useState<number | ''>('');
+  const [propertySearch, setPropertySearch] = useState('');
+  const [propertyTypeFilter, setPropertyTypeFilter] = useState('all');
+  const [landlordFilter, setLandlordFilter] = useState<'all' | 'assigned' | 'unassigned'>('all');
+  const [selectedPropertyId, setSelectedPropertyId] = useState<number | 'all'>('all');
   const [unitStatus, setUnitStatus] = useState('All statuses');
+  const [unitBranchId, setUnitBranchId] = useState('all');
+  const [unitTypeFilter, setUnitTypeFilter] = useState('all');
+  const [bedroomFilter, setBedroomFilter] = useState('all');
+  const [unitSearch, setUnitSearch] = useState('');
   const [landlordId, setLandlordId] = useState<number | ''>('');
   const [rentDueDay, setRentDueDay] = useState(10);
   const [amenities, setAmenities] = useState('');
@@ -276,19 +284,80 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
     const propertyIds = new Set(visibleProperties.map((property) => property.id));
     return units.filter((unit) => propertyIds.has(unit.property_id));
   }, [units, visibleProperties]);
+  const propertyById = useMemo(
+    () => new Map(visibleProperties.map((property) => [property.id, property])),
+    [visibleProperties],
+  );
+  const branchById = useMemo(
+    () => new Map(visibleBranches.map((branch) => [branch.id, branch])),
+    [visibleBranches],
+  );
   const selectedProperty = visibleProperties.find((property) => property.id === selectedPropertyId) ?? null;
-  const filteredProperties = visibleProperties.filter(
-    (property) => propertyBranchId === '' || property.branch_id === propertyBranchId,
+  const propertyTypeOptions = useMemo(
+    () => [...new Set(visibleProperties.map((property) => property.property_type).filter(Boolean))].sort(),
+    [visibleProperties],
   );
-  const selectedPropertyUnits = visibleUnits.filter(
-    (unit) => unit.property_id === selectedPropertyId && (unitStatus === 'All statuses' || unit.status === unitStatus),
+  const filteredProperties = useMemo(() => {
+    const query = propertySearch.trim().toLowerCase();
+    return visibleProperties.filter((property) => {
+      const matchesBranch = propertyBranchId === '' || property.branch_id === propertyBranchId;
+      const matchesType = propertyTypeFilter === 'all' || property.property_type === propertyTypeFilter;
+      const matchesLandlord = landlordFilter === 'all'
+        || (landlordFilter === 'assigned' ? property.landlord_id !== null : property.landlord_id === null);
+      const matchesSearch = !query || [
+        property.name,
+        property.location,
+        property.address ?? '',
+        branchById.get(property.branch_id)?.name ?? '',
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesBranch && matchesType && matchesLandlord && matchesSearch;
+    });
+  }, [branchById, landlordFilter, propertyBranchId, propertySearch, propertyTypeFilter, visibleProperties]);
+  const propertyPagination = usePortalPagination(filteredProperties);
+  const activeTenantsByUnit = useMemo(
+    () => new Map(
+      tenancies.filter((tenancy) => tenancy.status === 'active').map((tenancy) => [tenancy.unit_id, tenancy.tenant_name]),
+    ),
+    [tenancies],
   );
-  const activeTenantsByUnit = new Map(
-    tenancies.filter((tenancy) => tenancy.status === 'active').map((tenancy) => [tenancy.unit_id, tenancy.tenant_name]),
+  const unitTypeOptions = useMemo(
+    () => [...new Set(visibleUnits
+      .filter((unit) => (selectedPropertyId === 'all' || unit.property_id === selectedPropertyId)
+        && (unitBranchId === 'all' || String(propertyById.get(unit.property_id)?.branch_id ?? '') === unitBranchId))
+      .map((unit) => unit.unit_type)
+      .filter(Boolean))].sort(),
+    [propertyById, selectedPropertyId, unitBranchId, visibleUnits],
   );
+  const bedroomOptions = useMemo(
+    () => [...new Set(visibleUnits
+      .filter((unit) => (selectedPropertyId === 'all' || unit.property_id === selectedPropertyId)
+        && (unitBranchId === 'all' || String(propertyById.get(unit.property_id)?.branch_id ?? '') === unitBranchId))
+      .map((unit) => unit.bedrooms))].sort((a, b) => a - b),
+    [propertyById, selectedPropertyId, unitBranchId, visibleUnits],
+  );
+  const filteredUnits = useMemo(() => {
+    const query = unitSearch.trim().toLowerCase();
+    return visibleUnits.filter((unit) => {
+      const property = propertyById.get(unit.property_id);
+      const matchesProperty = selectedPropertyId === 'all' || unit.property_id === selectedPropertyId;
+      const matchesBranch = unitBranchId === 'all' || String(property?.branch_id ?? '') === unitBranchId;
+      const matchesStatus = unitStatus === 'All statuses' || unit.status.toLowerCase() === unitStatus.toLowerCase();
+      const matchesType = unitTypeFilter === 'all' || unit.unit_type === unitTypeFilter;
+      const matchesBedrooms = bedroomFilter === 'all' || String(unit.bedrooms) === bedroomFilter;
+      const matchesSearch = !query || [
+        unit.code,
+        unit.characteristics?.room_name ?? '',
+        unit.block_name ?? '',
+        unit.floor_name ?? '',
+        activeTenantsByUnit.get(unit.id) ?? '',
+        unit.property_name ?? property?.name ?? '',
+        unit.branch_name ?? '',
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesProperty && matchesBranch && matchesStatus && matchesType && matchesBedrooms && matchesSearch;
+    });
+  }, [activeTenantsByUnit, bedroomFilter, propertyById, selectedPropertyId, unitBranchId, unitSearch, unitStatus, unitTypeFilter, visibleUnits]);
+  const unitPagination = usePortalPagination(filteredUnits);
   const selectedBranchLandlords = landlords.filter((landlord) => landlord.branch.id === branchId);
-  const propertyById = new Map(visibleProperties.map((property) => [property.id, property]));
-  const branchById = new Map(visibleBranches.map((branch) => [branch.id, branch]));
 
   const load = useCallback(async () => {
     if (!agency) {
@@ -327,8 +396,8 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
   }, [branchId, branchIds, visibleBranches]);
 
   useEffect(() => {
-    if (selectedPropertyId === '' || !visibleProperties.some((property) => property.id === selectedPropertyId)) {
-      setSelectedPropertyId(visibleProperties[0]?.id ?? '');
+    if (selectedPropertyId !== 'all' && !visibleProperties.some((property) => property.id === selectedPropertyId)) {
+      setSelectedPropertyId('all');
     }
   }, [selectedPropertyId, visibleProperties]);
 
@@ -409,12 +478,7 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency?.name || 'Agency'}</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-950">{mode === 'properties' ? 'Property register' : 'Units & vacancies'}</h1>
-          <p className="mt-1 text-sm text-slate-500">Persisted assets in your currently selected branch scope.</p>
-        </div>
+      <header className="flex justify-end">
         <button type="button" onClick={() => setReloadKey((key) => key + 1)} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
           <RefreshCw size={15} /> Refresh inventory
         </button>
@@ -422,34 +486,60 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
 
       {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</p>}
       {notice && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">{notice}</p>}
-      {loading && <p role="status" className="text-sm text-slate-500">Loading agency properties and units…</p>}
+      {loading && <PortalLoading label="Loading your property and unit records…" rows={5} />}
       {!loading && visibleBranches.length === 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No assigned branches are available for this agency.</p>}
 
       {!loading && visibleBranches.length > 0 && mode === 'properties' && (
-        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(20rem,0.7fr)]">
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.25fr)_minmax(28rem,1fr)]">
           <section className="space-y-4">
-            <label className="block max-w-sm text-sm font-semibold text-slate-700">Branch
-              <select className={fieldClass} value={propertyBranchId} onChange={(event) => setPropertyBranchId(event.target.value ? Number(event.target.value) : '')}>
-                <option value="">All assigned branches</option>
-                {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-              </select>
-            </label>
+            <section aria-label="Filter properties" className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-2 xl:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-600">Search properties
+                <input value={propertySearch} onChange={(event) => setPropertySearch(event.target.value)} placeholder="Name, location, or address" className={fieldClass} />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Branch
+                <select className={fieldClass} value={propertyBranchId} onChange={(event) => setPropertyBranchId(event.target.value ? Number(event.target.value) : '')}>
+                  <option value="">All assigned branches</option>
+                  {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Property type
+                <select className={fieldClass} value={propertyTypeFilter} onChange={(event) => setPropertyTypeFilter(event.target.value)}>
+                  <option value="all">All property types</option>
+                  {propertyTypeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Landlord assignment
+                <select className={fieldClass} value={landlordFilter} onChange={(event) => setLandlordFilter(event.target.value as typeof landlordFilter)}>
+                  <option value="all">All assignments</option>
+                  <option value="assigned">Landlord assigned</option>
+                  <option value="unassigned">No landlord assigned</option>
+                </select>
+              </label>
+              <p className="self-end pb-2 text-xs text-slate-500 sm:col-span-2">
+                {filteredProperties.length} matching propert{filteredProperties.length === 1 ? 'y' : 'ies'}
+              </p>
+            </section>
             {mode === 'properties' ? (
-              filteredProperties.map((property) => (
-                <article key={property.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              propertyPagination.pageRecords.map((property) => (
+                <article key={property.id} data-portal-card className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
                   <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h2 className="font-bold text-slate-900">{property.name}</h2>
-                      <p className="mt-1 text-sm text-slate-600">{property.property_type} · {property.location}</p>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-lg font-bold tracking-tight text-slate-900">{property.name}</h2>
+                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-900">{property.property_type}</span>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-600">{property.location}</p>
                       {property.address && <p className="mt-1 text-xs text-slate-500">{property.address}</p>}
                     </div>
-                    <Building2 className="shrink-0 text-emerald-800" size={20} />
+                    <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#edf4e9] text-emerald-800">
+                      <Building2 size={22} />
+                    </span>
                   </div>
-                  <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t border-slate-100 pt-3 text-xs text-slate-600">
-                    <span>{branchById.get(property.branch_id)?.name || 'Branch'}</span>
-                    <span>{property.landlord_id ? landlords.find((item) => item.id === property.landlord_id)?.name || 'Landlord assigned' : 'No landlord assigned'}</span>
-                    <span>Rent due day: {property.rent_due_day}</span>
-                    <span>{units.filter((unit) => unit.property_id === property.id).length} of {property.expected_unit_count} expected units</span>
+                  <div className="mt-5 grid gap-2 border-y border-slate-100 py-4 text-xs sm:grid-cols-2">
+                    <span className="rounded-xl bg-slate-50 px-3 py-2.5"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Branch</span><span className="mt-1 block font-semibold text-slate-700">{branchById.get(property.branch_id)?.name || 'Branch'}</span></span>
+                    <span className="rounded-xl bg-slate-50 px-3 py-2.5"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Landlord</span><span className="mt-1 block font-semibold text-slate-700">{property.landlord_id ? landlords.find((item) => item.id === property.landlord_id)?.name || 'Assigned' : 'Not assigned'}</span></span>
+                    <span className="rounded-xl bg-slate-50 px-3 py-2.5"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Rent due</span><span className="mt-1 block font-semibold text-slate-700">Day {property.rent_due_day} of each month</span></span>
+                    <span className="rounded-xl bg-slate-50 px-3 py-2.5"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Unit inventory</span><span className="mt-1 block font-semibold text-slate-700">{units.filter((unit) => unit.property_id === property.id).length} recorded · {property.expected_unit_count} expected</span></span>
                   </div>
                   {property.unit_types?.length ? (
                     <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
@@ -492,10 +582,11 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
                 </article>
               ))
             ) : null}
-            {filteredProperties.length === 0 && <p className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">No properties are registered for these branches yet.</p>}
+            {filteredProperties.length === 0 && <p className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">No properties match the selected filters.</p>}
+            <PortalPagination {...propertyPagination} total={filteredProperties.length} onPageChange={propertyPagination.setPage} onPageSizeChange={propertyPagination.setPageSize} />
           </section>
 
-          <form onSubmit={createProperty} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <form onSubmit={createProperty} data-portal-card className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
             <div>
             <h2 className="font-bold text-slate-900">Register property</h2>
             <p className="mt-1 text-xs text-slate-500">This saves the property profile only. Existing units are imported separately from Units & vacancies.</p>
@@ -694,18 +785,52 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
       )}
       {!loading && visibleBranches.length > 0 && mode === 'units' && (
         <section className="space-y-4">
-          <div className="flex flex-wrap items-end gap-4 rounded-2xl border border-slate-200 bg-white p-5">
-            <label className="min-w-64 flex-1 text-sm font-semibold text-slate-700">Property
-              <select className={fieldClass} value={selectedPropertyId} onChange={(event) => setSelectedPropertyId(event.target.value ? Number(event.target.value) : '')}>
-                {visibleProperties.map((property) => <option key={property.id} value={property.id}>{property.name} · {branchById.get(property.branch_id)?.name || 'Branch'}</option>)}
+          <div data-portal-card className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-5 sm:grid-cols-2 xl:grid-cols-4">
+            <label className="text-sm font-semibold text-slate-700">Branch
+              <select className={fieldClass} value={unitBranchId} onChange={(event) => {
+                setUnitBranchId(event.target.value);
+                setSelectedPropertyId('all');
+                setUnitTypeFilter('all');
+                setBedroomFilter('all');
+              }}>
+                <option value="all">All assigned branches</option>
+                {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
               </select>
             </label>
-            <label className="min-w-48 text-sm font-semibold text-slate-700">Status
+            <label className="min-w-64 flex-1 text-sm font-semibold text-slate-700">Property
+              <select className={fieldClass} value={selectedPropertyId} onChange={(event) => {
+                setSelectedPropertyId(event.target.value === 'all' ? 'all' : Number(event.target.value));
+                setUnitTypeFilter('all');
+                setBedroomFilter('all');
+              }}>
+                <option value="all">All properties</option>
+                {visibleProperties.filter((property) => unitBranchId === 'all' || String(property.branch_id) === unitBranchId).map((property) => <option key={property.id} value={property.id}>{property.name} · {branchById.get(property.branch_id)?.name || 'Branch'}</option>)}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-slate-700">Status
               <select className={fieldClass} value={unitStatus} onChange={(event) => setUnitStatus(event.target.value)}>
                 {['All statuses', 'Draft', 'Vacant', 'Booked', 'Occupied', 'Notice Given', 'Deposit Pending', 'Maintenance', 'Archived'].map((status) => <option key={status}>{status}</option>)}
               </select>
             </label>
+            <label className="text-sm font-semibold text-slate-700">Unit type
+              <select className={fieldClass} value={unitTypeFilter} onChange={(event) => setUnitTypeFilter(event.target.value)}>
+                <option value="all">All unit types</option>
+                {unitTypeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-slate-700">Bedrooms
+              <select className={fieldClass} value={bedroomFilter} onChange={(event) => setBedroomFilter(event.target.value)}>
+                <option value="all">Any bedroom count</option>
+                {bedroomOptions.map((bedrooms) => <option key={bedrooms} value={bedrooms}>{bedrooms} bedroom{bedrooms === 1 ? '' : 's'}</option>)}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-slate-700 sm:col-span-2">Search units
+              <input value={unitSearch} onChange={(event) => setUnitSearch(event.target.value)} placeholder="Unit code, tenant, block, floor, or property" className={fieldClass} />
+            </label>
+            <div className="flex items-end justify-between gap-3 sm:col-span-2">
+              <p className="pb-2 text-xs text-slate-500">{filteredUnits.length} matching unit{filteredUnits.length === 1 ? '' : 's'}</p>
             {selectedProperty && <Link href={`/property-officer/imports?property_id=${selectedProperty.id}`} className="rounded-lg bg-emerald-800 px-4 py-2.5 text-sm font-bold text-white">Import units for this property</Link>}
+            </div>
           </div>
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <div className="overflow-x-auto">
@@ -714,7 +839,7 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
                   <tr>{['Unit code', 'Tenant', 'Property', 'Branch', 'Type', 'Bedrooms', 'Rent / month', 'Status'].map((label) => <th key={label} className="px-4 py-3">{label}</th>)}</tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {selectedPropertyUnits.map((unit) => {
+                  {unitPagination.pageRecords.map((unit) => {
                     const property = propertyById.get(unit.property_id);
                     return (
                       <tr key={unit.id}>
@@ -733,10 +858,11 @@ export default function PropertyUnitManager({ mode }: { mode: 'properties' | 'un
                       </tr>
                     );
                   })}
-                  {!selectedPropertyUnits.length && <tr><td className="px-4 py-6 text-center text-slate-500" colSpan={8}>{selectedProperty ? 'No units match this property and status filter yet. Import the property’s unit records to populate this view.' : 'Register a property before viewing its units.'}</td></tr>}
+                  {!filteredUnits.length && <tr><td className="px-4 py-6 text-center text-slate-500" colSpan={8}>{visibleUnits.length ? 'No units match the selected filters.' : 'Register a property or import its unit records to populate this view.'}</td></tr>}
                 </tbody>
               </table>
             </div>
+            <PortalPagination {...unitPagination} total={filteredUnits.length} onPageChange={unitPagination.setPage} onPageSizeChange={unitPagination.setPageSize} />
           </section>
         </section>
       )}

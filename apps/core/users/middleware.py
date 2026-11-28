@@ -7,6 +7,10 @@ class ResidentialSessionAccessMiddleware:
         "/api/v1/tenant/",
         "/api/v1/landlord/",
     )
+    ALLOWED_PATHS = {
+        "/api/v1/caretaker-invitations/verify",
+        "/api/v1/caretaker-invitations/complete",
+    }
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -16,6 +20,7 @@ class ResidentialSessionAccessMiddleware:
             request.user.is_authenticated
             and request.session.get("auth_scope") == "residential"
             and not request.path_info.startswith(self.ALLOWED_PREFIXES)
+            and request.path_info.rstrip("/") not in self.ALLOWED_PATHS
         ):
             return JsonResponse(
                 {

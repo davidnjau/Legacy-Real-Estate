@@ -1,8 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
-import { AlertTriangle, CheckCircle, KeyRound } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertTriangle, KeyRound } from 'lucide-react';
 
 type TenantActivation = {
   full_name: string;
@@ -21,7 +20,18 @@ export default function TenantActivationPage() {
   const [verifying, setVerifying] = useState(false);
   const [activating, setActivating] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const phoneParam = params.get('phone');
+      const unitParam = params.get('unit') || params.get('unit_code');
+      const codeParam = params.get('code');
+      if (phoneParam) setPhone(phoneParam);
+      if (unitParam) setUnitCode(unitParam);
+      if (codeParam) setActivationCode(codeParam);
+    }
+  }, []);
 
   const handleVerify = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -69,7 +79,7 @@ export default function TenantActivationPage() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to activate the tenant account.');
-      setSuccess(true);
+      window.location.assign('/tenant/dashboard');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to activate the tenant account.');
     } finally {
@@ -77,27 +87,12 @@ export default function TenantActivationPage() {
     }
   };
 
-  if (success) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-        <div className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-10 text-center shadow-xl">
-          <CheckCircle className="mx-auto mb-6 text-emerald-600" size={42} />
-          <h2 className="mb-2 text-2xl font-bold text-slate-900">Account Activated</h2>
-          <p className="text-slate-500">Sign in using the phone number on your account and a new SMS code.</p>
-          <Link href="/login" className="mt-6 inline-flex rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white">
-            Continue to sign in
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex min-h-screen flex-col justify-center bg-slate-50 py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h1 className="mt-6 text-center text-3xl font-extrabold text-slate-900">Activate Your Account</h1>
         <p className="mt-2 text-center text-sm text-slate-600">
-          Enter the phone number and six-digit code sent by SMS. The code expires after 48 hours.
+          Enter the phone number that received the activation SMS and the code already sent to it. After verification, you will be taken to your tenant portal.
         </p>
       </div>
 

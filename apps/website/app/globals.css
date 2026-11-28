@@ -1,3 +1,84 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer components {
+  .property-officer-portal input:not([type='checkbox']):not([type='radio']),
+  .property-officer-portal select,
+  .property-officer-portal textarea {
+    transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+  }
+
+  .property-officer-portal input:not([type='checkbox']):not([type='radio']):hover,
+  .property-officer-portal select:hover,
+  .property-officer-portal textarea:hover {
+    border-color: #b7cda9;
+  }
+
+  .property-officer-portal input:not([type='checkbox']):not([type='radio']):focus,
+  .property-officer-portal select:focus,
+  .property-officer-portal textarea:focus {
+    border-color: #83a95d;
+    outline: none;
+    box-shadow: 0 0 0 4px rgb(131 169 93 / 16%);
+  }
+
+  .property-officer-portal input[type='checkbox'],
+  .property-officer-portal input[type='radio'] {
+    accent-color: #668a4c;
+  }
+
+  .property-officer-portal form,
+  .property-officer-portal [data-portal-card],
+  .property-officer-portal article {
+    transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+  }
+
+  .property-officer-portal form:hover,
+  .property-officer-portal [data-portal-card]:hover,
+  .property-officer-portal article:hover {
+    border-color: #d3e2c9;
+    box-shadow: 0 10px 28px rgb(45 86 48 / 9%), 0 0 0 2px rgb(131 169 93 / 8%);
+  }
+
+  .property-officer-portal button:not(:disabled) {
+    transition: box-shadow 180ms ease, transform 180ms ease, background-color 180ms ease;
+  }
+
+  .property-officer-portal button:not(:disabled):hover {
+    box-shadow: 0 0 0 3px rgb(131 169 93 / 12%);
+  }
+
+  .property-officer-portal tbody tr {
+    transition: background-color 160ms ease;
+  }
+
+  .property-officer-portal tbody tr:hover {
+    background-color: #f8faf7;
+  }
+
+  .portal-skeleton {
+    background: linear-gradient(100deg, #edf1eb 20%, #f7f9f6 40%, #edf1eb 60%);
+    background-size: 220% 100%;
+    animation: portal-shimmer 1.4s ease-in-out infinite;
+  }
+
+  @keyframes portal-shimmer {
+    to {
+      background-position-x: -220%;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portal-skeleton {
+    animation: none;
+  }
+
+  .property-officer-portal *,
+  .property-officer-portal *::before,
+  .property-officer-portal *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

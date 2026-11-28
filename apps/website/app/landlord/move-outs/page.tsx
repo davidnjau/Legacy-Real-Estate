@@ -419,7 +419,7 @@ export default function MoveOutsPage() {
                     <button type="button" disabled={busy || notice.available_caretakers.length === 0 || !selectedCaretakers[notice.id]} onClick={() => void decideNotice(notice, 'accept')} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Accept</button>
                     <button type="button" disabled={busy} onClick={() => void decideNotice(notice, 'reject')} className="rounded-lg border border-red-300 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Reject</button>
                     {notice.available_caretakers.length === 0 && (
-                      <p className="basis-full text-xs text-amber-800">Assign an active caretaker to this property before accepting.</p>
+                      <p className="basis-full text-xs text-amber-800">Assign another active caretaker to this property before accepting; the tenant cannot inspect their own unit.</p>
                     )}
                   </div>
                 )}

@@ -169,7 +169,9 @@ export default function StaffManagement({
       }
       setNotice(
         payload.existing_account_link
-          ? 'Existing agency account linked. The selected staff roles are active immediately.'
+          ? payload.role_notification_sms_queued
+            ? 'Existing agency account linked. The selected roles are active, and an SMS notification was queued.'
+            : 'Existing agency account linked. The selected staff roles are active immediately.'
           : payload.activation_email_sent
             ? 'Staff account created. An activation code was sent by email.'
             : 'Existing account added to this agency.',
@@ -200,9 +202,13 @@ export default function StaffManagement({
           active: changes.active,
         }),
       });
-      await getError(response, 'Unable to update the staff account.');
+      const payload = await getError(response, 'Unable to update the staff account.');
       setEditing(null);
-      setNotice('Staff access updated.');
+      setNotice(
+        payload.role_notification_sms_queued
+          ? 'Staff access updated, and an SMS notification was queued for the new role.'
+          : 'Staff access updated.',
+      );
       await loadStaff(agencyId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to update the staff account.');
@@ -297,6 +303,7 @@ export default function StaffManagement({
                       name: account.name,
                       email: account.email,
                       phone: account.phone,
+                      idOrRegistrationNumber: account.id_or_registration_number || current.idOrRegistrationNumber,
                     }));
                   }
                 }}

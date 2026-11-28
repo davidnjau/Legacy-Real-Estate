@@ -6,6 +6,7 @@ import { usePropertyOfficerPortal } from './PortalShell';
 import ExistingAccountPicker, {
   type ExistingAccount,
 } from './ExistingAccountPicker';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type PropertyRecord = {
   id: number;
@@ -68,6 +69,8 @@ type TenantPayload = {
   existing_account_link?: boolean;
   activation_sms_queued?: boolean;
   activation_sms_error?: string | null;
+  tenant_link_sms_queued?: boolean | null;
+  tenant_link_sms_error?: string | null;
   move_in_caretaker_sms_queued?: boolean | null;
   move_in_caretaker_sms_error?: string | null;
   move_in_caretaker_id?: number | null;
@@ -78,6 +81,17 @@ type TenantPayload = {
 
 const fieldClass = 'mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm';
 const today = new Date().toISOString().slice(0, 10);
+const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  signed_agreement: 'Signed tenancy agreement',
+  identity_document: 'National ID / passport',
+  proof_of_payment: 'Proof of payment',
+  company_registration: 'Company registration document',
+  other: 'Other supporting document',
+};
+
+function documentTypeLabel(value: string) {
+  return DOCUMENT_TYPE_LABELS[value] || value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData;
@@ -107,9 +121,13 @@ export default function TenantOnboarding() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const [tenantSearch, setTenantSearch] = useState('');
+  const [tenantAccessFilter, setTenantAccessFilter] = useState<'all' | 'active' | 'pending'>('all');
+  const [tenantDocumentFilter, setTenantDocumentFilter] = useState<'all' | 'with_documents' | 'without_documents'>('all');
 
   const [tenantType, setTenantType] = useState<'individual' | 'company'>('individual');
-  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+  const [selectedAccount, setSelectedAccount] = useState<ExistingAccount | null>(null);
+  const selectedAccountId = selectedAccount?.id ?? null;
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -138,8 +156,11 @@ export default function TenantOnboarding() {
 
   const [createdTenant, setCreatedTenant] = useState<TenantRecord | null>(null);
   const [createdTenancy, setCreatedTenancy] = useState<TenantPayload['tenancy'] | null>(null);
+  const [existingAccountLinked, setExistingAccountLinked] = useState(false);
   const [activationSmsQueued, setActivationSmsQueued] = useState(false);
   const [activationSmsError, setActivationSmsError] = useState<string | null>(null);
+  const [tenantLinkSmsQueued, setTenantLinkSmsQueued] = useState<boolean | null>(null);
+  const [tenantLinkSmsError, setTenantLinkSmsError] = useState<string | null>(null);
   const [moveInCaretakerSmsQueued, setMoveInCaretakerSmsQueued] = useState<boolean | null>(null);
   const [moveInCaretakerSmsError, setMoveInCaretakerSmsError] = useState<string | null>(null);
   const [documentType, setDocumentType] = useState('signed_agreement');
@@ -157,20 +178,39 @@ export default function TenantOnboarding() {
     [visibleProperties],
   );
   const visibleUnits = useMemo(
-    () => units.filter((unit) => unit.status === 'vacant' && propertyById.has(unit.property_id)),
+    () => units.filter((unit) => unit.status.toLowerCase() === 'vacant' && propertyById.has(unit.property_id)),
     [propertyById, units],
   );
   const availableUnits = useMemo(
     () => visibleUnits.filter((unit) => unit.property_id === propertyId),
     [propertyId, visibleUnits],
   );
-  const availableCaretakers = propertyId === ''
-    ? []
-    : propertyById.get(propertyId)?.caretakers ?? [];
+  const availableCaretakers = useMemo(
+    () => (propertyId === ''
+      ? []
+      : (propertyById.get(propertyId)?.caretakers ?? []).filter(
+        (caretaker) => caretaker.id !== selectedAccountId,
+      )),
+    [propertyById, propertyId, selectedAccountId],
+  );
   const visibleTenants = useMemo(
     () => tenants.filter((tenant) => branchIds.has(tenant.branch_id)),
     [branchIds, tenants],
   );
+  const filteredTenants = useMemo(() => {
+    const query = tenantSearch.trim().toLowerCase();
+    return visibleTenants.filter((tenant) => {
+      const matchesSearch = !query || [tenant.name, tenant.email ?? '', tenant.phone]
+        .some((value) => value.toLowerCase().includes(query));
+      const matchesAccess = tenantAccessFilter === 'all'
+        || (tenantAccessFilter === 'active' ? Boolean(tenant.portal_user_id) : !tenant.portal_user_id);
+      const hasDocuments = Boolean(tenant.documents?.length);
+      const matchesDocuments = tenantDocumentFilter === 'all'
+        || (tenantDocumentFilter === 'with_documents' ? hasDocuments : !hasDocuments);
+      return matchesSearch && matchesAccess && matchesDocuments;
+    });
+  }, [tenantAccessFilter, tenantDocumentFilter, tenantSearch, visibleTenants]);
+  const tenantPagination = usePortalPagination(filteredTenants);
 
   const load = useCallback(async () => {
     if (!agency) {
@@ -261,6 +301,10 @@ export default function TenantOnboarding() {
     event?.preventDefault();
     const selectedUnitId = createdTenancy?.unit_id ?? unitId;
     if (selectedUnitId === '' || caretakerId === '' || !quote || !confirmPaid) return;
+    if (selectedAccountId !== null && caretakerId === selectedAccountId) {
+      setError('The tenant cannot be assigned to their own move-in inspection. Select another caretaker.');
+      return;
+    }
     if (!identityDocumentFile) {
       setError("Upload the tenant's national ID or passport before completing onboarding.");
       return;
@@ -321,10 +365,19 @@ export default function TenantOnboarding() {
       }
       setCreatedTenant(tenant);
       setCreatedTenancy(tenancy);
+      setExistingAccountLinked(Boolean(result.existing_account_link));
       setUploadedDocuments(tenant.documents ?? []);
-      setIdentityDocumentFile(null);
+      if (
+        result.activation_sms_queued !== false
+        && result.tenant_link_sms_queued !== false
+        && result.move_in_caretaker_sms_queued !== false
+      ) {
+        setIdentityDocumentFile(null);
+      }
       setActivationSmsQueued(Boolean(result.activation_sms_queued));
       setActivationSmsError(result.activation_sms_error ?? null);
+      setTenantLinkSmsQueued(result.tenant_link_sms_queued ?? null);
+      setTenantLinkSmsError(result.tenant_link_sms_error ?? null);
       setMoveInCaretakerSmsQueued(result.move_in_caretaker_sms_queued ?? null);
       setMoveInCaretakerSmsError(result.move_in_caretaker_sms_error ?? null);
       setTenants((current) => [
@@ -333,7 +386,9 @@ export default function TenantOnboarding() {
       ]);
       setNotice(
         result.existing_account_link
-          ? 'Existing agency account linked to the tenancy.'
+          ? result.tenant_link_sms_queued
+            ? 'Existing agency account linked to the tenancy. The tenancy notification SMS was queued.'
+            : 'Existing agency account linked, but the tenancy notification SMS needs to be retried.'
           : result.activation_sms_queued
           ? 'Payment confirmation and tenant onboarding are complete. The activation code was sent by SMS.'
           : 'Tenant onboarding is complete, but one or more activation messages need to be retried.',
@@ -349,6 +404,7 @@ export default function TenantOnboarding() {
   function startAnotherOnboarding() {
     setCreatedTenant(null);
     setCreatedTenancy(null);
+    setExistingAccountLinked(false);
     setConfirmPaid(false);
     setQuote(null);
     setUploadedDocuments([]);
@@ -356,10 +412,12 @@ export default function TenantOnboarding() {
     setIdentityDocumentFile(null);
     setActivationSmsQueued(false);
     setActivationSmsError(null);
+    setTenantLinkSmsQueued(null);
+    setTenantLinkSmsError(null);
     setMoveInCaretakerSmsQueued(null);
     setMoveInCaretakerSmsError(null);
     setTenantType('individual');
-    setSelectedAccountId(null);
+    setSelectedAccount(null);
     setName('');
     setEmail('');
     setPhone('');
@@ -420,14 +478,7 @@ export default function TenantOnboarding() {
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">Property operations</p>
-          <h1 className="mt-1 text-3xl font-bold text-slate-950">Tenant onboarding</h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Review the property-specific move-in amount, confirm payment, then create the tenancy and send activation instructions.
-          </p>
-        </div>
+      <header className="flex justify-end">
         <button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}
           className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold disabled:opacity-50">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
@@ -458,8 +509,16 @@ export default function TenantOnboarding() {
           <fieldset disabled={Boolean(createdTenancy) || saving} className="space-y-4 disabled:opacity-70">
             <label className="block text-sm font-semibold">Tenant type
               <select value={tenantType} onChange={(event) => {
-                setTenantType(event.target.value as 'individual' | 'company');
-                setSelectedAccountId(null);
+                const nextType = event.target.value as 'individual' | 'company';
+                setTenantType(nextType);
+                if (selectedAccount) {
+                  setSelectedAccount(null);
+                  setName('');
+                  setContactPerson('');
+                  setEmail('');
+                  setPhone('');
+                  setIdentity('');
+                }
               }}
                 className={fieldClass}>
                 <option value="individual">Individual</option>
@@ -470,19 +529,33 @@ export default function TenantOnboarding() {
               <ExistingAccountPicker
                 agencyId={agency.id}
                 selectedId={selectedAccountId}
+                excludeRole="tenant"
                 onSelect={(account: ExistingAccount | null) => {
-                  setSelectedAccountId(account?.id ?? null);
+                  setSelectedAccount(account);
                   if (account) {
-                    if (tenantType === 'company') setContactPerson(account.name);
-                    else setName(account.name);
+                    if (tenantType === 'company') {
+                      setContactPerson(account.name);
+                      setName('');
+                    } else {
+                      setName(account.name);
+                      setContactPerson('');
+                    }
                     setEmail(account.email);
                     setPhone(account.phone);
+                    setIdentity(account.id_or_registration_number ?? '');
+                  } else {
+                    setName('');
+                    setContactPerson('');
+                    setEmail('');
+                    setPhone('');
+                    setIdentity('');
                   }
                 }}
               />
             )}
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-sm font-semibold">Full name / company name
+              <label className="block text-sm font-semibold">
+                {tenantType === 'company' ? 'Company name' : 'Full name'}
                 <input required value={name} onChange={(event) => setName(event.target.value)}
                   readOnly={selectedAccountId !== null && tenantType === 'individual'}
                   className={fieldClass} />
@@ -490,14 +563,18 @@ export default function TenantOnboarding() {
               <label className="block text-sm font-semibold">Email
                 <input required type="email" autoComplete="email" value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  readOnly={selectedAccountId !== null} className={fieldClass} />
+                  readOnly={Boolean(selectedAccount?.email)} className={fieldClass} />
               </label>
             </div>
             <label className="block text-sm font-semibold">Move-in inspection caretaker
               <select required disabled={Boolean(createdTenancy) || saving} value={caretakerId}
                 onChange={(event) => setCaretakerId(Number(event.target.value) || '')}
                 className={fieldClass}>
-                <option value="" disabled>Select an assigned caretaker</option>
+                <option value="" disabled>
+                  {availableCaretakers.length
+                    ? 'Select an assigned caretaker'
+                    : 'No other caretaker is assigned to this property'}
+                </option>
                 {availableCaretakers.map((caretaker) => (
                   <option key={caretaker.id} value={caretaker.id}>
                     {caretaker.name}{caretaker.phone ? '' : ' · phone required'}
@@ -512,7 +589,7 @@ export default function TenantOnboarding() {
               <label className="block text-sm font-semibold">Phone
                 <input required type="tel" autoComplete="tel" placeholder="07XX XXX XXX" value={phone}
                   onChange={(event) => setPhone(event.target.value)}
-                  readOnly={selectedAccountId !== null} className={fieldClass} />
+                  readOnly={Boolean(selectedAccount?.phone)} className={fieldClass} />
               </label>
               <label className="block text-sm font-semibold">
                 {tenantType === 'individual' ? 'National ID or passport number' : "Contact person's national ID or passport number"}
@@ -527,6 +604,11 @@ export default function TenantOnboarding() {
                 <label className="block text-sm font-semibold">Contact person
                   <input required value={contactPerson} onChange={(event) => setContactPerson(event.target.value)}
                     readOnly={selectedAccountId !== null} className={fieldClass} />
+                  {selectedAccountId !== null && (
+                    <span className="mt-1 block text-xs font-normal text-slate-500">
+                      Populated from the selected account as the company&apos;s contact person.
+                    </span>
+                  )}
                 </label>
               </div>
             )}
@@ -685,13 +767,23 @@ export default function TenantOnboarding() {
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="font-bold">Activation delivery</h2>
             <p className="mt-2 text-sm text-slate-600">
-              After the full move-in balance is paid, the tenant receives a passwordless activation code by SMS.
+              {existingAccountLinked
+                ? 'The existing account is linked to the tenancy, so no activation code is required. Notification delivery is shown below.'
+                : 'After the full move-in balance is paid, the tenant receives a passwordless activation code by SMS.'}
             </p>
             {createdTenancy && (
               <div className="mt-4 space-y-2 text-sm">
-                <p className={activationSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
-                  SMS: {activationSmsQueued ? 'queued for delivery' : `not queued${activationSmsError ? ` — ${activationSmsError}` : ''}`}
-                </p>
+                {existingAccountLinked ? (
+                  <p className={tenantLinkSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
+                    Tenant notification SMS: {tenantLinkSmsQueued
+                      ? 'queued for delivery; no activation code is included'
+                      : `not queued${tenantLinkSmsError ? ` — ${tenantLinkSmsError}` : ''}`}
+                  </p>
+                ) : (
+                  <p className={activationSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
+                    SMS: {activationSmsQueued ? 'queued for delivery' : `not queued${activationSmsError ? ` — ${activationSmsError}` : ''}`}
+                  </p>
+                )}
                 <p className={moveInCaretakerSmsQueued ? 'text-emerald-800' : 'text-red-700'}>
                   Move-in inspection SMS: {moveInCaretakerSmsQueued
                     ? 'queued for the assigned caretaker'
@@ -702,7 +794,7 @@ export default function TenantOnboarding() {
           </section>
 
           {createdTenant && createdTenancy && (
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <section data-portal-card className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="font-bold">Tenancy documents</h2>
               <p className="mt-1 text-sm text-slate-600">
                 The national ID or passport is included from onboarding. Upload signed agreements or other additional move-in records here.
@@ -728,9 +820,9 @@ export default function TenantOnboarding() {
                   {uploadedDocuments.map((document) => (
                     <li key={document.id} className="py-2">
                       <a className="font-semibold text-emerald-900 underline" href={`/api/property-officer/tenants/${createdTenant.id}/documents/${document.id}`}>
-                        {document.name}
+                        {documentTypeLabel(document.document_type)}
                       </a>
-                      <span className="ml-2 text-xs text-slate-500">{document.document_type.replace('_', ' ')}</span>
+                      <span className="ml-2 text-xs text-slate-500">{document.name}</span>
                     </li>
                   ))}
                 </ul>
@@ -738,38 +830,66 @@ export default function TenantOnboarding() {
             </section>
           )}
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-bold">Tenant records</h2>
-            <p className="mt-1 text-xs text-slate-500">{visibleTenants.length} tenants in your assigned branches</p>
-            <ul className="mt-3 divide-y divide-slate-100">
-              {visibleTenants.slice(0, 8).map((tenant) => (
-                <li key={tenant.id} className="flex items-center justify-between gap-3 py-3 text-sm">
-                  <span>
-                    <span className="block font-semibold">{tenant.name}</span>
-                    <span className="block text-xs text-slate-500">{tenant.email || tenant.phone}</span>
-                    {tenant.documents?.length ? (
-                      <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                        {tenant.documents.map((document) => (
-                          <a
-                            key={document.id}
-                            className="text-xs font-semibold text-emerald-900 underline"
-                            href={`/api/property-officer/tenants/${tenant.id}/documents/${document.id}`}
-                          >
-                            {document.name}
-                          </a>
-                        ))}
+          <section data-portal-card className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 p-5">
+              <h2 className="font-bold">Tenant records</h2>
+              <p className="mt-1 text-xs text-slate-500">{filteredTenants.length} matching of {visibleTenants.length} tenants in your assigned branches</p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <label className="text-xs font-semibold text-slate-600 sm:col-span-1">Search tenants
+                  <input value={tenantSearch} onChange={(event) => setTenantSearch(event.target.value)} placeholder="Name, email, or phone" className={fieldClass} />
+                </label>
+                <label className="text-xs font-semibold text-slate-600">Portal access
+                  <select value={tenantAccessFilter} onChange={(event) => setTenantAccessFilter(event.target.value as typeof tenantAccessFilter)} className={fieldClass}>
+                    <option value="all">All account statuses</option>
+                    <option value="active">Portal active</option>
+                    <option value="pending">Setup pending</option>
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-600">Documents
+                  <select value={tenantDocumentFilter} onChange={(event) => setTenantDocumentFilter(event.target.value as typeof tenantDocumentFilter)} className={fieldClass}>
+                    <option value="all">All document records</option>
+                    <option value="with_documents">Has documents</option>
+                    <option value="without_documents">No documents</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            {loading ? <div className="p-5"><PortalLoading label="Loading tenant files…" rows={3} /></div> : (
+              <>
+                <ul className="divide-y divide-slate-100">
+                  {tenantPagination.pageRecords.map((tenant) => (
+                    <li key={tenant.id} data-portal-card className="flex flex-col gap-3 p-4 text-sm transition sm:flex-row sm:items-start sm:justify-between sm:p-5">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-slate-900">{tenant.name}</p>
+                        <p className="mt-1 text-xs text-slate-500">{tenant.email || 'No email'} · {tenant.phone}</p>
+                        {tenant.documents?.length ? (
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            {tenant.documents.map((document) => (
+                              <a
+                                key={document.id}
+                                href={`/api/property-officer/tenants/${tenant.id}/documents/${document.id}`}
+                                title={`${documentTypeLabel(document.document_type)}: ${document.name}`}
+                                className="rounded-xl border border-[#e7ebe5] bg-[#fbfcfa] px-3 py-2.5 transition hover:border-[#cbdcbe] hover:bg-[#f4f8f1]"
+                              >
+                                <span className="block text-[10px] font-bold uppercase tracking-wide text-[#668a4c]">{documentTypeLabel(document.document_type)}</span>
+                                <span className="mt-1 block truncate text-xs font-semibold text-[#344b3b]">{document.name}</span>
+                              </a>
+                            ))}
+                          </div>
+                        ) : <p className="mt-2 text-xs text-slate-400">No supporting documents attached.</p>}
+                      </div>
+                      <span className={`shrink-0 self-start rounded-full px-2.5 py-1 text-xs font-semibold ${tenant.portal_user_id ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                        {tenant.portal_user_id ? 'Portal active' : 'Setup pending'}
                       </span>
-                    ) : null}
-                  </span>
-                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${tenant.portal_user_id ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                    {tenant.portal_user_id ? 'Portal active' : 'Setup pending'}
-                  </span>
-                </li>
-              ))}
-              {!loading && visibleTenants.length === 0 && (
-                <li className="py-5 text-center text-sm text-slate-500">No tenant records yet.</li>
-              )}
-            </ul>
+                    </li>
+                  ))}
+                  {!filteredTenants.length && (
+                    <li className="py-8 text-center text-sm text-slate-500">No tenant records match these filters.</li>
+                  )}
+                </ul>
+                <PortalPagination {...tenantPagination} total={filteredTenants.length} onPageChange={tenantPagination.setPage} onPageSizeChange={tenantPagination.setPageSize} />
+              </>
+            )}
           </section>
         </aside>
       </section>

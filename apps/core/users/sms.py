@@ -39,9 +39,17 @@ SMS_TEMPLATES = {
         "Thank you, {agency_name}."
     ),
     "tenant_activation": (
-        "Hi {tenant_name}, welcome to Legacy Real Estate. Activate your tenant account "
-        "at {activation_url} using code {code}. The code expires in 48 hours. "
-        "Do not share this code with anyone."
+        "Hi {tenant_name}, welcome to Legacy Real Estate. To activate your tenant account, "
+        "use code {code} either on WhatsApp (send your National ID then code) "
+        "or visit {activation_url}. Do not share this code with anyone."
+    ),
+    "tenant_account_linked": (
+        "Hi {tenant_name}, your existing Legacy Real Estate account is linked to your "
+        "tenancy at {property_name}, unit {unit_code}. No activation code is needed."
+    ),
+    "staff_role_added": (
+        "Hi {staff_name}, the {role_names} role has been added to your Legacy Real Estate "
+        "account at {agency_name}. Your existing sign-in details stay the same."
     ),
     "landlord_activation": (
         "Hi {landlord_name}, activate your Legacy Real Estate landlord account "

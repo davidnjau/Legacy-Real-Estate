@@ -6,6 +6,7 @@ import { usePropertyOfficerPortal } from '../../../components/property-officer/P
 import ExistingAccountPicker, {
   type ExistingAccount,
 } from '../../../components/property-officer/ExistingAccountPicker';
+import { PortalLoading, PortalPagination, usePortalPagination } from '../../../components/property-officer/PortalUI';
 
 type Branch = { id: number; name: string; town: string };
 type PropertyOption = {
@@ -50,6 +51,8 @@ export default function LandlordOnboardingPage() {
   const [branchId, setBranchId] = useState('');
   const [propertyId, setPropertyId] = useState('');
   const [filterBranchId, setFilterBranchId] = useState('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | LandlordAccount['account_status']>('all');
+  const [filterPropertyId, setFilterPropertyId] = useState('all');
   const [search, setSearch] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -94,11 +97,18 @@ export default function LandlordOnboardingPage() {
     const query = search.trim().toLowerCase();
     return accounts.filter((account) => {
       const matchesBranch = filterBranchId === 'all' || String(account.branch.id) === filterBranchId;
+      const matchesStatus = filterStatus === 'all' || account.account_status === filterStatus;
+      const landlordProperties = properties.filter((property) => property.landlord_id === account.id);
+      const matchesProperty = filterPropertyId === 'all'
+        || (filterPropertyId === 'unassigned'
+          ? landlordProperties.length === 0
+          : landlordProperties.some((property) => String(property.id) === filterPropertyId));
       const matchesSearch = !query || [account.name, account.email, account.phone, account.branch.name]
         .some((value) => value.toLowerCase().includes(query));
-      return matchesBranch && matchesSearch;
+      return matchesBranch && matchesStatus && matchesProperty && matchesSearch;
     });
-  }, [accounts, filterBranchId, search]);
+  }, [accounts, filterBranchId, filterPropertyId, filterStatus, properties, search]);
+  const accountPagination = usePortalPagination(visibleAccounts);
   const branchProperties = properties.filter((property) => String(property.branch_id) === branchId);
 
   async function getCsrfToken() {
@@ -147,11 +157,20 @@ export default function LandlordOnboardingPage() {
       setKraPin('');
       setSelectedAccountId(null);
       setPropertyId('');
+      const deliveryUpdates = [
+        payload.activation_sms_queued
+          ? `Activation SMS queued for ${phone.trim()}.`
+          : '',
+        payload.activation_email_sent
+          ? `Activation link and code sent to ${email.trim()}.`
+          : '',
+      ].filter(Boolean);
       setNotice(
-        selectedAccountId
-          ? `Verification code sent to ${phone.trim()}. The landlord account will be linked after identity confirmation.`
-          : `Activation code sent to ${phone.trim()}.`,
+        `${deliveryUpdates.join(' ')}${selectedAccountId ? ' The landlord account will be linked after identity confirmation.' : ''}`,
       );
+      if (typeof payload.delivery_warning === 'string' && payload.delivery_warning) {
+        setError(payload.delivery_warning);
+      }
       await loadAccounts();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to create the landlord account.');
@@ -176,7 +195,18 @@ export default function LandlordOnboardingPage() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(responseError(payload, 'Unable to send the activation SMS.'));
-      setNotice(`Activation code sent to ${landlord.phone}.`);
+      const deliveryUpdates = [
+        payload.activation_sms_queued
+          ? `Activation SMS queued for ${landlord.phone}.`
+          : '',
+        payload.activation_email_sent
+          ? `Activation link and code sent to ${landlord.email}.`
+          : '',
+      ].filter(Boolean);
+      setNotice(deliveryUpdates.join(' '));
+      if (typeof payload.delivery_warning === 'string' && payload.delivery_warning) {
+        setError(payload.delivery_warning);
+      }
       await loadAccounts();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to send the activation SMS.');
@@ -197,14 +227,7 @@ export default function LandlordOnboardingPage() {
 
   return (
     <main className="space-y-7 p-5 lg:p-9">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency.name}</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight">Landlords & onboarding</h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Create landlord portal access for your assigned branches and resend pending activation SMS codes.
-          </p>
-        </div>
+      <header className="flex justify-end">
         <button onClick={() => void loadAccounts()} disabled={loading}
           className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
@@ -220,18 +243,22 @@ export default function LandlordOnboardingPage() {
             <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-800"><UserPlus size={19} /></span>
             <div>
               <h2 className="font-bold">Create landlord account</h2>
-              <p className="text-xs text-slate-500">The landlord receives an email to activate their login.</p>
+              <p className="text-xs text-slate-500">The landlord receives an SMS with their activation link and code.</p>
             </div>
           </div>
           <ExistingAccountPicker
             agencyId={agency.id}
             selectedId={selectedAccountId}
+            excludeRole="landlord"
             onSelect={(account: ExistingAccount | null) => {
               setSelectedAccountId(account?.id ?? null);
               if (account) {
                 setName(account.name);
                 setEmail(account.email);
                 setPhone(account.phone);
+                if (account.id_or_registration_number) {
+                  setIdentity(account.id_or_registration_number);
+                }
               }
             }}
           />
@@ -289,11 +316,11 @@ export default function LandlordOnboardingPage() {
           </button>
         </form>
 
-        <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section data-portal-card className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-bold">Landlord accounts</h2>
-              <p className="mt-1 text-xs text-slate-500">{accounts.length} records in your assigned branches</p>
+              <p className="mt-1 text-xs text-slate-500">{visibleAccounts.length} matching of {accounts.length} records</p>
             </div>
             <label className="relative min-w-48 flex-1 sm:max-w-64">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -301,20 +328,43 @@ export default function LandlordOnboardingPage() {
                 placeholder="Search landlords" className="w-full rounded-xl border border-slate-300 py-2.5 pl-9 pr-3 text-sm" />
             </label>
           </div>
-          <label className="mt-4 block max-w-xs text-xs font-semibold text-slate-600">Filter by branch
-            <select value={filterBranchId} onChange={(event) => setFilterBranchId(event.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800">
-              <option value="all">All assigned branches</option>
-              {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-            </select>
-          </label>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <label className="text-xs font-semibold text-slate-600">Branch
+              <select value={filterBranchId} onChange={(event) => setFilterBranchId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800">
+                <option value="all">All assigned branches</option>
+                {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Portal status
+              <select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value as typeof filterStatus)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800">
+                <option value="all">All account statuses</option>
+                <option value="active">Active</option>
+                <option value="pending_activation">Pending activation</option>
+                <option value="not_invited">Not invited</option>
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Property assignment
+              <select value={filterPropertyId} onChange={(event) => setFilterPropertyId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800">
+                <option value="all">All property assignments</option>
+                <option value="unassigned">No property assigned</option>
+                {properties.filter((property) => property.landlord_id !== null).map((property) => (
+                  <option key={property.id} value={property.id}>{property.name} · {property.branch_name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[690px] text-left text-sm">
               <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                 <tr><th className="px-3 py-3 font-semibold">Landlord</th><th className="px-3 py-3 font-semibold">Branch</th><th className="px-3 py-3 font-semibold">Portal access</th><th className="px-3 py-3 text-right font-semibold">Action</th></tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {visibleAccounts.map((account) => (
+                {loading ? (
+                  <tr><td colSpan={4} className="p-4"><PortalLoading label="Loading landlord accounts…" rows={3} /></td></tr>
+                ) : accountPagination.pageRecords.map((account) => (
                   <tr key={account.id} className="align-top">
                     <td className="px-3 py-4">
                       <p className="font-semibold text-slate-900">{account.name}</p>
@@ -341,8 +391,8 @@ export default function LandlordOnboardingPage() {
                 )}
               </tbody>
             </table>
-            {loading && <p className="py-6 text-center text-sm text-slate-500">Loading landlord accounts…</p>}
           </div>
+          {!loading && <PortalPagination {...accountPagination} total={visibleAccounts.length} onPageChange={accountPagination.setPage} onPageSizeChange={accountPagination.setPageSize} />}
         </section>
       </section>
     </main>

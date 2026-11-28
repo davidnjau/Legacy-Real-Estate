@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { Mail, RefreshCw, UserPlus, UserRoundX } from 'lucide-react';
+import { ChevronDown, Mail, RefreshCw, UserPlus, UserRoundX } from 'lucide-react';
 import { usePropertyOfficerPortal } from './PortalShell';
 import ExistingAccountPicker, {
   type ExistingAccount,
 } from './ExistingAccountPicker';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type PropertyRecord = {
   id: number;
@@ -82,6 +83,11 @@ export default function CaretakerManager() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const [caretakerSearch, setCaretakerSearch] = useState('');
+  const [caretakerPropertyFilter, setCaretakerPropertyFilter] = useState('all');
+  const [invitationSearch, setInvitationSearch] = useState('');
+  const [invitationPropertyFilter, setInvitationPropertyFilter] = useState('all');
+  const [invitationStatusFilter, setInvitationStatusFilter] = useState('all');
 
   const visibleProperties = useMemo(
     () => properties.filter((property) => branchIds.has(property.branch_id)),
@@ -97,6 +103,38 @@ export default function CaretakerManager() {
     const ids = new Set(visibleProperties.map((property) => property.id));
     return caretakers.filter((caretaker) => ids.has(caretaker.property_id));
   }, [caretakers, visibleProperties]);
+  const filteredCaretakers = useMemo(() => {
+    const query = caretakerSearch.trim().toLowerCase();
+    return visibleCaretakers.filter((caretaker) => {
+      const matchesProperty = caretakerPropertyFilter === 'all'
+        || String(caretaker.property_id) === caretakerPropertyFilter;
+      const matchesSearch = !query || [
+        caretaker.full_name,
+        caretaker.email,
+        caretaker.phone,
+        caretaker.property_name,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesProperty && matchesSearch;
+    });
+  }, [caretakerPropertyFilter, caretakerSearch, visibleCaretakers]);
+  const filteredInvitations = useMemo(() => {
+    const query = invitationSearch.trim().toLowerCase();
+    return visibleInvitations.filter((invitation) => {
+      const matchesProperty = invitationPropertyFilter === 'all'
+        || (invitation.property_ids?.some((id) => String(id) === invitationPropertyFilter)
+          ?? String(invitation.property_id) === invitationPropertyFilter);
+      const matchesStatus = invitationStatusFilter === 'all' || invitation.status === invitationStatusFilter;
+      const matchesSearch = !query || [
+        invitation.full_name,
+        invitation.email,
+        invitation.property_name,
+        ...(invitation.property_names ?? []),
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesProperty && matchesStatus && matchesSearch;
+    });
+  }, [invitationPropertyFilter, invitationSearch, invitationStatusFilter, visibleInvitations]);
+  const caretakerPagination = usePortalPagination(filteredCaretakers);
+  const invitationPagination = usePortalPagination(filteredInvitations);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -224,14 +262,7 @@ export default function CaretakerManager() {
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">Property operations</p>
-          <h1 className="mt-1 text-3xl font-bold text-slate-950">Caretaker onboarding</h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Invite caretakers to assigned properties and manage their property access.
-          </p>
-        </div>
+      <header className="flex justify-end">
         <button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}
           className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold disabled:opacity-50">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
@@ -254,6 +285,7 @@ export default function CaretakerManager() {
             <ExistingAccountPicker
               agencyId={agency.id}
               selectedId={selectedAccountId}
+              excludeRole="caretaker"
               onSelect={(account: ExistingAccount | null) => {
                 setSelectedAccountId(account?.id ?? null);
                 if (account) {
@@ -267,28 +299,46 @@ export default function CaretakerManager() {
           <fieldset className="space-y-2">
             <legend className="text-sm font-semibold">Properties</legend>
             <p className="text-xs text-slate-500">Select every property this caretaker will be responsible for.</p>
-            <div className="max-h-48 space-y-2 overflow-y-auto rounded-xl border border-slate-200 p-3">
-              {visibleProperties.map((property) => (
-                <label key={property.id} className="flex items-start gap-2 text-sm font-medium">
-                  <input
-                    type="checkbox"
-                    checked={selectedPropertyIds.includes(property.id)}
-                    onChange={(event) => {
-                      setSelectedPropertyIds((current) => (
-                        event.target.checked
-                          ? [...current, property.id]
-                          : current.filter((id) => id !== property.id)
-                      ));
-                    }}
-                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-800 focus:ring-emerald-700"
-                  />
-                  <span>{property.name}{property.branch_name ? ` · ${property.branch_name}` : ''}</span>
-                </label>
-              ))}
-              {!loading && visibleProperties.length === 0 && (
-                <p className="text-sm text-slate-500">No properties are available in your assigned branches.</p>
-              )}
-            </div>
+            <details className="group relative">
+              <summary className={`${fieldClass} flex cursor-pointer list-none items-center justify-between gap-3`}>
+                <span>
+                  {selectedPropertyIds.length
+                    ? `${selectedPropertyIds.length} propert${selectedPropertyIds.length === 1 ? 'y' : 'ies'} selected`
+                    : 'Select one or more properties'}
+                </span>
+                <ChevronDown aria-hidden="true" size={16} className="shrink-0 text-slate-500" />
+              </summary>
+              <div className="absolute left-0 right-0 z-10 mt-1 max-h-56 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-lg">
+                {visibleProperties.map((property) => (
+                  <label key={property.id} className="flex items-start gap-2 text-sm font-medium">
+                    <input
+                      type="checkbox"
+                      checked={selectedPropertyIds.includes(property.id)}
+                      onChange={(event) => {
+                        setSelectedPropertyIds((current) => (
+                          event.target.checked
+                            ? [...current, property.id]
+                            : current.filter((id) => id !== property.id)
+                        ));
+                      }}
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-800 focus:ring-emerald-700"
+                    />
+                    <span>{property.name}{property.branch_name ? ` · ${property.branch_name}` : ''}</span>
+                  </label>
+                ))}
+                {!loading && visibleProperties.length === 0 && (
+                  <p className="text-sm text-slate-500">No properties are available in your assigned branches.</p>
+                )}
+              </div>
+            </details>
+            {selectedPropertyIds.length > 0 && (
+              <p className="text-xs text-slate-600">
+                Selected: {visibleProperties
+                  .filter((property) => selectedPropertyIds.includes(property.id))
+                  .map((property) => property.name)
+                  .join(', ')}
+              </p>
+            )}
           </fieldset>
           <label className="block text-sm font-semibold">Caretaker email
             <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)}
@@ -317,15 +367,31 @@ export default function CaretakerManager() {
         </form>
 
         <section className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div data-portal-card className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 p-5">
             <h2 className="font-bold">Active caretaker assignments</h2>
+            <p className="mt-1 text-xs text-slate-500">{filteredCaretakers.length} matching assignment{filteredCaretakers.length === 1 ? '' : 's'}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-600">Search caretaker
+                <input value={caretakerSearch} onChange={(event) => setCaretakerSearch(event.target.value)} placeholder="Name, email, phone, or property" className={fieldClass} />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Property
+                <select value={caretakerPropertyFilter} onChange={(event) => setCaretakerPropertyFilter(event.target.value)} className={fieldClass}>
+                  <option value="all">All properties</option>
+                  {visibleProperties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
+                </select>
+              </label>
+            </div>
+            </div>
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[560px] text-left text-sm">
                 <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                   <tr><th className="px-3 py-3">Caretaker</th><th className="px-3 py-3">Property</th><th className="px-3 py-3 text-right">Action</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visibleCaretakers.map((caretaker) => (
+                  {loading ? (
+                    <tr><td colSpan={3} className="p-4"><PortalLoading label="Loading caretaker assignments…" rows={3} /></td></tr>
+                  ) : caretakerPagination.pageRecords.map((caretaker) => (
                     <tr key={`${caretaker.id}-${caretaker.property_id}`}>
                       <td className="px-3 py-3">
                         <p className="font-semibold">{caretaker.full_name}</p>
@@ -340,23 +406,48 @@ export default function CaretakerManager() {
                       </td>
                     </tr>
                   ))}
-                  {!loading && visibleCaretakers.length === 0 && (
+                  {!loading && filteredCaretakers.length === 0 && (
                     <tr><td colSpan={3} className="px-3 py-8 text-center text-sm text-slate-500">No active caretakers in the selected branches.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
+            {!loading && <PortalPagination {...caretakerPagination} total={filteredCaretakers.length} onPageChange={caretakerPagination.setPage} onPageSizeChange={caretakerPagination.setPageSize} />}
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div data-portal-card className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 p-5">
             <h2 className="font-bold">Pending and recent invitations</h2>
+            <p className="mt-1 text-xs text-slate-500">{filteredInvitations.length} matching invitation{filteredInvitations.length === 1 ? '' : 's'}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <label className="text-xs font-semibold text-slate-600">Search invitations
+                <input value={invitationSearch} onChange={(event) => setInvitationSearch(event.target.value)} placeholder="Name, email, or property" className={fieldClass} />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Property
+                <select value={invitationPropertyFilter} onChange={(event) => setInvitationPropertyFilter(event.target.value)} className={fieldClass}>
+                  <option value="all">All properties</option>
+                  {visibleProperties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Invitation status
+                <select value={invitationStatusFilter} onChange={(event) => setInvitationStatusFilter(event.target.value)} className={fieldClass}>
+                  <option value="all">All statuses</option>
+                  {[...new Set(visibleInvitations.map((invitation) => invitation.status))].sort().map((status) => (
+                    <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            </div>
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[560px] text-left text-sm">
                 <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                   <tr><th className="px-3 py-3">Caretaker</th><th className="px-3 py-3">Property</th><th className="px-3 py-3">Status</th><th className="px-3 py-3 text-right">Action</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {visibleInvitations.map((invitation) => (
+                  {loading ? (
+                    <tr><td colSpan={4} className="p-4"><PortalLoading label="Loading caretaker invitations…" rows={3} /></td></tr>
+                  ) : invitationPagination.pageRecords.map((invitation) => (
                     <tr key={invitation.id}>
                       <td className="px-3 py-3">
                         <p className="font-semibold">{invitation.full_name || invitation.email}</p>
@@ -380,12 +471,13 @@ export default function CaretakerManager() {
                       </td>
                     </tr>
                   ))}
-                  {!loading && visibleInvitations.length === 0 && (
+                  {!loading && filteredInvitations.length === 0 && (
                     <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-slate-500">No caretaker invitations found.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
+            {!loading && <PortalPagination {...invitationPagination} total={filteredInvitations.length} onPageChange={invitationPagination.setPage} onPageSizeChange={invitationPagination.setPageSize} />}
           </div>
         </section>
       </section>

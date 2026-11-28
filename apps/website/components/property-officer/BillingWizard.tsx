@@ -13,6 +13,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type InvoiceLine = {
   id: number;
@@ -159,6 +160,10 @@ export default function BillingWizard() {
   const [waiverUnitId, setWaiverUnitId] = useState('');
   const [waiverAmount, setWaiverAmount] = useState('');
   const [waiverReason, setWaiverReason] = useState('');
+  const [invoiceSearch, setInvoiceSearch] = useState('');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('all');
+  const [waiverSearch, setWaiverSearch] = useState('');
+  const [waiverStatusFilter, setWaiverStatusFilter] = useState('all');
   const [today, setToday] = useState('');
   const roleNames = [
     ...(user?.roles ?? []),
@@ -175,6 +180,27 @@ export default function BillingWizard() {
     ),
     [rows, branchIds, selectedPropertyId, today],
   );
+  const filteredInvoiceRows = useMemo(() => {
+    const query = invoiceSearch.trim().toLowerCase();
+    return visibleRows.filter((row) => {
+      const state = row.invoice?.status === 'issued'
+        ? 'issued'
+        : row.invoice
+          ? 'draft'
+          : row.ready
+            ? 'ready'
+            : 'on_hold';
+      const matchesStatus = invoiceStatusFilter === 'all' || state === invoiceStatusFilter;
+      const matchesSearch = !query || [
+        row.property_name,
+        row.unit_code,
+        row.tenant_name,
+        row.invoice?.number ?? '',
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesStatus && matchesSearch;
+    });
+  }, [invoiceSearch, invoiceStatusFilter, visibleRows]);
+  const invoicePagination = usePortalPagination(filteredInvoiceRows);
   const displaySummary = useMemo(() => {
     if (!summary) return null;
     return {
@@ -199,6 +225,21 @@ export default function BillingWizard() {
     }))),
     [visibleRows],
   );
+  const filteredWaiverHistory = useMemo(() => {
+    const query = waiverSearch.trim().toLowerCase();
+    return waiverHistory.filter((waiver) => {
+      const matchesStatus = waiverStatusFilter === 'all' || waiver.status === waiverStatusFilter;
+      const matchesSearch = !query || [
+        waiver.propertyName,
+        waiver.unitCode,
+        waiver.tenantName,
+        waiver.reason,
+        waiver.invoice?.number ?? '',
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesStatus && matchesSearch;
+    });
+  }, [waiverHistory, waiverSearch, waiverStatusFilter]);
+  const waiverPagination = usePortalPagination(filteredWaiverHistory);
 
   useEffect(() => {
     const updateDate = () => {
@@ -479,7 +520,7 @@ export default function BillingWizard() {
             <p className="mt-1 text-xs text-[#89948c]">Requests are saved to the system and routed to the Director. Approved waivers update the invoice balance.</p>
           </div>
           <span className="rounded-full bg-[#f3f6f1] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[#617565]">
-            {waiverHistory.length} recorded
+            {filteredWaiverHistory.length} of {waiverHistory.length} recorded
           </span>
         </div>
         <div className="grid gap-0 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
@@ -564,8 +605,25 @@ export default function BillingWizard() {
             </button>
           </form>
 
+          <div>
+          <div className="grid gap-3 border-b border-[#edf0eb] p-4 sm:grid-cols-2">
+            <label className="text-xs font-semibold text-[#607267]">Search waiver requests
+              <input value={waiverSearch} onChange={(event) => setWaiverSearch(event.target.value)} placeholder="Tenant, unit, invoice, or reason" className="mt-1 w-full rounded-xl border border-[#dfe5df] px-3 py-2.5 text-sm" />
+            </label>
+            <label className="text-xs font-semibold text-[#607267]">Decision status
+              <select value={waiverStatusFilter} onChange={(event) => setWaiverStatusFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-sm">
+                <option value="all">All decision statuses</option>
+                <option value="pending">Pending approval</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </label>
+          </div>
           <div className="divide-y divide-[#edf0eb]">
-            {waiverHistory.map((waiver) => (
+            {filteredWaiverHistory.length === 0 && waiverHistory.length > 0 ? (
+              <p className="px-6 py-8 text-center text-sm text-[#89948c]">No waiver requests match these filters.</p>
+            ) : null}
+            {waiverPagination.pageRecords.map((waiver) => (
               <article key={waiver.id} className="px-5 py-4 sm:px-6">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -610,6 +668,8 @@ export default function BillingWizard() {
               </div>
             )}
           </div>
+          <PortalPagination {...waiverPagination} total={filteredWaiverHistory.length} onPageChange={waiverPagination.setPage} onPageSizeChange={waiverPagination.setPageSize} />
+          </div>
         </div>
       </section>
 
@@ -624,10 +684,24 @@ export default function BillingWizard() {
               <FileText size={13} /> {month ? monthLabel(month) : 'Selected period'}
             </span>
           </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-semibold text-[#657469]">Search invoices
+              <input value={invoiceSearch} onChange={(event) => setInvoiceSearch(event.target.value)} placeholder="Tenant, unit, property, or invoice number" className="mt-1 w-full rounded-xl border border-[#dfe5df] px-3 py-2.5 text-sm text-[#344b3b]" />
+            </label>
+            <label className="text-xs font-semibold text-[#657469]">Readiness / invoice status
+              <select value={invoiceStatusFilter} onChange={(event) => setInvoiceStatusFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-[#dfe5df] bg-white px-3 py-2.5 text-sm text-[#344b3b]">
+                <option value="all">All billing records</option>
+                <option value="draft">Draft invoice</option>
+                <option value="issued">Published invoice</option>
+                <option value="ready">Ready to draft</option>
+                <option value="on_hold">On hold / awaiting readings</option>
+              </select>
+            </label>
+          </div>
         </div>
         {loading ? (
-          <p role="status" className="p-6 text-sm text-[#718078]">Loading billing readiness…</p>
-        ) : visibleRows.length === 0 ? (
+          <div className="p-5"><PortalLoading label="Loading billing readiness…" rows={4} /></div>
+        ) : filteredInvoiceRows.length === 0 ? (
           <div className="flex flex-col items-center px-6 py-12 text-center">
             <span className="grid h-11 w-11 place-items-center rounded-full bg-[#f3f6f1] text-[#82927f]"><AlertCircle size={18} /></span>
             <p className="mt-3 text-sm font-semibold text-[#526458]">No invoices visible for this period</p>
@@ -635,7 +709,7 @@ export default function BillingWizard() {
           </div>
         ) : (
           <div className="divide-y divide-[#edf0eb]">
-            {visibleRows.map((row) => {
+            {invoicePagination.pageRecords.map((row) => {
               const invoice = row.invoice;
               return (
                 <article key={row.tenancy_id} className="space-y-4 p-5 transition-colors hover:bg-[#fcfdfb] sm:p-6">
@@ -683,6 +757,7 @@ export default function BillingWizard() {
             })}
           </div>
         )}
+        {!loading && <PortalPagination {...invoicePagination} total={filteredInvoiceRows.length} onPageChange={invoicePagination.setPage} onPageSizeChange={invoicePagination.setPageSize} />}
       </section>
     </main>
   );

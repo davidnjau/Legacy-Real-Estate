@@ -1,8 +1,9 @@
 'use client';
 
 import Image from 'next/image';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, ClipboardCheck, RefreshCw } from 'lucide-react';
+import { PortalLoading, PortalPagination, usePortalPagination } from '../../../components/property-officer/PortalUI';
 
 type HandoverCondition = {
   area: string;
@@ -60,6 +61,9 @@ export default function PropertyOfficerHandoversPage() {
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [propertyFilter, setPropertyFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState('');
 
   const loadHandovers = useCallback(async () => {
     setLoading(true);
@@ -81,6 +85,29 @@ export default function PropertyOfficerHandoversPage() {
   useEffect(() => {
     void loadHandovers();
   }, [loadHandovers]);
+
+  const propertyOptions = useMemo(
+    () => [...new Set(handovers.map((handover) => handover.property_name))].sort(),
+    [handovers],
+  );
+  const statusOptions = useMemo(
+    () => [...new Set(handovers.map((handover) => handover.status))].sort(),
+    [handovers],
+  );
+  const filteredHandovers = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return handovers.filter((handover) => {
+      const matchesProperty = propertyFilter === 'all' || handover.property_name === propertyFilter;
+      const matchesStatus = statusFilter === 'all' || handover.status === statusFilter;
+      const matchesSearch = !query || [
+        handover.property_name,
+        handover.unit_code,
+        handover.tenant_name,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesProperty && matchesStatus && matchesSearch;
+    });
+  }, [handovers, propertyFilter, search, statusFilter]);
+  const handoverPagination = usePortalPagination(filteredHandovers);
 
   const confirmHandover = async (handover: MoveInHandover) => {
     setConfirmingId(handover.id);
@@ -105,14 +132,7 @@ export default function PropertyOfficerHandoversPage() {
 
   return (
     <div className="space-y-6 p-4 sm:p-6 lg:p-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Property operations</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Move-in handover reviews</h1>
-          <p className="mt-1 max-w-2xl text-sm text-slate-600">
-            Review inventory counts, room condition, opening readings, keys, and private photo evidence before confirming the handover.
-          </p>
-        </div>
+      <header className="flex justify-end">
         <button
           type="button"
           onClick={() => void loadHandovers()}
@@ -134,17 +154,35 @@ export default function PropertyOfficerHandoversPage() {
           {notice}
         </p>
       )}
-      {loading && <p className="text-sm text-slate-500">Loading handovers awaiting review…</p>}
-      {!loading && !error && handovers.length === 0 && (
+      {!loading && !error && filteredHandovers.length === 0 && (
         <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
           <CheckCircle size={28} className="mx-auto text-emerald-700" />
-          <h2 className="mt-3 font-semibold text-slate-900">No handovers awaiting confirmation</h2>
-          <p className="mt-1 text-sm text-slate-600">Submitted caretaker move-in records will appear here.</p>
+          <h2 className="mt-3 font-semibold text-slate-900">{handovers.length ? 'No handovers match these filters' : 'No handovers awaiting confirmation'}</h2>
+          <p className="mt-1 text-sm text-slate-600">{handovers.length ? 'Adjust the property, status, or search filters to see more records.' : 'Submitted caretaker move-in records will appear here.'}</p>
         </div>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-2">
-        {handovers.map((handover) => (
+      {loading ? <PortalLoading label="Loading submitted move-in handovers…" rows={4} /> : (
+      <div className="space-y-4">
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-3">
+          <label className="text-xs font-semibold text-slate-600">Search handovers
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tenant, property, or unit" className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm" />
+          </label>
+          <label className="text-xs font-semibold text-slate-600">Property
+            <select value={propertyFilter} onChange={(event) => setPropertyFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="all">All properties</option>
+              {propertyOptions.map((property) => <option key={property}>{property}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-semibold text-slate-600">Handover status
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="all">All statuses</option>
+              {statusOptions.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="grid gap-5 xl:grid-cols-2">
+        {handoverPagination.pageRecords.map((handover) => (
           <article key={handover.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-start gap-3">
               <span className="rounded-xl bg-emerald-50 p-2 text-emerald-800">
@@ -265,6 +303,9 @@ export default function PropertyOfficerHandoversPage() {
           </article>
         ))}
       </div>
+      <PortalPagination {...handoverPagination} total={filteredHandovers.length} onPageChange={handoverPagination.setPage} onPageSizeChange={handoverPagination.setPageSize} />
+      </div>
+      )}
     </div>
   );
 }

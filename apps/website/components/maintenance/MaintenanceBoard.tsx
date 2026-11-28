@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { MessageSquare, Clock, CheckCircle2, X, Send, Wrench, AlertCircle, LayoutDashboard, List, Calendar, Camera } from 'lucide-react';
 import { usePathname } from 'next/navigation';
+import { PortalLoading, PortalPagination, usePortalPagination } from '../property-officer/PortalUI';
 
 type Ticket = {
   id: string;
@@ -82,6 +83,11 @@ export default function MaintenanceBoard() {
   const [caretakers, setCaretakers] = useState<CaretakerRecord[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState('');
   const [selectedUnitId, setSelectedUnitId] = useState('');
+  const [ticketSearch, setTicketSearch] = useState('');
+  const [ticketPropertyFilter, setTicketPropertyFilter] = useState('all');
+  const [ticketCategoryFilter, setTicketCategoryFilter] = useState('all');
+  const [ticketPriorityFilter, setTicketPriorityFilter] = useState('all');
+  const [ticketStatusFilter, setTicketStatusFilter] = useState('all');
   const [newTicket, setNewTicket] = useState({
     title: '',
     description: '',
@@ -111,8 +117,11 @@ export default function MaintenanceBoard() {
   const [ledgerSummary, setLedgerSummary] = useState({ totalSpend: 0, totalRepairs: 0 });
   const [loadingLedger, setLoadingLedger] = useState(false);
   const [ledgerError, setLedgerError] = useState('');
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [ledgerCategoryFilter, setLedgerCategoryFilter] = useState('all');
 
   const loadTickets = async () => {
+    setLoading(true);
     try {
       const response = await fetch('/api/maintenance/landlord');
       const payload = await response.json();
@@ -129,6 +138,68 @@ export default function MaintenanceBoard() {
   };
 
   useEffect(() => { loadTickets(); }, []);
+
+  const allTickets = useMemo(
+    () => [...pending, ...inProgress, ...resolved],
+    [inProgress, pending, resolved],
+  );
+  const ticketCategoryOptions = useMemo(
+    () => [...new Set(allTickets.map((ticket) => ticket.category))].sort(),
+    [allTickets],
+  );
+  const ticketPropertyOptions = useMemo(
+    () => [...new Map(allTickets.map((ticket) => [ticket.propertyId, ticket.propertyName])).entries()]
+      .sort((left, right) => left[1].localeCompare(right[1])),
+    [allTickets],
+  );
+  const filterTickets = useCallback((tickets: Ticket[]) => {
+    const query = ticketSearch.trim().toLowerCase();
+    return tickets.filter((ticket) => {
+      const matchesProperty = ticketPropertyFilter === 'all' || String(ticket.propertyId) === ticketPropertyFilter;
+      const matchesCategory = ticketCategoryFilter === 'all' || ticket.category === ticketCategoryFilter;
+      const matchesPriority = ticketPriorityFilter === 'all' || ticket.priority === ticketPriorityFilter;
+      const matchesSearch = !query || [
+        ticket.ticketId,
+        ticket.description,
+        ticket.category,
+        ticket.priority,
+        ticket.propertyName,
+        ticket.unitCode,
+        ticket.tenantName,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesProperty && matchesCategory && matchesPriority && matchesSearch;
+    });
+  }, [ticketCategoryFilter, ticketPriorityFilter, ticketPropertyFilter, ticketSearch]);
+  const visiblePending = useMemo(() => filterTickets(pending), [filterTickets, pending]);
+  const visibleInProgress = useMemo(() => filterTickets(inProgress), [filterTickets, inProgress]);
+  const visibleResolved = useMemo(() => filterTickets(resolved), [filterTickets, resolved]);
+  const pendingPagination = usePortalPagination(visiblePending);
+  const inProgressPagination = usePortalPagination(visibleInProgress);
+  const resolvedPagination = usePortalPagination(visibleResolved);
+  const filteredLedgerRows = useMemo(() => {
+    const query = ledgerSearch.trim().toLowerCase();
+    return ledgerRows.filter((row) => {
+      const matchesCategory = ledgerCategoryFilter === 'all' || row.category === ledgerCategoryFilter;
+      const matchesSearch = !query || [
+        row.ticketId,
+        row.unitCode,
+        row.tenantName,
+        row.category,
+        row.description,
+        row.fundiName,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesCategory && matchesSearch;
+    });
+  }, [ledgerCategoryFilter, ledgerRows, ledgerSearch]);
+  const ledgerCategories = useMemo(
+    () => [...new Set(ledgerRows.map((row) => row.category))].sort(),
+    [ledgerRows],
+  );
+  const maintenancePagination = usePortalPagination(filteredLedgerRows);
+  const ledgerFiltersActive = Boolean(ledgerSearch.trim()) || ledgerCategoryFilter !== 'all';
+  const filteredMaintenanceSpend = ledgerFiltersActive
+    ? filteredLedgerRows.reduce((total, row) => total + (row.cost ?? 0), 0)
+    : ledgerSummary.totalSpend;
 
   useEffect(() => {
     if (!isPropertyOfficerPortal) return;
@@ -402,6 +473,7 @@ export default function MaintenanceBoard() {
 
   const TicketCard = ({ ticket }: { ticket: Ticket }) => (
     <div
+      data-portal-card
       onClick={() => openTicket(ticket)}
       className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-3 cursor-pointer hover:shadow-md hover:border-emerald-300 transition-all"
     >
@@ -482,14 +554,16 @@ export default function MaintenanceBoard() {
 
   return (
     <div className="space-y-6 pb-20">
-      <header>
+      {!isPropertyOfficerPortal && (
+        <header>
           <h1 className="text-3xl font-bold text-slate-900">Maintenance & Repairs</h1>
-          <p className="text-slate-500 mt-1">
+          <p className="mt-1 text-slate-500">
             {isCaretakerPortal
               ? 'Report property-wide issues and manage the tickets assigned to you.'
               : 'Manage tenant repair requests and track maintenance expenses.'}
           </p>
-      </header>
+        </header>
+      )}
 
       {loadError && (
         <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -607,59 +681,95 @@ export default function MaintenanceBoard() {
           </div>
           </div>
         )}
+        {isPropertyOfficerPortal && viewMode === 'board' && (
+          <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:grid-cols-2 xl:grid-cols-5">
+            <label className="text-xs font-semibold text-slate-600">Search maintenance
+              <input value={ticketSearch} onChange={(event) => setTicketSearch(event.target.value)} placeholder="Ticket, tenant, unit, or issue" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Property
+              <select value={ticketPropertyFilter} onChange={(event) => setTicketPropertyFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="all">All properties</option>
+                {ticketPropertyOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Status
+              <select value={ticketStatusFilter} onChange={(event) => setTicketStatusFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="all">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="in_progress">In progress</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Category
+              <select value={ticketCategoryFilter} onChange={(event) => setTicketCategoryFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="all">All categories</option>
+                {ticketCategoryOptions.map((category) => <option key={category} value={category}>{category.replaceAll('_', ' ')}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Priority
+              <select value={ticketPriorityFilter} onChange={(event) => setTicketPriorityFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="all">All priorities</option>
+                {['low', 'normal', 'high', 'urgent'].map((priority) => <option key={priority} value={priority}>{priority}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
       </div>
 
       {isCaretakerPortal || viewMode === 'board' ? (
         /* ─── KANBAN BOARD VIEW ─── */
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div className={`grid grid-cols-1 gap-5 ${ticketStatusFilter === 'all' ? 'lg:grid-cols-3' : 'lg:grid-cols-1'}`}>
           {loading ? (
-            <div className="col-span-3 text-center py-12 text-slate-500">Loading board...</div>
+            <div className="col-span-full"><PortalLoading label="Loading maintenance tickets…" rows={5} /></div>
           ) : (
             <>
               {/* Pending */}
-              <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
+              {(ticketStatusFilter === 'all' || ticketStatusFilter === 'pending') && <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
                 <div className="flex items-center gap-2 mb-4">
                   <AlertCircle size={18} className="text-amber-600" />
-                  <h3 className="font-bold text-amber-800">Pending ({pending.length})</h3>
+                  <h3 className="font-bold text-amber-800">Pending ({visiblePending.length})</h3>
                 </div>
-                {pending.length === 0 ? (
+                {visiblePending.length === 0 ? (
                   <div className="text-center py-8 text-amber-600/50 text-sm">No pending requests.</div>
                 ) : (
                   <div className="space-y-3">
-                    {pending.map(t => <TicketCard key={t.id} ticket={t} />)}
+                    {pendingPagination.pageRecords.map(t => <TicketCard key={t.id} ticket={t} />)}
                   </div>
                 )}
-              </div>
+                <PortalPagination {...pendingPagination} total={visiblePending.length} onPageChange={pendingPagination.setPage} onPageSizeChange={pendingPagination.setPageSize} />
+              </div>}
 
               {/* In Progress */}
-              <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
+              {(ticketStatusFilter === 'all' || ticketStatusFilter === 'in_progress') && <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
                 <div className="flex items-center gap-2 mb-4">
                   <Wrench size={18} className="text-blue-600" />
-                  <h3 className="font-bold text-blue-800">In Progress ({inProgress.length})</h3>
+                  <h3 className="font-bold text-blue-800">In Progress ({visibleInProgress.length})</h3>
                 </div>
-                {inProgress.length === 0 ? (
+                {visibleInProgress.length === 0 ? (
                   <div className="text-center py-8 text-blue-600/50 text-sm">No active repairs.</div>
                 ) : (
                   <div className="space-y-3">
-                    {inProgress.map(t => <TicketCard key={t.id} ticket={t} />)}
+                    {inProgressPagination.pageRecords.map(t => <TicketCard key={t.id} ticket={t} />)}
                   </div>
                 )}
-              </div>
+                <PortalPagination {...inProgressPagination} total={visibleInProgress.length} onPageChange={inProgressPagination.setPage} onPageSizeChange={inProgressPagination.setPageSize} />
+              </div>}
 
               {/* Resolved */}
-              <div className="bg-slate-100 rounded-xl p-4 border border-slate-200">
+              {(ticketStatusFilter === 'all' || ticketStatusFilter === 'resolved') && <div className="bg-slate-100 rounded-xl p-4 border border-slate-200">
                 <div className="flex items-center gap-2 mb-4">
                   <CheckCircle2 size={18} className="text-slate-500" />
-                  <h3 className="font-bold text-slate-600">Resolved ({resolved.length})</h3>
+                  <h3 className="font-bold text-slate-600">Resolved ({visibleResolved.length})</h3>
                 </div>
-                {resolved.length === 0 ? (
+                {visibleResolved.length === 0 ? (
                   <div className="text-center py-8 text-slate-400 text-sm">No resolved requests.</div>
                 ) : (
                   <div className="space-y-3">
-                    {resolved.map(t => <TicketCard key={t.id} ticket={t} />)}
+                    {resolvedPagination.pageRecords.map(t => <TicketCard key={t.id} ticket={t} />)}
                   </div>
                 )}
-              </div>
+                <PortalPagination {...resolvedPagination} total={visibleResolved.length} onPageChange={resolvedPagination.setPage} onPageSizeChange={resolvedPagination.setPageSize} />
+              </div>}
             </>
           )}
         </div>
@@ -687,11 +797,22 @@ export default function MaintenanceBoard() {
                 </select>
                 <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
               </div>
-              <p className="text-sm text-slate-500">{ledgerSummary.totalRepairs} repairs completed in this period</p>
+              <p className="text-sm text-slate-500">{filteredLedgerRows.length} matching repairs in this period</p>
             </div>
-            <div className="text-right">
-              <p className="text-sm font-medium text-slate-500">Total Monthly Spend</p>
-              <h2 className="text-2xl font-bold text-slate-900">{currency.format(ledgerSummary.totalSpend)}</h2>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="text-xs font-semibold text-slate-600">Search records
+                <input value={ledgerSearch} onChange={(event) => setLedgerSearch(event.target.value)} placeholder="Tenant, ticket, technician" className="mt-1 w-52 rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Category
+                <select value={ledgerCategoryFilter} onChange={(event) => setLedgerCategoryFilter(event.target.value)} className="mt-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="all">All categories</option>
+                  {ledgerCategories.map((category) => <option key={category} value={category}>{category.replaceAll('_', ' ')}</option>)}
+                </select>
+              </label>
+              <div className="text-right">
+                <p className="text-sm font-medium text-slate-500">Filtered spend</p>
+                <h2 className="text-2xl font-bold text-slate-900">{currency.format(filteredMaintenanceSpend)}</h2>
+              </div>
             </div>
           </div>
 
@@ -709,11 +830,11 @@ export default function MaintenanceBoard() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {loadingLedger ? (
-                    <tr><td colSpan={5} className="p-12 text-center text-slate-500">Loading ledger data...</td></tr>
-                  ) : ledgerRows.length === 0 ? (
+                    <tr><td colSpan={5} className="p-4"><PortalLoading label="Loading maintenance ledger…" rows={4} /></td></tr>
+                  ) : filteredLedgerRows.length === 0 ? (
                     <tr><td colSpan={5} className="p-12 text-center text-slate-500">No maintenance records found for this month.</td></tr>
                   ) : (
-                    ledgerRows.map((row) => (
+                    maintenancePagination.pageRecords.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-50 transition-colors">
                         <td className="p-4">
                           <div className="font-bold text-slate-900">{row.unitCode}</div>
@@ -736,6 +857,7 @@ export default function MaintenanceBoard() {
                 </tbody>
               </table>
             </div>
+            {!loadingLedger && <PortalPagination {...maintenancePagination} total={filteredLedgerRows.length} onPageChange={maintenancePagination.setPage} onPageSizeChange={maintenancePagination.setPageSize} />}
           </div>
         </div>
       )}

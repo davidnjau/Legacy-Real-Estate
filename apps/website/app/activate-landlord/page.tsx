@@ -6,33 +6,52 @@ import { Building2 } from 'lucide-react';
 
 export default function ActivateLandlordPage() {
   const [challengeId, setChallengeId] = useState('');
+  const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [identity, setIdentity] = useState('');
   const [existingAccount, setExistingAccount] = useState(false);
   const [contextLoading, setContextLoading] = useState(true);
+  const [contextError, setContextError] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get('challenge_id') || '';
+    const searchParams = new URLSearchParams(window.location.search);
+    const id = searchParams.get('challenge_id') || '';
     setChallengeId(id);
+    setPhone(searchParams.get('phone') || '');
+    setCode(searchParams.get('code') || '');
     if (!id) {
       setContextLoading(false);
       return;
     }
-    void fetch(`/api/auth/landlord/activate/context?challenge_id=${encodeURIComponent(id)}`)
+    const controller = new AbortController();
+    let active = true;
+    void fetch(`/api/auth/landlord/activate/context?challenge_id=${encodeURIComponent(id)}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || payload.error || 'This activation link is invalid or expired.');
-        setExistingAccount(payload.existing_account === true);
+        if (active) setExistingAccount(payload.existing_account === true);
       })
       .catch((cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : 'Unable to verify this activation link.');
+        if (active && !(cause instanceof DOMException && cause.name === 'AbortError')) {
+          setChallengeId('');
+          setExistingAccount(false);
+          setContextError(
+            'This activation link cannot be verified. Enter the phone number and latest code sent by SMS, or ask your Property Officer to resend the invitation.',
+          );
+        }
       })
       .finally(() => {
-        setContextLoading(false);
+        if (active) setContextLoading(false);
       });
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -52,7 +71,8 @@ export default function ActivateLandlordPage() {
           'X-CSRFToken': csrfPayload.csrfToken,
         },
         body: JSON.stringify({
-          challenge_id: challengeId,
+          challenge_id: challengeId || undefined,
+          phone: challengeId ? undefined : phone,
           code,
           id_or_registration_number: existingAccount ? identity : undefined,
         }),
@@ -61,7 +81,12 @@ export default function ActivateLandlordPage() {
       if (!response.ok) {
         throw new Error(payload.detail || payload.error || 'Unable to activate this account.');
       }
-      setSuccess(true);
+      if (payload.identity_confirmation_required === true) {
+        setExistingAccount(true);
+        setIdentity('');
+        return;
+      }
+      window.location.assign('/landlord/dashboard');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to activate this account.');
     } finally {
@@ -80,24 +105,36 @@ export default function ActivateLandlordPage() {
         </Link>
         <h1 className="text-2xl font-bold">Activate your landlord account</h1>
         <p className="mt-2 text-sm text-slate-600">
-          {existingAccount
-            ? 'Enter the one-time code sent by SMS and confirm the ID or registration number already recorded for your landlord account.'
-            : 'Enter the one-time code sent by SMS. The code expires after 48 hours.'}
+          {challengeId
+            ? existingAccount
+              ? 'Enter the one-time code and confirm the ID or registration number already recorded for your landlord account.'
+              : 'Enter the one-time code sent with your activation invitation. The code expires after 48 hours.'
+            : 'Enter the phone number that received the activation SMS and the code already sent to it. Do not request a new code.'}
         </p>
-        {success ? (
-          <div role="status" className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
-            <p className="font-semibold text-emerald-900">Your landlord account is activated.</p>
-            <p className="mt-1 text-sm text-emerald-800">Sign in with your phone number and a new SMS code.</p>
-            <Link href="/login?activated=1" className="mt-4 inline-flex rounded-xl bg-emerald-800 px-5 py-3 font-semibold text-white">
-              Continue to sign in
-            </Link>
-          </div>
-        ) : (
-          <>
-            {error && <p role="alert" className="mt-5 rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}
-            <form onSubmit={submit} className="mt-6 space-y-4">
+        {contextLoading && (
+          <p role="status" className="mt-6 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
+            Checking your activation link. You can enter your code while we verify it…
+          </p>
+        )}
+        {contextError && <p role="alert" className="mt-5 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{contextError}</p>}
+        {error && <p role="alert" className="mt-5 rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          {!challengeId && (
+            <label className="block text-sm font-semibold">
+              Phone number used during onboarding
+              <input
+                required
+                type="tel"
+                autoComplete="tel"
+                value={phone}
+                onChange={(event) => setPhone(event.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-3"
+                placeholder="+254 7XX XXX XXX"
+              />
+            </label>
+          )}
           <label className="block text-sm font-semibold">
-            SMS activation code
+            Six-digit activation code
             <input
               required
               inputMode="numeric"
@@ -126,19 +163,25 @@ export default function ActivateLandlordPage() {
             disabled={
               loading
               || contextLoading
-              || !challengeId
+              || (!challengeId && !phone.trim())
               || (existingAccount && !identity.trim())
             }
             className="w-full rounded-xl bg-emerald-800 py-3.5 font-bold text-white disabled:opacity-50"
           >
-            {loading ? 'Activating…' : existingAccount ? 'Confirm identity and link account' : 'Activate account'}
+            {loading ? 'Activating…' : existingAccount ? 'Confirm identity and continue' : 'Activate account'}
           </button>
-            </form>
-            <p className="mt-5 text-center text-sm text-slate-600">
-              Already activated? <Link href="/login" className="font-semibold text-emerald-800 underline">Sign in</Link>
-            </p>
-          </>
+        </form>
+        {challengeId && (
+          <p className="mt-4 text-center text-sm text-slate-600">
+            Using your SMS instead?{' '}
+            <Link href="/activate-landlord" className="font-semibold text-emerald-800 underline">
+              Enter your phone number
+            </Link>
+          </p>
         )}
+        <p className="mt-5 text-center text-sm text-slate-600">
+          Already activated? <Link href="/login" className="font-semibold text-emerald-800 underline">Sign in</Link>
+        </p>
       </section>
     </main>
   );

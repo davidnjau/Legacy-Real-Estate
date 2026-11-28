@@ -3123,6 +3123,8 @@ class MoveInSettlement(models.Model):
     activation_email_error = models.TextField(blank=True)
     activation_sms_queued_at = models.DateTimeField(blank=True, null=True)
     activation_sms_error = models.TextField(blank=True)
+    tenant_link_sms_queued_at = models.DateTimeField(blank=True, null=True)
+    tenant_link_sms_error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

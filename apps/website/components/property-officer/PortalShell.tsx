@@ -28,6 +28,7 @@ import {
 } from '../../lib/django-routing';
 import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
+import { PortalSectionBanner } from './PortalUI';
 
 type Agency = NonNullable<DjangoUser['agencies']>[number];
 
@@ -84,6 +85,69 @@ const NAV_GROUPS = [
 ];
 const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 
+const SECTION_GUIDANCE: Record<string, { eyebrow: string; title: string; description: string }> = {
+  properties: {
+    eyebrow: 'Portfolio · Property management',
+    title: 'Property portfolio.',
+    description: 'Register and maintain property profiles, ownership details, unit types, rents, and move-in settings for your assigned branches.',
+  },
+  units: {
+    eyebrow: 'Portfolio · Unit management',
+    title: 'Units & vacancies.',
+    description: 'Review unit occupancy and availability by property, type, bedroom count, tenant, and operational status.',
+  },
+  tenants: {
+    eyebrow: 'People · Tenant management',
+    title: 'Tenant onboarding.',
+    description: 'Create a tenancy with verified tenant details, a reviewed move-in balance, recorded payment, and clearly identified supporting documents.',
+  },
+  landlords: {
+    eyebrow: 'People · Landlord management',
+    title: 'Landlords & onboarding.',
+    description: 'Link landlord accounts to the right branch and property, monitor activation status, and resend access instructions when needed.',
+  },
+  caretakers: {
+    eyebrow: 'People · Property coverage',
+    title: 'Caretaker assignments.',
+    description: 'Assign caretakers to properties, review invitations and access status, and keep each property’s operational coverage current.',
+  },
+  handovers: {
+    eyebrow: 'Operations · Tenant transitions',
+    title: 'Move-in handover reviews.',
+    description: 'Check submitted inventory, room conditions, keys, meter readings, and photo evidence before confirming a move-in handover.',
+  },
+  leases: {
+    eyebrow: 'Operations · Lease records',
+    title: 'Tenancy register.',
+    description: 'Find current and past tenancies by tenant, property, unit, and status, with key dates visible in one register.',
+  },
+  viewings: {
+    eyebrow: 'Operations · Prospective tenants',
+    title: 'Leads & property viewings.',
+    description: 'Track prospective tenants through inquiry stages, branch interest, budgets, and scheduled viewing appointments.',
+  },
+  maintenance: {
+    eyebrow: 'Operations · Repairs',
+    title: 'Maintenance & repairs.',
+    description: 'Triage repair requests by property, category, priority, and status, then follow their progress through to resolution.',
+  },
+  imports: {
+    eyebrow: 'Records · Data migration',
+    title: 'Import legacy records.',
+    description: 'Validate unit and tenancy spreadsheets before committing records, and review row-level errors, skipped records, and activation outcomes.',
+  },
+  ledger: {
+    eyebrow: 'Records · Opening balances',
+    title: 'Migration ledger.',
+    description: 'Track imported opening arrears, payments, account credits, and outstanding balances by property and settlement status.',
+  },
+  'monthly-ledger': {
+    eyebrow: 'Records · Monthly accounts',
+    title: 'Monthly property ledger.',
+    description: 'Compare monthly charges, prior balances, payments, waivers, and remaining balances across properties and payment statuses.',
+  },
+};
+
 function townKey(branch: { name: string; town: string }) {
   return (branch.town || branch.name.replace(/\s+(branch|office)$/i, '')).trim().toLowerCase();
 }
@@ -131,6 +195,8 @@ export function PropertyOfficerPortalShell({ children }: { children: React.React
     [branches, branchIds],
   );
   const canSwitchWorkspaces = getDjangoWorkspaceOptions(user?.roles ?? []).length > 1;
+  const sectionName = pathname.split('/').filter(Boolean).at(-1) || 'dashboard';
+  const sectionGuidance = SECTION_GUIDANCE[sectionName];
 
   function changeAgency(agencyId: number) {
     setSelectedAgencyId(agencyId);
@@ -139,7 +205,7 @@ export function PropertyOfficerPortalShell({ children }: { children: React.React
 
   return (
     <PortalContext.Provider value={{ user, agency, branchIds, branchTownKeys }}>
-      <div className="flex h-dvh flex-col overflow-hidden bg-[#f5f6f4] text-[#172820]">
+      <div className="property-officer-portal flex h-dvh flex-col overflow-hidden bg-[#f5f6f4] text-[#172820]">
         <header className="shrink-0 z-30 flex min-h-[76px] flex-wrap items-center justify-between gap-3 border-b border-[#e6e9e5] bg-white/95 px-4 py-3 shadow-[0_3px_16px_rgba(20,40,31,0.04)] backdrop-blur sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-4">
             <Link href="/property-officer/dashboard" className="flex shrink-0 items-center gap-3">
@@ -234,7 +300,20 @@ export function PropertyOfficerPortalShell({ children }: { children: React.React
           <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
             {error ? (
               <div role="alert" className="m-6 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>
-            ) : children}
+            ) : (
+              <>
+                {sectionGuidance && (
+                  <div className="px-4 sm:px-6 lg:px-8">
+                    <PortalSectionBanner
+                      eyebrow={`${agency?.name || 'Property operations'} · ${sectionGuidance.eyebrow}`}
+                      title={sectionGuidance.title}
+                      description={sectionGuidance.description}
+                    />
+                  </div>
+                )}
+                {children}
+              </>
+            )}
           </div>
         </div>
       </div>

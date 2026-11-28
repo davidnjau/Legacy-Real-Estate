@@ -10,7 +10,6 @@ export default function ActivateStaffPage() {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
-  const [identity, setIdentity] = useState('');
   const [existingAccount, setExistingAccount] = useState(false);
   const [contextLoading, setContextLoading] = useState(true);
   const [error, setError] = useState('');
@@ -39,15 +38,13 @@ export default function ActivateStaffPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
-    if (!existingAccount) {
-      if (password !== confirmation) {
-        setError('The passwords do not match.');
-        return;
-      }
-      if (!isActivationPasswordStrong(password)) {
-        setError('Choose a password that meets all the strength requirements.');
-        return;
-      }
+    if (password !== confirmation) {
+      setError('The passwords do not match.');
+      return;
+    }
+    if (!isActivationPasswordStrong(password)) {
+      setError('Choose a password that meets all the strength requirements.');
+      return;
     }
     setLoading(true);
     try {
@@ -65,8 +62,7 @@ export default function ActivateStaffPage() {
         body: JSON.stringify({
           challenge_id: challengeId,
           code,
-          password: existingAccount ? undefined : password,
-          id_or_registration_number: existingAccount ? identity : undefined,
+          password,
         }),
       });
       const payload = await response.json();
@@ -93,7 +89,7 @@ export default function ActivateStaffPage() {
         <h1 className="text-2xl font-bold">Activate your staff account</h1>
         <p className="mt-2 text-sm text-slate-600">
           {existingAccount
-            ? 'Enter the one-time code and confirm the identity already recorded for your account.'
+            ? 'Enter the one-time code and create a password to confirm your new staff access.'
             : 'Enter the one-time code sent to your verified email and create a password.'}
         </p>
         {success ? (
@@ -121,38 +117,24 @@ export default function ActivateStaffPage() {
               className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-3 font-mono tracking-widest"
             />
           </label>
-          {existingAccount ? (
-            <label className="block text-sm font-semibold">
-              Confirm National ID or Passport Number
-              <input
-                required
-                autoComplete="off"
-                value={identity}
-                onChange={(event) => setIdentity(event.target.value)}
-                className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-3"
-              />
-            </label>
-          ) : (
-            <ActivationPasswordFields
-              password={password}
-              confirmation={confirmation}
-              onPasswordChange={setPassword}
-              onConfirmationChange={setConfirmation}
-            />
-          )}
+          <ActivationPasswordFields
+            password={password}
+            confirmation={confirmation}
+            onPasswordChange={setPassword}
+            onConfirmationChange={setConfirmation}
+          />
           <button
             type="submit"
             disabled={
               loading
               || contextLoading
               || !challengeId
-              || (existingAccount
-                ? !identity.trim()
-                : !isActivationPasswordStrong(password) || password !== confirmation)
+              || !isActivationPasswordStrong(password)
+              || password !== confirmation
             }
             className="w-full rounded-xl bg-emerald-800 py-3.5 font-bold text-white disabled:opacity-50"
           >
-            {loading ? 'Activating…' : existingAccount ? 'Confirm identity and link account' : 'Activate account'}
+            {loading ? 'Activating…' : 'Activate account'}
           </button>
             </form>
             <p className="mt-5 text-center text-sm text-slate-600">

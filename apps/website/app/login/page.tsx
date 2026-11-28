@@ -158,6 +158,11 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
         body: JSON.stringify({ phone: identifier }),
       });
+      if (response.status === 404) {
+        throw new Error(
+          'The phone sign-in service is unavailable. If your landlord account is still awaiting activation, use the existing activation code below.',
+        );
+      }
       requireJsonResponse(response);
       const payload: AuthResponse = await response.json();
       if (
@@ -473,6 +478,26 @@ export default function LoginPage() {
                       {isLoading ? 'Sending code…' : 'Send sign-in code'}
                       <ArrowRight size={16} />
                     </button>
+                    <div className="space-y-1.5 text-center text-sm text-slate-600">
+                      <p>
+                        Activating a tenant account?{' '}
+                        <Link
+                          href={`/activate?phone=${encodeURIComponent(identifier)}`}
+                          className="font-semibold text-emerald-800 underline"
+                        >
+                          Enter your activation code
+                        </Link>
+                      </p>
+                      <p>
+                        Activating a landlord account?{' '}
+                        <Link
+                          href={`/activate-landlord?phone=${encodeURIComponent(identifier)}`}
+                          className="font-semibold text-emerald-800 underline"
+                        >
+                          Enter your activation code
+                        </Link>
+                      </p>
+                    </div>
                   </form>
                 ) : (
                 <form onSubmit={handleSubmit} className="space-y-4">

@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type ImportReport = {
   mode: 'preview' | 'committed';
@@ -46,6 +47,8 @@ export default function LegacyImportManager() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loadingProperties, setLoadingProperties] = useState(true);
+  const [reportSearch, setReportSearch] = useState('');
+  const [reportSheetFilter, setReportSheetFilter] = useState('all');
   const selectedProperty = properties.find((property) => String(property.id) === propertyId);
   const previewReady = report?.mode === 'preview' && report.errors.length === 0;
   const hasWaterUtility = selectedProperty?.has_water_utility ?? (
@@ -61,6 +64,29 @@ export default function LegacyImportManager() {
     }`,
     'Tenancies: unit_code, tenant_name, tenant_phone, tenancy_start_date; optional tenant_email, expected_move_out_date (only for Notice Given units), tenant_id_number, tenant_kra_pin, tenant_type, company_registration_number, contact_person, tenancy_end_date, tenancy_type, due_day, opening_arrears, arrears_as_of.',
   ];
+  const reportSheetOptions = useMemo(
+    () => [...new Set([
+      ...(report?.errors ?? []).map((item) => item.sheet),
+      ...(report?.skipped ?? []).map((item) => item.sheet),
+    ])].sort(),
+    [report],
+  );
+  const filteredErrors = useMemo(() => {
+    const query = reportSearch.trim().toLowerCase();
+    return (report?.errors ?? []).filter((item) => (
+      (reportSheetFilter === 'all' || item.sheet === reportSheetFilter)
+      && (!query || `${item.sheet} ${item.row} ${item.message}`.toLowerCase().includes(query))
+    ));
+  }, [report, reportSearch, reportSheetFilter]);
+  const filteredSkipped = useMemo(() => {
+    const query = reportSearch.trim().toLowerCase();
+    return (report?.skipped ?? []).filter((item) => (
+      (reportSheetFilter === 'all' || item.sheet === reportSheetFilter)
+      && (!query || `${item.sheet} ${item.row} ${item.reason}`.toLowerCase().includes(query))
+    ));
+  }, [report, reportSearch, reportSheetFilter]);
+  const errorPagination = usePortalPagination(filteredErrors);
+  const skippedPagination = usePortalPagination(filteredSkipped);
 
   useEffect(() => {
     let active = true;
@@ -120,11 +146,6 @@ export default function LegacyImportManager() {
 
   return (
     <section className="space-y-6">
-      <header>
-        <h1 className="text-xl font-bold text-slate-950">Import legacy records</h1>
-        <p className="mt-1 text-sm text-slate-600">Import unit inventory and active tenancies into one selected property, including opening arrears and water meter baselines when configured.</p>
-      </header>
-
       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-950">
         <h2 className="font-bold">Safe import behavior</h2>
         <ul className="mt-2 list-inside list-disc space-y-1">
@@ -140,6 +161,7 @@ export default function LegacyImportManager() {
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5">
+        {loadingProperties && <PortalLoading label="Loading branch properties…" rows={2} />}
         <label className="block text-sm font-semibold text-slate-700">Property
           <select value={propertyId} onChange={(event) => { setPropertyId(event.target.value); setReport(null); }} className="mt-1 block w-full max-w-md rounded-lg border border-slate-300 px-3 py-2" disabled={loadingProperties}>
             <option value="">{loadingProperties ? 'Loading properties…' : 'Select property'}</option>
@@ -214,8 +236,41 @@ export default function LegacyImportManager() {
           <div className="mt-3 flex flex-wrap gap-3">
             {Object.entries(report.created).map(([sheet, count]) => <span key={sheet} className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-900">{sheet.replaceAll('_', ' ')}: {count} {report.mode === 'preview' ? 'ready' : 'created'}</span>)}
           </div>
-          {report.errors.length > 0 && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"><h3 className="font-bold">Rows requiring correction</h3><ul className="mt-2 list-inside list-disc">{report.errors.map((item, index) => <li key={`${item.sheet}-${item.row}-${index}`}>{item.sheet}, row {item.row}: {item.message}</li>)}</ul></div>}
-          {report.skipped.length > 0 && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><h3 className="font-bold">Existing records skipped</h3><ul className="mt-2 list-inside list-disc">{report.skipped.map((item, index) => <li key={`${item.sheet}-${item.row}-${index}`}>{item.sheet}, row {item.row}: {item.reason}</li>)}</ul></div>}
+          {(report.errors.length > 0 || report.skipped.length > 0) && (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-600">Search report rows
+                <input value={reportSearch} onChange={(event) => setReportSearch(event.target.value)} placeholder="Sheet, row, or message" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Sheet
+                <select value={reportSheetFilter} onChange={(event) => setReportSheetFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="all">All sheets</option>
+                  {reportSheetOptions.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
+          {report.errors.length > 0 && (
+            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+              <h3 className="font-bold">Rows requiring correction <span className="font-normal">({filteredErrors.length} shown)</span></h3>
+              {filteredErrors.length ? (
+                <ul className="mt-2 list-inside list-disc">
+                  {errorPagination.pageRecords.map((item, index) => <li key={`${item.sheet}-${item.row}-${index}`}>{item.sheet}, row {item.row}: {item.message}</li>)}
+                </ul>
+              ) : <p className="mt-2">No error rows match these filters.</p>}
+              <PortalPagination {...errorPagination} total={filteredErrors.length} onPageChange={errorPagination.setPage} onPageSizeChange={errorPagination.setPageSize} />
+            </div>
+          )}
+          {report.skipped.length > 0 && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <h3 className="font-bold">Existing records skipped <span className="font-normal">({filteredSkipped.length} shown)</span></h3>
+              {filteredSkipped.length ? (
+                <ul className="mt-2 list-inside list-disc">
+                  {skippedPagination.pageRecords.map((item, index) => <li key={`${item.sheet}-${item.row}-${index}`}>{item.sheet}, row {item.row}: {item.reason}</li>)}
+                </ul>
+              ) : <p className="mt-2">No skipped rows match these filters.</p>}
+              <PortalPagination {...skippedPagination} total={filteredSkipped.length} onPageChange={skippedPagination.setPage} onPageSizeChange={skippedPagination.setPageSize} />
+            </div>
+          )}
           {report.activation && report.activation.prepared > 0 && (
             <div className={`mt-4 rounded-lg border p-4 text-sm ${report.activation.failed.length ? 'border-amber-200 bg-amber-50 text-amber-950' : 'border-emerald-200 bg-emerald-50 text-emerald-950'}`}>
               <h3 className="font-bold">Tenant account activation</h3>

@@ -71,8 +71,10 @@ does not add business workflows or permissions beyond the approved SRS.
   account, the Director selects that account from the agency-scoped search;
   exact identity and contact details must match before the role and branch
   scope are linked immediately. No activation OTP is issued and the existing
-  password is preserved. Email delivery failures for new or pending accounts
-  leave the request pending so the Director can retry with Resend activation.
+  password is preserved. An SMS notifies the account holder of each added staff
+  role; the role change is rolled back if its notification cannot be queued.
+  Email delivery failures for new or pending accounts leave the request pending
+  so the Director can retry with Resend activation.
 - The Director, agency staff, tenant, and caretaker activation forms share the
   same website password checks: at least 12 characters with lowercase,
   uppercase, number, and symbol, plus matching confirmation. Django password
@@ -205,8 +207,10 @@ does not add business workflows or permissions beyond the approved SRS.
   activations require the ID/passport number recorded during onboarding to
   match.
 - Staff who also hold a tenant account cannot perform sensitive tenancy
-  lifecycle, financial, or approval actions on their own tenancy. Another
-  authorized staff member must handle those actions.
+  lifecycle, financial, approval, or move-in/move-out inspection actions on
+  their own tenancy. The tenant account is excluded from caretaker assignment
+  choices; another caretaker must be assigned, and the API and WhatsApp bot
+  also reject self-inspection submissions.
 - For active tenancies without a move-in package, the legacy tenant activation
   API queues an activation SMS to the registered phone; activation requires
   the phone and six-digit code, with unit code where supplied. It does not
@@ -224,25 +228,24 @@ does not add business workflows or permissions beyond the approved SRS.
   still-valid challenges are not resent on repeated imports, and failed SMS
   delivery expires the challenge so a later import can retry. The commit is
   performed atomically without a secondary Accountant approval.
-- MFA SMS messages are rendered from the `login_verification_code` template
-  and queued in the encrypted `SMSDelivery` outbox. Run
-  `python manage.py dispatch_sms_deliveries` from a scheduled worker to send
-  queued messages. Failed deliveries are retried with backoff and eventually
-  recorded as failed; expired MFA messages are discarded without sending.
-- The available placeholder templates are `login_verification_code` (`code`),
-  `payment_receipt` (`reference`, `amount`, `agency_name`), and
-  `invoice_reminder` (`amount`, `agency_name`). Only MFA is currently wired to
-  an application workflow; the others are ready for their relevant billing
-  events.
+- SMS workflows queue supported templates through the encrypted
+  `SMSDelivery` outbox. Run `python manage.py dispatch_sms_deliveries` from a
+  scheduled worker to send queued messages. Failed deliveries are retried with
+  backoff and eventually recorded as failed; expired verification messages are
+  discarded without sending. Template definitions and required context fields
+  are maintained in `apps/core/users/sms.py`.
 - The SMS adapter is selected by `AUTH_SMS_BACKEND`. The Softlink adapter sends
   JSON requests over HTTPS to `SOFTLINK_SMS_API_URL`, authenticates with the
   secret `SOFTLINK_SMS_API_KEY`, and reuses a stable `Idempotency-Key` for
   delivery retries. Set `SOFTLINK_SMS_TRAFFIC_CLASS` according to the provider's
-  account policy. The development-only
-  console backend is selected when `DEBUG=1`; it refuses to send when debug
-  mode is disabled. Production has no fallback provider and finance-role login
-  returns `503` without creating a session until one is configured. The Softlink adapter will be wired when its API
-  configuration and integration details are provided.
+  account policy. The configured API endpoint is
+  [api.softlinksms.co.ke/api/v1/sms](https://api.softlinksms.co.ke/api/v1/sms).
+  The adapter is implemented; production delivery requires the provider
+  credentials and traffic class to be configured on the deployment host. The
+  development-only console backend is selected when `DEBUG=1`; it refuses to
+  send when debug mode is disabled. Production has no fallback provider and
+  finance-role login returns `503` without creating a session until a delivery
+  backend is configured.
 - Delivery attempts and provider references are visible in the read-only
   `SMSDelivery` Django admin to finance-role staff. Queue, outcome, and admin
   log-view events are audited. Message bodies, verification codes, and full

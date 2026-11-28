@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type PropertyRecord = {
   id: number;
@@ -60,6 +61,8 @@ export default function MigrationLedger() {
   const [summary, setSummary] = useState<LedgerSummary | null>(null);
   const [propertyId, setPropertyId] = useState('');
   const [status, setStatus] = useState<'all' | LedgerRow['status']>('all');
+  const [branchFilter, setBranchFilter] = useState('all');
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const branchKey = useMemo(() => [...branchIds].sort((a, b) => a - b).join(','), [branchIds]);
@@ -131,24 +134,61 @@ export default function MigrationLedger() {
     };
   }, [agency, branchKey, propertyId, status]);
 
+  const branchOptions = useMemo(
+    () => [...new Map(rows.map((row) => [row.branch_id, row.branch_name])).entries()]
+      .sort((left, right) => left[1].localeCompare(right[1])),
+    [rows],
+  );
+  const filteredRows = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return rows.filter((row) => {
+      const matchesBranch = branchFilter === 'all' || String(row.branch_id) === branchFilter;
+      const matchesSearch = !query || [
+        row.tenant_name,
+        row.property_name,
+        row.unit_code,
+        row.invoice_number,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesBranch && matchesSearch;
+    });
+  }, [branchFilter, rows, search]);
+  const ledgerPagination = usePortalPagination(filteredRows);
+  const sumField = (field: 'opening_arrears' | 'paid_to_arrears' | 'overpayment_credit' | 'outstanding') => (
+    filteredRows.reduce((total, row) => total + Number(row[field]), 0)
+  );
   const cards = summary ? [
-    { label: 'Opening arrears', amount: summary.opening_arrears, detail: `${summary.records} migration balances` },
-    { label: 'Paid toward arrears', amount: summary.paid_to_arrears, detail: 'Confirmed allocations' },
-    { label: 'Available overpayment credit', amount: summary.overpayment_credit, detail: 'Unapplied tenant account credit' },
-    { label: 'Outstanding', amount: summary.outstanding, detail: `${summary.unpaid} unpaid · ${summary.partial} partial · ${summary.cleared} cleared` },
+    { label: 'Opening arrears', amount: sumField('opening_arrears'), detail: `${filteredRows.length} migration balances` },
+    { label: 'Paid toward arrears', amount: sumField('paid_to_arrears'), detail: 'Confirmed allocations' },
+    { label: 'Available overpayment credit', amount: sumField('overpayment_credit'), detail: 'Unapplied tenant account credit' },
+    { label: 'Outstanding', amount: sumField('outstanding'), detail: `${filteredRows.filter((row) => row.status === 'unpaid').length} unpaid · ${filteredRows.filter((row) => row.status === 'partial').length} partial · ${filteredRows.filter((row) => row.status === 'cleared').length} cleared` },
   ] : [];
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency?.name || 'Agency'}</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-950">Migration ledger</h1>
-          <p className="mt-1 max-w-3xl text-sm text-slate-500">
-            Track opening arrears imported during the transition. Confirmed payments update each balance automatically; any overpayment remains as tenant account credit.
-          </p>
-        </div>
+      <header className="flex justify-end">
         <div className="flex flex-wrap gap-3">
+          <label className="text-sm font-medium text-slate-700">
+            <span className="sr-only">Search migration balances</span>
+            <input
+              aria-label="Search migration balances"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search tenant, property, unit"
+              className="min-w-52 rounded-lg border border-slate-300 bg-white px-3 py-2"
+            />
+          </label>
+          <label className="text-sm font-medium text-slate-700">
+            <span className="sr-only">Filter by branch</span>
+            <select
+              aria-label="Filter by branch"
+              value={branchFilter}
+              onChange={(event) => setBranchFilter(event.target.value)}
+              className="min-w-44 rounded-lg border border-slate-300 bg-white px-3 py-2"
+            >
+              <option value="all">All selected branches</option>
+              {branchOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
           <label className="text-sm font-medium text-slate-700">
             <span className="sr-only">Filter by property</span>
             <select
@@ -187,7 +227,7 @@ export default function MigrationLedger() {
           {cards.map((card) => (
             <article key={card.label} className="rounded-2xl border border-slate-200 bg-white p-5">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500">{card.label}</p>
-              <p className="mt-2 text-2xl font-bold text-slate-950">{currency.format(Number(card.amount))}</p>
+              <p className="mt-2 text-2xl font-bold text-slate-950">{currency.format(card.amount)}</p>
               <p className="mt-1 text-xs text-slate-500">{card.detail}</p>
             </article>
           ))}
@@ -196,8 +236,8 @@ export default function MigrationLedger() {
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         {loading ? (
-          <p role="status" className="p-8 text-center text-sm text-slate-500">Loading migration balances…</p>
-        ) : rows.length === 0 ? (
+          <div className="p-5"><PortalLoading label="Loading migration balances…" rows={4} /></div>
+        ) : filteredRows.length === 0 ? (
           <p className="p-10 text-center text-sm text-slate-500">
             No imported opening arrears match the selected property and status filters.
           </p>
@@ -212,7 +252,7 @@ export default function MigrationLedger() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {rows.map((row) => (
+                {ledgerPagination.pageRecords.map((row) => (
                   <tr key={row.invoice_id}>
                     <td className="px-4 py-3">
                       <p className="font-semibold text-slate-900">{row.property_name}</p>
@@ -244,6 +284,7 @@ export default function MigrationLedger() {
             </table>
           </div>
         )}
+        {!loading && <PortalPagination {...ledgerPagination} total={filteredRows.length} onPageChange={ledgerPagination.setPage} onPageSizeChange={ledgerPagination.setPageSize} />}
       </section>
       <p className="text-xs text-slate-500">Balances reflect confirmed payments as of today. Payments posted to the opening-arrears invoice appear here automatically, and overpayments are held as tenant account credit.</p>
     </main>

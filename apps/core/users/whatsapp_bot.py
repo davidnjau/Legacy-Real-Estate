@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 from botocore.exceptions import BotoCoreError
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import DatabaseError, transaction
 from django.db.models import Q
@@ -41,6 +43,7 @@ from users.models import (
     MeterReadingDraft,
     MoveInChecklistItem,
     MoveInPackage,
+    MoveInSettlement,
     MoveOutNotice,
     Payment,
     PaymentAllocation,
@@ -51,8 +54,10 @@ from users.models import (
     RentStkRequest,
     Tenancy,
     Tenant,
+    TenantActivationChallenge,
     TenantCredit,
     Unit,
+    UserProfile,
     UtilityConfiguration,
     WhatsAppContact,
 )
@@ -63,7 +68,7 @@ from users.payment_allocations import (
     invoice_outstanding_amount,
     lock_tenant_invoice,
 )
-from users.roles import CARETAKER_ROLE, has_role
+from users.roles import CARETAKER_ROLE, TENANT_PORTAL_ROLE, has_role
 from users.sms import queue_template_sms
 from users.water_readings import (
     WaterReadingError,
@@ -243,11 +248,7 @@ def _normalise_id_number(value: str) -> str:
 
 
 def _match_identities(id_number: str):
-    """Match an ID to the tenant and caretaker identities allowed on WhatsApp."""
-    from django.db.models import Q
-
-    from users.models import UserProfile
-
+    """Match an ID to tenant, landlord, and caretaker identities."""
     normalised = _normalise_id_number(id_number)
     # Tolerate separator mix-ups: LL_889900 and LL889900 match LL-889900.
     variants = {
@@ -262,12 +263,33 @@ def _match_identities(id_number: str):
             query |= Q(**{f"{field}__iexact": variant})
         return query
 
-    tenant = Tenant.objects.filter(
-        _match("national_id_or_passport"),
-        portal_user__is_active=True,
-        tenancies__status=Tenancy.STATUS_ACTIVE,
-    ).distinct().order_by("-created_at").first()
-    landlord = None
+    tenant = (
+        Tenant.objects.filter(
+            _match("national_id_or_passport"),
+            portal_user__is_active=True,
+            tenancies__status=Tenancy.STATUS_ACTIVE,
+        )
+        .distinct()
+        .order_by("-created_at")
+        .first()
+    )
+    if tenant is None:
+        tenant = (
+            Tenant.objects.filter(
+                _match("national_id_or_passport"),
+                Q(tenancies__status=Tenancy.STATUS_ACTIVE)
+                | Q(activation_challenges__used_at__isnull=True),
+            )
+            .distinct()
+            .order_by("-created_at")
+            .first()
+        )
+
+    landlord = (
+        Landlord.objects.filter(_match("id_or_registration_number"))
+        .order_by("-created_at")
+        .first()
+    )
     caretaker_user = None
     profile = (
         UserProfile.objects.filter(_match("id_or_registration_number"))
@@ -281,6 +303,131 @@ def _match_identities(id_number: str):
     ):
         caretaker_user = profile.user
     return tenant, landlord, caretaker_user
+
+
+def _matches_activation_code(raw_code: str, stored_hash: str | None) -> bool:
+    """Validate an activation OTP against SHA-256 or Django password hashes."""
+    if not stored_hash:
+        return False
+    if hashlib.sha256(raw_code.encode("utf-8")).hexdigest() == stored_hash:
+        return True
+    return check_password(raw_code, stored_hash)
+
+
+def _activate_tenant_via_whatsapp(tenant: Tenant, existing_user=None):
+    """Ensure an onboarded or migrated tenant has an active portal user and role."""
+    from users.views import _agency_account_membership
+
+    now = timezone.now()
+    user_model = get_user_model()
+    user = existing_user or tenant.portal_user
+    email = (tenant.email or "").strip().lower()
+    if user is None:
+        username = email or tenant.phone
+        user = user_model.objects.filter(
+            Q(username__iexact=username)
+            | (Q(email__iexact=email) if email else Q(pk__isnull=True))
+        ).first()
+        if user is None:
+            user = user_model.objects.create_user(
+                username=username,
+                email=email,
+                is_active=True,
+            )
+        else:
+            user.is_active = True
+        user.set_unusable_password()
+        user.save(update_fields=["is_active", "password"])
+    else:
+        update_fields = []
+        if not user.is_active:
+            user.is_active = True
+            update_fields.append("is_active")
+        if existing_user is None and user.has_usable_password():
+            user.set_unusable_password()
+            update_fields.append("password")
+        if not user.email and email:
+            user.email = email
+            update_fields.append("email")
+        if update_fields:
+            user.save(update_fields=update_fields)
+
+    profile = UserProfile.objects.filter(user=user).first()
+    if profile is None:
+        profile = UserProfile.objects.create(
+            user=user,
+            name=tenant.name,
+            phone=tenant.phone,
+            id_or_registration_number=tenant.national_id_or_passport,
+        )
+    profile.branches.add(tenant.branch)
+
+    tenant_fields = ["updated_at"]
+    if tenant.portal_user_id != user.pk:
+        tenant.portal_user = user
+        tenant_fields.append("portal_user")
+    if tenant.is_provisional:
+        tenant.is_provisional = False
+        tenant_fields.append("is_provisional")
+    if tenant.phone_verified_at is None:
+        tenant.phone_verified_at = now
+        tenant_fields.append("phone_verified_at")
+    if len(tenant_fields) > 1:
+        tenant.save(update_fields=tenant_fields)
+
+    tenant_portal_role, _ = Group.objects.get_or_create(name=TENANT_PORTAL_ROLE)
+    user.groups.add(tenant_portal_role)
+    membership = _agency_account_membership(profile, user, tenant.branch.agency)
+    membership.branches.add(tenant.branch)
+    membership.roles.add(tenant_portal_role)
+
+    MoveInSettlement.objects.filter(
+        tenant=tenant,
+        status__in={
+            MoveInSettlement.STATUS_PAID,
+            MoveInSettlement.STATUS_MOVE_IN_PENDING,
+        },
+    ).update(
+        status=MoveInSettlement.STATUS_ACTIVE,
+        activated_at=now,
+    )
+    return user
+
+
+def _complete_whatsapp_contact_verification(
+    contact: WhatsAppContact,
+    state: ConversationState,
+    user,
+    tenant: Tenant | None,
+    *,
+    welcome_message: str,
+) -> None:
+    """Persist verified contact linkage and open the WhatsApp entry menu."""
+    contact.tenant = tenant
+    contact.user = user
+    contact.id_number_hash = state.state.get("id_number_hash", "")
+    contact.verified_at = timezone.now()
+    contact.failed_verifications = 0
+    contact.locked_until = None
+    contact.save(update_fields=[
+        "tenant",
+        "user",
+        "id_number_hash",
+        "verified_at",
+        "failed_verifications",
+        "locked_until",
+        "updated_at",
+    ])
+    _audit("whatsapp.contact_verified", {
+        "contact_id": contact.pk,
+        "tenant_id": tenant.pk if tenant else None,
+        "user_id": user.pk,
+    })
+    state.state = {}
+    state.active_role = ""
+    _save_state(state)
+    send_text(contact.wa_id, welcome_message)
+    _show_entry(contact, state)
 
 
 def _roles(contact: WhatsAppContact) -> list[str]:
@@ -340,8 +487,21 @@ def _handle_verification_reply(contact, state, text):
             "Reply with the National ID or passport number recorded with the agency.",
         )
         return
-    tenant, _, caretaker_user = _match_identities(candidate)
+    tenant, landlord, caretaker_user = _match_identities(candidate)
     if tenant is None and caretaker_user is None:
+        if landlord is not None:
+            portal_url = (
+                settings.PUBLIC_SITE_URL.rstrip("/")
+                if settings.PUBLIC_SITE_URL
+                else "https://legacyrealestate.co.ke"
+            )
+            send_text(
+                contact.wa_id,
+                f"Hello {landlord.name}. WhatsApp access for landlords is coming soon! "
+                f"In the meantime, please access your landlord portal at {portal_url}/login using your phone number.",
+            )
+            return
+
         contact.failed_verifications += 1
         if contact.failed_verifications >= MAX_VERIFICATION_ATTEMPTS:
             contact.locked_until = now + timedelta(hours=VERIFICATION_LOCK_HOURS)
@@ -357,6 +517,35 @@ def _handle_verification_reply(contact, state, text):
         contact.save(update_fields=["failed_verifications", "locked_until", "updated_at"])
         _audit("whatsapp.verification_failed", {"contact_id": contact.pk})
         send_text(contact.wa_id, message)
+        return
+
+    id_number_hash = hashlib.sha256(candidate.lower().encode("utf-8")).hexdigest()
+    activation_challenge = (
+        TenantActivationChallenge.objects.filter(
+            tenant=tenant,
+            used_at__isnull=True,
+            expires_at__gt=now,
+        )
+        .order_by("-created_at")
+        .first()
+        if tenant is not None and (tenant.portal_user is None or not tenant.portal_user.is_active)
+        else None
+    )
+    if activation_challenge is not None:
+        state.state = {
+            "flow": "verify",
+            "step": "awaiting_otp",
+            "tenant_id": tenant.pk,
+            "user_id": tenant.portal_user_id,
+            "activation_challenge_id": activation_challenge.pk,
+            "id_number_hash": id_number_hash,
+        }
+        _save_state(state)
+        phone_suffix = tenant.phone[-4:] if tenant.phone else ""
+        send_text(
+            contact.wa_id,
+            f"Thank you, {tenant.name}. Reply here with the 6-digit activation OTP sent to your mobile number ending in {phone_suffix}.",
+        )
         return
 
     user = tenant.portal_user if tenant else caretaker_user
@@ -409,9 +598,9 @@ def _handle_verification_reply(contact, state, text):
         "flow": "verify",
         "step": "awaiting_otp",
         "tenant_id": tenant.pk if tenant else None,
-        "user_id": user.pk,
+        "user_id": user.pk if user else None,
         "challenge_id": challenge.pk,
-        "id_number_hash": hashlib.sha256(candidate.lower().encode("utf-8")).hexdigest(),
+        "id_number_hash": id_number_hash,
     }
     _save_state(state)
     try:
@@ -447,6 +636,64 @@ def _handle_verification_otp(contact, state, text):
     if not text.isascii() or not text.isdigit() or len(text) != 6:
         send_text(contact.wa_id, "Reply with the six-digit SMS code.")
         return
+
+    activation_challenge_id = state.state.get("activation_challenge_id")
+    if activation_challenge_id:
+        try:
+            activation_challenge = TenantActivationChallenge.objects.select_for_update(
+                of=("self",)
+            ).select_related("tenant__branch__agency", "existing_user").get(
+                pk=activation_challenge_id,
+                used_at__isnull=True,
+            )
+        except (TenantActivationChallenge.DoesNotExist, ValueError):
+            state.state = {}
+            _save_state(state)
+            send_text(contact.wa_id, "This activation code is no longer available. Send your ID number to start again.")
+            return
+        if not activation_challenge.is_usable:
+            activation_challenge.used_at = timezone.now()
+            activation_challenge.save(update_fields=["used_at"])
+            state.state = {"flow": "verify", "step": "awaiting_id"}
+            _save_state(state)
+            send_text(contact.wa_id, "This activation code has expired. Send your ID number to request a new code.")
+            return
+        if not _matches_activation_code(text.strip(), activation_challenge.code_hash):
+            activation_challenge.failed_attempts += 1
+            if activation_challenge.failed_attempts >= settings.AUTH_MFA_MAX_ATTEMPTS:
+                activation_challenge.expires_at = timezone.now()
+                activation_challenge.save(update_fields=["failed_attempts", "expires_at"])
+                state.state = {"flow": "verify", "step": "awaiting_id"}
+                _save_state(state)
+                send_text(contact.wa_id, "Too many incorrect codes. Send your ID number to start again.")
+            else:
+                activation_challenge.save(update_fields=["failed_attempts"])
+                send_text(contact.wa_id, "That code is incorrect. Please try again.")
+            return
+        if activation_challenge.existing_user is not None and not activation_challenge.existing_user.is_active:
+            state.state = {}
+            _save_state(state)
+            send_text(contact.wa_id, "This account is unavailable for WhatsApp. Contact the office for help.")
+            return
+
+        tenant = activation_challenge.tenant
+        user = _activate_tenant_via_whatsapp(tenant, existing_user=activation_challenge.existing_user)
+        activation_challenge.used_at = timezone.now()
+        activation_challenge.save(update_fields=["used_at"])
+        _audit("tenant_activation.completed_whatsapp", {
+            "challenge_id": activation_challenge.pk,
+            "tenant_id": tenant.pk,
+            "user_id": user.pk,
+        })
+        _complete_whatsapp_contact_verification(
+            contact,
+            state,
+            user,
+            tenant,
+            welcome_message=f"✅ Welcome to Legacy Real Estate, {tenant.name}! Your account is now active and your WhatsApp number is verified.",
+        )
+        return
+
     challenge_id = state.state.get("challenge_id")
     try:
         challenge = PhoneOTPChallenge.objects.select_for_update().get(
@@ -481,7 +728,20 @@ def _handle_verification_otp(contact, state, text):
 
     tenant = challenge.tenant
     user = challenge.user
-    if (
+    if tenant is not None and (user is None or not user.is_active):
+        if tenant.portal_user_id not in (None, getattr(user, "pk", None)):
+            challenge.consumed_at = timezone.now()
+            challenge.save(update_fields=["consumed_at"])
+            state.state = {}
+            _save_state(state)
+            send_text(contact.wa_id, "This account is unavailable for WhatsApp. Contact the office for help.")
+            return
+        user = _activate_tenant_via_whatsapp(tenant)
+        TenantActivationChallenge.objects.filter(
+            tenant=tenant,
+            used_at__isnull=True,
+        ).update(used_at=timezone.now())
+    elif (
         user is None
         or not user.is_active
         or (tenant is not None and tenant.portal_user_id != user.pk)
@@ -497,33 +757,15 @@ def _handle_verification_otp(contact, state, text):
             portal_user=user,
             tenancies__status=Tenancy.STATUS_ACTIVE,
         ).distinct().order_by("-created_at").first()
-    contact.tenant = tenant
-    contact.user = user
-    contact.id_number_hash = state.state.get("id_number_hash", "")
-    contact.verified_at = timezone.now()
-    contact.failed_verifications = 0
-    contact.locked_until = None
-    contact.save(update_fields=[
-        "tenant",
-        "user",
-        "id_number_hash",
-        "verified_at",
-        "failed_verifications",
-        "locked_until",
-        "updated_at",
-    ])
     challenge.consumed_at = timezone.now()
     challenge.save(update_fields=["consumed_at"])
-    _audit("whatsapp.contact_verified", {
-        "contact_id": contact.pk,
-        "tenant_id": tenant.pk if tenant else None,
-        "user_id": user.pk,
-    })
-    state.state = {}
-    state.active_role = ""
-    _save_state(state)
-    send_text(contact.wa_id, "✅ Your WhatsApp number is now verified.")
-    _show_entry(contact, state)
+    _complete_whatsapp_contact_verification(
+        contact,
+        state,
+        user,
+        tenant,
+        welcome_message="✅ Your WhatsApp number is now verified.",
+    )
 
 
 def _show_entry(contact, state):
@@ -2157,6 +2399,7 @@ def _caretaker_move_in_handovers(contact):
             Q(assigned_caretaker=contact.user)
             | Q(assigned_caretaker__isnull=True)
         )
+        .exclude(tenancy__tenant__portal_user=contact.user)
         .select_related("tenancy__tenant", "tenancy__unit__property")
         .order_by("tenancy__start_date", "tenancy__unit__code", "pk")
     )
@@ -2174,6 +2417,7 @@ def _caretaker_move_out_inspections(contact):
             move_out_notice__status=MoveOutNotice.STATUS_ACCEPTED,
             move_out_notice__tenancy__status=Tenancy.STATUS_ACTIVE,
         )
+        .exclude(move_out_notice__tenancy__tenant__portal_user=contact.user)
         .filter(
             Q(inspection_type__iexact="move_out")
             | Q(inspection_type__iexact="exit")

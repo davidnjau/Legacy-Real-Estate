@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Fragment } from 'react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type PropertyRecord = {
   id: number;
@@ -85,17 +86,22 @@ function currentMonth() {
 
 export default function MonthlyPropertyLedger() {
   const { agency, branchIds } = usePropertyOfficerPortal();
+  const assignedBranches = (agency?.branches ?? []).filter((branch) => branchIds.has(branch.id));
   const [properties, setProperties] = useState<PropertyRecord[]>([]);
   const [months, setMonths] = useState<string[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(currentMonth);
   const [propertyId, setPropertyId] = useState('');
   const [status, setStatus] = useState<'all' | LedgerRow['status']>('all');
+  const [branchFilter, setBranchFilter] = useState('all');
+  const [search, setSearch] = useState('');
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [summary, setSummary] = useState<LedgerSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedTenancyId, setExpandedTenancyId] = useState<number | null>(null);
   const branchKey = useMemo(() => [...branchIds].sort((a, b) => a - b).join(','), [branchIds]);
+  const requestBranchKey = branchFilter === 'all' ? branchKey : branchFilter;
+  const requestBranchIds = requestBranchKey.split(',').filter(Boolean);
 
   useEffect(() => {
     if (!agency) return;
@@ -105,7 +111,10 @@ export default function MonthlyPropertyLedger() {
         const payload = await response.json() as ApiPayload<{ properties: PropertyRecord[] }>;
         if (!response.ok) throw new Error(payload.detail || payload.error || 'Unable to load properties.');
         if (active) {
-          const visibleProperties = payload.properties.filter((property) => branchIds.has(property.branch_id));
+          const visibleProperties = payload.properties.filter((property) =>
+            branchIds.has(property.branch_id)
+            && (branchFilter === 'all' || String(property.branch_id) === branchFilter),
+          );
           setProperties(visibleProperties);
           setPropertyId((current) =>
             current && visibleProperties.some((property) => property.id === Number(current)) ? current : '',
@@ -118,7 +127,7 @@ export default function MonthlyPropertyLedger() {
     return () => {
       active = false;
     };
-  }, [agency, branchIds, branchKey]);
+  }, [agency, branchFilter, branchIds, branchKey]);
 
   useEffect(() => {
     if (!agency) return;
@@ -132,7 +141,7 @@ export default function MonthlyPropertyLedger() {
     }
     let active = true;
     const query = new URLSearchParams();
-    branchKey.split(',').filter(Boolean).forEach((branchId) => query.append('branch_id', branchId));
+    requestBranchIds.forEach((branchId) => query.append('branch_id', branchId));
     if (propertyId) query.set('property_id', propertyId);
     void fetch(`/api/property-officer/monthly-ledger/months?${query.toString()}`, { cache: 'no-store' })
       .then(async (response) => {
@@ -150,13 +159,13 @@ export default function MonthlyPropertyLedger() {
     return () => {
       active = false;
     };
-  }, [agency, branchKey, propertyId]);
+  }, [agency, branchKey, propertyId, requestBranchKey]);
 
   useEffect(() => {
     if (!agency || !branchKey || !selectedMonth) return;
     let active = true;
     const query = new URLSearchParams({ month: selectedMonth, status });
-    branchKey.split(',').filter(Boolean).forEach((branchId) => query.append('branch_id', branchId));
+    requestBranchIds.forEach((branchId) => query.append('branch_id', branchId));
     if (propertyId) query.set('property_id', propertyId);
     setLoading(true);
     void fetch(`/api/property-officer/monthly-ledger?${query.toString()}`, { cache: 'no-store' })
@@ -181,27 +190,49 @@ export default function MonthlyPropertyLedger() {
     return () => {
       active = false;
     };
-  }, [agency, branchKey, propertyId, selectedMonth, status]);
+  }, [agency, branchKey, propertyId, requestBranchKey, selectedMonth, status]);
 
+  const filteredRows = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return rows.filter((row) => !query || [
+      row.tenant_name,
+      row.property_name,
+      row.unit_code,
+      row.branch_name,
+      ...row.invoice_numbers,
+    ].some((value) => value.toLowerCase().includes(query)));
+  }, [rows, search]);
+  const ledgerPagination = usePortalPagination(filteredRows);
+  const sumField = (field: 'new_charges' | 'prior_balance' | 'paid' | 'remaining') => (
+    filteredRows.reduce((total, row) => total + Number(row[field]), 0).toFixed(2)
+  );
   const cards = summary ? [
-    { label: 'New monthly charges', amount: summary.new_charges },
-    { label: 'Prior balance', amount: summary.prior_balance },
-    { label: 'Payments received', amount: summary.paid },
-    { label: 'Remaining balance', amount: summary.remaining },
+    { label: 'New monthly charges', amount: sumField('new_charges') },
+    { label: 'Prior balance', amount: sumField('prior_balance') },
+    { label: 'Payments received', amount: sumField('paid') },
+    { label: 'Remaining balance', amount: sumField('remaining') },
   ] : [];
   const monthOptions = months.includes(selectedMonth) ? months : [selectedMonth, ...months];
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-800">{agency?.name || 'Agency'}</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-950">Monthly property ledger</h1>
-          <p className="mt-1 max-w-3xl text-sm text-slate-500">
-            Review itemized rent and utility bills, the unpaid balance brought forward, confirmed payments, and each tenancy’s remaining balance.
-          </p>
-        </div>
+      <header className="flex flex-wrap justify-end gap-3">
         <div className="flex flex-wrap gap-3">
+          <label>
+            <span className="mb-1 block text-xs font-semibold text-slate-500">Branch</span>
+            <select
+              aria-label="Filter by branch"
+              value={branchFilter}
+              onChange={(event) => {
+                setBranchFilter(event.target.value);
+                setPropertyId('');
+              }}
+              className="min-w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="all">All assigned branches</option>
+              {assignedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+            </select>
+          </label>
           <label>
             <span className="mb-1 block text-xs font-semibold text-slate-500">Property</span>
             <select
@@ -215,6 +246,16 @@ export default function MonthlyPropertyLedger() {
                 <option key={property.id} value={property.id}>{property.name}</option>
               ))}
             </select>
+          </label>
+          <label>
+            <span className="mb-1 block text-xs font-semibold text-slate-500">Search records</span>
+            <input
+              aria-label="Search monthly ledger records"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Tenant, unit, invoice"
+              className="min-w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
           </label>
           <label>
             <span className="mb-1 block text-xs font-semibold text-slate-500">Month</span>
@@ -269,14 +310,14 @@ export default function MonthlyPropertyLedger() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={9} role="status" className="px-4 py-8 text-center text-sm text-slate-500">Loading monthly ledger…</td></tr>
-              ) : rows.length === 0 ? (
+                <tr><td colSpan={9} className="p-4"><PortalLoading label="Loading monthly ledger…" rows={4} /></td></tr>
+              ) : filteredRows.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                     No monthly bills match the selected property, month, and status filters.
                   </td>
                 </tr>
-              ) : rows.map((row) => (
+              ) : ledgerPagination.pageRecords.map((row) => (
                   <Fragment key={row.tenancy_id}>
                     <tr>
                       <td className="px-4 py-3">
@@ -358,6 +399,7 @@ export default function MonthlyPropertyLedger() {
             </tbody>
           </table>
         </div>
+        {!loading && <PortalPagination {...ledgerPagination} total={filteredRows.length} onPageChange={ledgerPagination.setPage} onPageSizeChange={ledgerPagination.setPageSize} />}
       </section>
       {summary && selectedMonth && (
         <p className="text-xs text-slate-500">

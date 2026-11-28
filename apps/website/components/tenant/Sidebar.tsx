@@ -3,18 +3,38 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Wrench, UserCircle, DoorOpen } from 'lucide-react';
+import { Home, Wrench, UserCircle, DoorOpen, ArrowLeftRight } from 'lucide-react';
 import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
+import { getDjangoWorkspaceOptions } from '../../lib/django-routing';
 
 export function Sidebar() {
   const pathname = usePathname();
   const isOffboarding = false; // In a real app, this status would be fetched from the database
   const [identity, setIdentity] = useState({ unitCode: '', name: '' });
   const [propertyName, setPropertyName] = useState('...');
+  const [roles, setRoles] = useState<string[]>([]);
 
   useEffect(() => {
     const loadTenant = async () => {
+      try {
+        const authRes = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (authRes.ok) {
+          const authData = await authRes.json();
+          if (Array.isArray(authData?.user?.roles)) {
+            setRoles(authData.user.roles);
+          }
+          if (authData?.user?.name) {
+            setIdentity((prev) => ({
+              unitCode: prev.unitCode || 'NAI-SV-A3',
+              name: authData.user.name,
+            }));
+          }
+        }
+      } catch {
+        // continue
+      }
+
       try {
         const response = await fetch('/api/tenant/invoices', { cache: 'no-store' });
         const data = await response.json();
@@ -27,31 +47,19 @@ export function Sidebar() {
           return;
         }
       } catch {
-        // continue to auth/me fallback
+        // continue
       }
 
-      try {
-        const authRes = await fetch('/api/auth/me', { cache: 'no-store' });
-        if (authRes.ok) {
-          const authData = await authRes.json();
-          if (authData.user) {
-            setIdentity({
-              unitCode: 'NAI-SV-A3',
-              name: authData.user.name || 'Resident',
-            });
-            setPropertyName('Sunset Villas (Resident Hub)');
-            return;
-          }
-        }
-      } catch {
-        // fallback to default
-      }
-
-      setIdentity({ unitCode: 'NAI-SV-A3', name: 'Brian Omondi' });
+      setIdentity((prev) => ({
+        unitCode: prev.unitCode || 'NAI-SV-A3',
+        name: prev.name || 'Brian Omondi',
+      }));
       setPropertyName('Sunset Villas (Resident Hub)');
     };
     void loadTenant();
   }, []);
+
+  const canSwitchWorkspaces = getDjangoWorkspaceOptions(roles).length > 1;
 
   return (
     <ResponsivePortalSidebar
@@ -137,6 +145,17 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto shrink-0 border-t border-[#e7ece5] pt-4">
+        {canSwitchWorkspaces && (
+          <div className="mb-3 shrink-0">
+            <Link
+              href="/workspace"
+              className="group flex items-center gap-3 rounded-xl border border-[#dfe5df] bg-[#f8faf7] px-3 py-2.5 text-[12px] font-semibold text-[#294536] transition hover:bg-[#edf2ea]"
+            >
+              <ArrowLeftRight size={16} className="text-[#668a4c]" />
+              <span className="flex-1">Switch workspace</span>
+            </Link>
+          </div>
+        )}
         <SignOutButton />
       </div>
     </ResponsivePortalSidebar>

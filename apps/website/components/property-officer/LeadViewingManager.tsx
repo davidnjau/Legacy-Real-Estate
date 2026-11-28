@@ -1,7 +1,8 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { usePropertyOfficerPortal } from './PortalShell';
+import { PortalLoading, PortalPagination, usePortalPagination } from './PortalUI';
 
 type Viewing = {
   id: number;
@@ -53,6 +54,10 @@ export default function LeadViewingManager() {
   const [scheduleLead, setScheduleLead] = useState('');
   const [scheduledFor, setScheduledFor] = useState('');
   const [viewingNotes, setViewingNotes] = useState('');
+  const [search, setSearch] = useState('');
+  const [branchFilter, setBranchFilter] = useState('all');
+  const [leadStatusFilter, setLeadStatusFilter] = useState('all');
+  const [viewingFilter, setViewingFilter] = useState('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -81,6 +86,29 @@ export default function LeadViewingManager() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const filteredLeads = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return leads.filter((lead) => {
+      const matchesBranch = branchFilter === 'all' || String(lead.branch_id) === branchFilter;
+      const matchesLeadStatus = leadStatusFilter === 'all' || lead.status === leadStatusFilter;
+      const matchesViewing = viewingFilter === 'all'
+        || (viewingFilter === 'none'
+          ? lead.viewings.length === 0
+          : lead.viewings.some((viewing) => viewing.status === viewingFilter));
+      const matchesSearch = !query || [
+        lead.full_name,
+        lead.phone,
+        lead.email,
+        lead.branch_name,
+        lead.property_name ?? '',
+        lead.unit_code ?? '',
+        lead.preference,
+      ].some((value) => value.toLowerCase().includes(query));
+      return matchesBranch && matchesLeadStatus && matchesViewing && matchesSearch;
+    });
+  }, [branchFilter, leadStatusFilter, leads, search, viewingFilter]);
+  const leadPagination = usePortalPagination(filteredLeads);
 
   async function createLead(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -171,11 +199,6 @@ export default function LeadViewingManager() {
 
   return (
     <section className="space-y-6">
-      <header>
-        <h1 className="text-xl font-bold text-slate-950">Leads & property viewings</h1>
-        <p className="mt-1 text-sm text-slate-600">Manage inquiry records and appointments for your assigned branches.</p>
-      </header>
-
       {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>}
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -209,14 +232,39 @@ export default function LeadViewingManager() {
         </form>
       </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+      <div data-portal-card className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="grid gap-3 border-b border-slate-100 p-4 sm:grid-cols-2 xl:grid-cols-4">
+          <label className="text-xs font-semibold text-slate-600">Search leads
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, contact, property, or unit" className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm" />
+          </label>
+          <label className="text-xs font-semibold text-slate-600">Branch
+            <select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="all">All assigned branches</option>
+              {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-semibold text-slate-600">Lead stage
+            <select value={leadStatusFilter} onChange={(event) => setLeadStatusFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="all">All lead stages</option>
+              {leadStatuses.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-semibold text-slate-600">Viewing status
+            <select value={viewingFilter} onChange={(event) => setViewingFilter(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm">
+              <option value="all">All viewing records</option>
+              <option value="none">No viewing scheduled</option>
+              {viewingStatuses.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
             <th className="px-4 py-3">Lead</th><th className="px-4 py-3">Branch</th><th className="px-4 py-3">Interest</th><th className="px-4 py-3">Budget</th><th className="px-4 py-3">Appointments</th><th className="px-4 py-3">Lead status</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-100">
-            {loading ? <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">Loading records…</td></tr>
-              : leads.map((lead) => <tr key={lead.id} className="align-top">
+            {loading ? <tr><td colSpan={6} className="p-4"><PortalLoading label="Loading leads and appointments…" rows={4} /></td></tr>
+              : leadPagination.pageRecords.map((lead) => <tr key={lead.id} className="align-top transition-colors hover:bg-[#f8faf7]">
                 <td className="px-4 py-4"><p className="font-semibold text-slate-900">{lead.full_name}</p><p className="text-xs text-slate-500">{lead.phone}{lead.email ? ` · ${lead.email}` : ''}</p></td>
                 <td className="px-4 py-4">{lead.branch_name}</td>
                 <td className="px-4 py-4">{lead.preference || lead.property_name || 'Not specified'}{lead.unit_code ? ` · ${lead.unit_code}` : ''}</td>
@@ -232,9 +280,11 @@ export default function LeadViewingManager() {
                   {leadStatuses.map((status) => <option key={status} value={status}>{status.replace('_', ' ')}</option>)}
                 </select></td>
               </tr>)}
-            {!loading && leads.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">No leads in the selected branches yet.</td></tr>}
+            {!loading && filteredLeads.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">No leads match the selected filters.</td></tr>}
           </tbody>
         </table>
+        </div>
+        {!loading && <PortalPagination {...leadPagination} total={filteredLeads.length} onPageChange={leadPagination.setPage} onPageSizeChange={leadPagination.setPageSize} />}
       </div>
     </section>
   );

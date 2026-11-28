@@ -501,7 +501,10 @@ def _prepare_tenant_activation(
             "phone": activation_phone,
             "unit_code": tenancy.unit.code,
             "property_name": tenancy.unit.property.name,
-            "activation_url": f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate",
+            "activation_url": (
+                f"{settings.PUBLIC_SITE_URL.rstrip('/')}/activate"
+                f"?phone={activation_phone}&unit={tenancy.unit.code}&code={activation_code}"
+            ),
             "activation_code": activation_code,
             "expires_at": challenge.expires_at,
         }

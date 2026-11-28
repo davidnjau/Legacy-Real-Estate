@@ -140,6 +140,86 @@ RabbitMQ data volume. For a fresh install, the initialization variables create
 the account automatically. Keep the Erlang cookie stable for an initialized
 broker; changing it is not a way to rotate the broker user's password.
 
+### Local SMS delivery
+
+The local stack defaults to `ConsoleSMSBackend`, which logs messages instead
+of sending them. Tail the SMS worker to see those messages in a terminal:
+
+```bash
+docker compose -f tools/local/docker-compose.yml logs -f sms-worker
+```
+
+To opt into real Softlink delivery, add these values to the ignored repository
+root `.env` file:
+
+```dotenv
+AUTH_SMS_BACKEND=users.sms.SoftlinkSMSBackend
+SOFTLINK_SMS_API_URL=https://api.softlinksms.co.ke/api/v1/sms
+SOFTLINK_SMS_API_KEY=your-softlink-api-key
+SOFTLINK_SMS_TRAFFIC_CLASS=promotional
+SOFTLINK_SMS_TIMEOUT_SECONDS=10
+```
+
+Then recreate the app and dispatcher so both load the same settings:
+
+```bash
+docker compose -f tools/local/docker-compose.yml up -d --force-recreate core sms-worker
+```
+
+This sends real SMS to real phone numbers; use controlled test recipients and
+keep the API key and SMS worker logs private. With Softlink enabled, the worker
+logs delivery status and provider errors, not the full message body. Authorized
+staff can also review delivery statuses and provider references in Django
+Admin's read-only `SMSDelivery` list.
+
+### Local WhatsApp bot console
+
+Local Django development defaults to `ConsoleWhatsAppBackend`. The bot does
+not contact Meta; it logs its replies from the `core` container. In one
+terminal, follow the app and SMS logs:
+
+```bash
+docker compose -f tools/local/docker-compose.yml logs -f core sms-worker
+```
+
+In another terminal, open Django's shell and submit simulated inbound messages
+to the same WhatsApp ID:
+
+```bash
+docker compose -f tools/local/docker-compose.yml exec core python manage.py shell
+```
+
+```python
+from users.whatsapp_bot import handle_inbound_message
+
+wa_id = "254700000000"
+handle_inbound_message({
+    "from": wa_id,
+    "type": "text",
+    "text": {"body": "Hello"},
+})
+```
+
+Call `handle_inbound_message` again with the same `wa_id` for each reply. A
+test tenant/caretaker may complete the ID and SMS-code verification flow; the
+development SMS backend logs that code in `sms-worker`. To simulate a menu
+button selection, pass the button ID shown in the `core` log:
+
+```python
+handle_inbound_message({
+    "from": wa_id,
+    "type": "interactive",
+    "interactive": {
+        "type": "button_reply",
+        "button_reply": {"id": "role_tenant", "title": "Tenant"},
+    },
+})
+```
+
+Use seeded or otherwise controlled test accounts. This shell simulator bypasses
+Meta's webhook transport and does not send actual WhatsApp messages; do not use
+real tenant data or share the terminal logs.
+
 The public homepage, all role dashboards, and local Compose startup run
 exclusively against the Django backend and PostgreSQL database, without any
 Supabase dependency. Copy `apps/website/.env.example` to `.env.local` inside

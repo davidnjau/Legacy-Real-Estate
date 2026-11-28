@@ -4,9 +4,10 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { ClipboardCheck, Droplets, LayoutDashboard, Wrench } from 'lucide-react';
+import { ArrowLeftRight, ClipboardCheck, Droplets, LayoutDashboard, Wrench } from 'lucide-react';
 import SignOutButton from '../auth/SignOutButton';
 import { ResponsivePortalSidebar } from '../ui/ResponsivePortalSidebar';
+import { getDjangoWorkspaceOptions } from '../../lib/django-routing';
 
 const navGroups = [
   {
@@ -29,9 +30,18 @@ export function CaretakerSidebar() {
   const [activePropertyId, setActivePropertyId] = useState('');
   const [propertyError, setPropertyError] = useState('');
   const [savingProperty, setSavingProperty] = useState(false);
+  const [roles, setRoles] = useState<string[]>([]);
 
   useEffect(() => {
     let active = true;
+    void fetch('/api/auth/me', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && Array.isArray(data?.user?.roles)) {
+          setRoles(data.user.roles);
+        }
+      })
+      .catch(() => {});
     void fetch('/api/caretaker/properties', { cache: 'no-store' })
       .then(async (response) => {
         const data = await response.json();
@@ -193,6 +203,17 @@ export function CaretakerSidebar() {
       </nav>
 
       <div className="mt-auto shrink-0 border-t border-[#e7ece5] pt-4">
+        {getDjangoWorkspaceOptions(roles).length > 1 && (
+          <div className="mb-3 shrink-0">
+            <Link
+              href="/workspace"
+              className="group flex items-center gap-3 rounded-xl border border-[#dfe5df] bg-[#f8faf7] px-3 py-2.5 text-[12px] font-semibold text-[#294536] transition hover:bg-[#edf2ea]"
+            >
+              <ArrowLeftRight size={16} className="text-[#668a4c]" />
+              <span className="flex-1">Switch workspace</span>
+            </Link>
+          </div>
+        )}
         <SignOutButton />
       </div>
     </ResponsivePortalSidebar>

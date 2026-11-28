@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, X } from 'lucide-react';
 
 export type ExistingAccount = {
@@ -8,17 +8,20 @@ export type ExistingAccount = {
   name: string;
   email: string;
   phone: string;
+  id_or_registration_number?: string;
 };
 
 type Props = {
   agencyId: number;
   selectedId: number | null;
+  excludeRole?: string;
   onSelect: (account: ExistingAccount | null) => void;
 };
 
 export default function ExistingAccountPicker({
   agencyId,
   selectedId,
+  excludeRole,
   onSelect,
 }: Props) {
   const [query, setQuery] = useState('');
@@ -26,28 +29,54 @@ export default function ExistingAccountPicker({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  async function search() {
+  useEffect(() => {
+    const searchQuery = query.trim();
+    if (searchQuery.length < 2) {
+      setAccounts([]);
+      setError('');
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setAccounts([]);
     setError('');
     setLoading(true);
-    try {
-      const params = new URLSearchParams({
+    const timeout = window.setTimeout(() => {
+      const searchParamsObj: Record<string, string> = {
         agency_id: String(agencyId),
-        q: query.trim(),
-      });
-      const response = await fetch(`/api/property-officer/accounts/search?${params}`, {
-        cache: 'no-store',
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || payload.error || 'Unable to search agency accounts.');
+        q: searchQuery,
+      };
+      if (excludeRole) {
+        searchParamsObj.exclude_role = excludeRole;
       }
-      setAccounts(payload.accounts ?? []);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to search agency accounts.');
-    } finally {
-      setLoading(false);
-    }
-  }
+      const params = new URLSearchParams(searchParamsObj);
+      void fetch(`/api/property-officer/accounts/search?${params}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.detail || payload.error || 'Unable to search agency accounts.');
+          }
+          if (!controller.signal.aborted) setAccounts(payload.accounts ?? []);
+        })
+        .catch((cause: unknown) => {
+          if (!controller.signal.aborted) {
+            setError(cause instanceof Error ? cause.message : 'Unable to search agency accounts.');
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [agencyId, excludeRole, query]);
 
   return (
     <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -57,30 +86,24 @@ export default function ExistingAccountPicker({
           Search by name, email, phone, or ID. Account identity details are not displayed.
         </p>
       </div>
-      <div role="search" className="flex gap-2">
+      <div role="search" className="relative">
+        <Search aria-hidden="true" size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault();
-              if (query.trim().length >= 2 && !loading) void search();
-            }
+            if (event.key === 'Enter') event.preventDefault();
           }}
           minLength={2}
-          placeholder="Search this agency"
+          placeholder="Type a name, email, phone, or ID"
           aria-label="Search existing agency accounts"
-          className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm"
         />
-        <button
-          type="button"
-          onClick={() => void search()}
-          disabled={loading || query.trim().length < 2}
-          className="inline-flex items-center gap-1 rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-        >
-          <Search size={14} /> {loading ? 'Searching' : 'Search'}
-        </button>
       </div>
+      {query.trim().length < 2 && (
+        <p className="text-xs text-slate-500">Type at least two characters to see matching accounts.</p>
+      )}
+      {loading && <p role="status" className="text-xs text-slate-500">Searching agency accounts…</p>}
       {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
       {accounts.length > 0 && (
         <ul className="max-h-44 space-y-1 overflow-y-auto">
